@@ -146,6 +146,10 @@ impl UsbSerialTransport {
         if batch.is_empty() {
             return Ok(());
         }
+        // Match serialqueue.c's TCOFLUSH before replaying the outstanding
+        // window; otherwise bytes from a stalled/partial UART write may be
+        // transmitted immediately before the sync-prefixed retry batch.
+        self.clear_output()?;
         self.write_encoded_frame(&batch)
     }
 
