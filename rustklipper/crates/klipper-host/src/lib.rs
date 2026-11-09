@@ -3126,6 +3126,43 @@ mod tests {
     }
 
     #[test]
+    fn failed_factory_usage_rollback_preserves_concurrent_config_reads() {
+        let printer = Arc::new(Printer::new());
+        printer.install_config(
+            ConfigDocument::parse("[fan]\npin=PA0\nspeed=100\n").unwrap(),
+        );
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let factory_barrier = barrier.clone();
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register("fan", move |_, section| {
+                assert_eq!(section.get("pin"), Some("PA0"));
+                section.deprecate("pin", None, None);
+                factory_barrier.wait();
+                factory_barrier.wait();
+                Err("factory failure".to_owned())
+            })
+            .unwrap();
+
+        let loading_printer = printer.clone();
+        let loader = std::thread::spawn(move || loading_printer.load_components(&registry));
+        barrier.wait();
+        let config = printer.config().unwrap();
+        let external_section = printer.config_usage.track_section(config.section("fan").unwrap());
+        assert_eq!(external_section.get("speed"), Some("100"));
+        barrier.wait();
+        assert!(matches!(
+            loader.join().unwrap(),
+            Err(ComponentError::LoadFailed { .. })
+        ));
+
+        let unused = printer.unused_config_options();
+        assert_eq!(unused.len(), 1);
+        assert_eq!(unused[0].option, "pin");
+        assert!(printer.config_warnings().is_empty());
+    }
+
+    #[test]
     fn failed_component_factory_rolls_back_config_usage_and_warnings() {
         let printer = Printer::new();
         printer.install_config(ConfigDocument::parse("[fan]\npin=PA0\n").unwrap());
