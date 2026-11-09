@@ -1058,11 +1058,13 @@ impl Printer {
         line: &str,
         need_ack: bool,
     ) -> Option<DispatchOutcome> {
-        self.gcode_dispatcher().process_line(line, need_ack)
+        let dispatcher = self.gcode_dispatcher().clone();
+        dispatcher.process_line(line, need_ack)
     }
 
     pub fn process_gcode_script(&self, script: &str) -> Vec<DispatchOutcome> {
-        self.gcode_dispatcher().process_script(script)
+        let dispatcher = self.gcode_dispatcher().clone();
+        dispatcher.process_script(script)
     }
 }
 
@@ -1423,6 +1425,25 @@ mod tests {
             .unwrap();
         printer.invoke_shutdown("runtime fault");
         assert!(printer.process_gcode_line("M112", true).unwrap().handler_found);
+    }
+
+    #[test]
+    fn gcode_handler_can_register_another_command_without_deadlock() {
+        let printer = Arc::new(Printer::new());
+        let handler_printer = printer.clone();
+        printer
+            .register_gcode_command("M105", true, None, move |_| {
+                handler_printer
+                    .register_gcode_command("M999", true, None, |_| Ok(Vec::new()))
+                    .map_err(|error| GCodeError::MalformedCommand {
+                        line: error.to_string(),
+                    })?;
+                Ok(Vec::new())
+            })
+            .unwrap();
+
+        assert!(printer.process_gcode_line("M105", true).unwrap().handler_found);
+        assert!(printer.process_gcode_line("M999", true).unwrap().handler_found);
     }
 
     #[test]
