@@ -56,11 +56,12 @@ pub struct ReceivedFrameResult {
 }
 
 #[derive(Debug, Default)]
-struct QueueState { upcoming: VecDeque<ScheduledCommand>, ready: VecDeque<ScheduledCommand> }
+struct QueueState { order: u64, upcoming: VecDeque<ScheduledCommand>, ready: VecDeque<ScheduledCommand> }
 
 #[derive(Debug)]
 pub struct CommandScheduler {
     queues: BTreeMap<u64, QueueState>,
+    next_queue_order: u64,
     send_sequence: u64,
     receive_sequence: u64,
     receive_window: usize,
@@ -72,7 +73,7 @@ pub struct CommandScheduler {
 }
 impl Default for CommandScheduler {
     fn default() -> Self {
-        Self { queues: BTreeMap::new(), send_sequence: 1, receive_sequence: 1,
+        Self { queues: BTreeMap::new(), next_queue_order: 0, send_sequence: 1, receive_sequence: 1,
             receive_window: 0, need_ack_bytes: 0, last_ack_bytes: 0, last_ack_sequence: 0, sent_blocks: VecDeque::new(), retransmit: RetransmitState::new(),
         }
     }
@@ -127,6 +128,13 @@ impl CommandScheduler {
             && command.min_clock.wrapping_add(1u64 << 31) < command.req_clock
         {
             command.min_clock = command.req_clock - (1u64 << 31);
+        }
+        let queue_is_empty = self.queues.get(&queue_id)
+            .map_or(true, |queue| queue.upcoming.is_empty() && queue.ready.is_empty());
+        if queue_is_empty {
+            let order = self.next_queue_order;
+            self.next_queue_order = self.next_queue_order.wrapping_add(1);
+            self.queues.entry(queue_id).or_default().order = order;
         }
         self.queues.entry(queue_id).or_default().upcoming.push_back(command);
         Ok(())
@@ -184,10 +192,10 @@ impl CommandScheduler {
         loop {
             let selected = self.queues.iter()
                 .filter_map(|(id, q)| q.ready.front().map(|cmd| {
-                    (*id, cmd.req_clock, cmd.bytes.len())
+                    (*id, q.order, cmd.req_clock, cmd.bytes.len())
                 }))
-                .min_by_key(|(_, priority, _)| *priority);
-            let Some((queue_id, _, size)) = selected else { break; };
+                .min_by_key(|(_, order, priority, _)| (*priority, *order));
+            let Some((queue_id, _, _, size)) = selected else { break; };
             if payload.len() + size > MESSAGE_PAYLOAD_MAX { break; }
             let command = self.queues.get_mut(&queue_id)
                 .and_then(|q| q.ready.pop_front()).expect("selected queue has a ready command");
@@ -389,6 +397,26 @@ mod tests {
         let frame = scheduler.build_frame().unwrap().unwrap();
         assert_eq!(frame.notify_ids, vec![12]);
         assert!(!frame.bytes.is_empty());
+    }
+
+    #[test]
+    fn equal_priority_queues_follow_pending_queue_insertion_order() {
+        let mut scheduler = CommandScheduler::new();
+        scheduler.enqueue(99, ScheduledCommand::new(vec![0xA1], 0, 500)).unwrap();
+        scheduler.enqueue(1, ScheduledCommand::new(vec![0xB2], 0, 500)).unwrap();
+        scheduler.promote_ready(0);
+
+        let first = scheduler.build_frame().unwrap().unwrap();
+        let mut decoder = FrameDecoder::new();
+        let parsed = decoder.push(&first.bytes);
+        assert_eq!(parsed[0].payload, vec![0xA1, 0xB2]);
+
+        scheduler.enqueue(1, ScheduledCommand::new(vec![0xC3], 0, 500)).unwrap();
+        scheduler.enqueue(99, ScheduledCommand::new(vec![0xD4], 0, 500)).unwrap();
+        scheduler.promote_ready(0);
+        let second = scheduler.build_frame().unwrap().unwrap();
+        let parsed = decoder.push(&second.bytes);
+        assert_eq!(parsed[0].payload, vec![0xC3, 0xD4]);
     }
 
     #[test]
