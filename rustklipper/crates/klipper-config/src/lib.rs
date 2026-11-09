@@ -878,6 +878,88 @@ impl ConfigUsageTracker {
             })
     }
 
+    pub fn get_list(
+        &self,
+        config: &ConfigDocument,
+        section: &str,
+        option: &str,
+        separator: char,
+        count: Option<usize>,
+    ) -> Result<Vec<String>, ConfigValueError> {
+        let value = self.get_required(config, section, option)?;
+        let values: Vec<String> = if value.trim().is_empty() {
+            Vec::new()
+        } else {
+            value
+                .split(separator)
+                .map(str::trim)
+                .map(str::to_owned)
+                .collect()
+        };
+        if let Some(expected) = count {
+            if values.len() != expected {
+                return Err(ConfigValueError::ElementCount {
+                    section: section.to_owned(),
+                    option: option.to_owned(),
+                    expected,
+                    actual: values.len(),
+                });
+            }
+        }
+        Ok(values)
+    }
+
+    pub fn get_i64_list(
+        &self,
+        config: &ConfigDocument,
+        section: &str,
+        option: &str,
+        separator: char,
+        count: Option<usize>,
+    ) -> Result<Vec<i64>, ConfigValueError> {
+        self.get_list(config, section, option, separator, count)?
+            .into_iter()
+            .map(|value| {
+                value.parse().map_err(|_| ConfigValueError::Invalid {
+                    section: section.to_owned(),
+                    option: option.to_owned(),
+                    value,
+                    expected: "integer list",
+                })
+            })
+            .collect()
+    }
+
+    pub fn get_f64_list(
+        &self,
+        config: &ConfigDocument,
+        section: &str,
+        option: &str,
+        separator: char,
+        count: Option<usize>,
+    ) -> Result<Vec<f64>, ConfigValueError> {
+        self.get_list(config, section, option, separator, count)?
+            .into_iter()
+            .map(|value| {
+                let parsed: f64 = value.parse().map_err(|_| ConfigValueError::Invalid {
+                    section: section.to_owned(),
+                    option: option.to_owned(),
+                    value: value.clone(),
+                    expected: "float list",
+                })?;
+                if !parsed.is_finite() {
+                    return Err(ConfigValueError::Invalid {
+                        section: section.to_owned(),
+                        option: option.to_owned(),
+                        value,
+                        expected: "finite float list",
+                    });
+                }
+                Ok(parsed)
+            })
+            .collect()
+    }
+
     pub fn get_i64(
         &self,
         config: &ConfigDocument,
@@ -1231,6 +1313,28 @@ mod tests {
         let tracker = ConfigUsageTracker::new();
         let section = tracker.track_section(config.section("heater").unwrap());
         assert_eq!(section.get_f64("max_power").unwrap(), 0.75);
+        assert!(tracker.unused_options(&config).is_empty());
+    }
+
+    #[test]
+    fn usage_tracker_parses_integer_and_float_lists() {
+        let config = ConfigDocument::parse(
+            "[stepper_x]\nposition=10, 20,30\n[bed_mesh]\nmesh_min=0.5,1.25\n",
+        )
+        .unwrap();
+        let tracker = ConfigUsageTracker::new();
+        assert_eq!(
+            tracker
+                .get_i64_list(&config, "stepper_x", "position", ',', Some(3))
+                .unwrap(),
+            vec![10, 20, 30]
+        );
+        assert_eq!(
+            tracker
+                .get_f64_list(&config, "bed_mesh", "mesh_min", ',', Some(2))
+                .unwrap(),
+            vec![0.5, 1.25]
+        );
         assert!(tracker.unused_options(&config).is_empty());
     }
 
