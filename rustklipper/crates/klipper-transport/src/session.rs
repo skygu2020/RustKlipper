@@ -3,6 +3,9 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::time::Instant;
 
 use serde_json::Value;
+
+/// Klipper ClockSync periodic query cadence.
+const PERIODIC_CLOCK_INTERVAL_SECONDS: f64 = 0.9839;
 use klipper_protocol::{encode_identify_request, DictionaryError, Frame, IdentifyAssembler, IdentifyChunk, IdentifyDictionary, IDENTIFY_CHUNK_SIZE, MESSAGE_MAX, MESSAGE_MIN};
 
 use crate::{
@@ -153,6 +156,7 @@ pub struct ReliableSerialSession {
     clock_sync: Option<crate::ClockSync>,
     clock_calibration_remaining: u8,
     periodic_clock_in_flight: bool,
+    next_periodic_clock_at: Option<f64>,
     startup_stage: McuStartupStage,
     identify_assembler: IdentifyAssembler,
     identify_queue_id: Option<u64>,
@@ -193,6 +197,7 @@ impl ReliableSerialSession {
             clock_sync: None,
             clock_calibration_remaining: 0,
             periodic_clock_in_flight: false,
+            next_periodic_clock_at: None,
             startup_stage: McuStartupStage::AwaitingIdentify,
             identify_assembler: IdentifyAssembler::new(),
             identify_queue_id: None,
@@ -491,6 +496,7 @@ impl ReliableSerialSession {
         self.clock_calibration_remaining -= 1;
         if self.clock_calibration_remaining == 0 {
             self.startup_stage = McuStartupStage::ClockReady;
+            self.next_periodic_clock_at = Some(response.receive_time + PERIODIC_CLOCK_INTERVAL_SECONDS);
             return Ok(None);
         }
         self.startup_stage = McuStartupStage::CalibratingClock {
@@ -539,6 +545,9 @@ impl ReliableSerialSession {
         };
         if result.is_ok() {
             self.periodic_clock_in_flight = false;
+            self.next_periodic_clock_at = Some(
+                response.receive_time + PERIODIC_CLOCK_INTERVAL_SECONDS,
+            );
         }
         result
     }
@@ -562,7 +571,39 @@ impl ReliableSerialSession {
         }
         let waiter = self.request_get_clock(queue_id)?;
         self.periodic_clock_in_flight = true;
+        self.next_periodic_clock_at = None;
         Ok(waiter)
+    }
+
+    /// Queue a periodic query when Klipper's 0.9839-second cadence expires.
+    ///
+    /// Call this from the application's normal event loop after each poll.
+    /// It returns None until the deadline, and never queues a second query
+    /// while the previous request is still awaiting its response.
+    pub fn poll_periodic_clock(
+        &mut self,
+        queue_id: u64,
+    ) -> Result<Option<ResponseWaiter>, SessionError> {
+        self.ensure_connected()?;
+        if !self.is_clock_calibrated() {
+            return Ok(None);
+        }
+        if self.periodic_clock_in_flight {
+            return Ok(None);
+        }
+        let due_at = match self.next_periodic_clock_at {
+            Some(due_at) => due_at,
+            None => return Ok(None),
+        };
+        if self.now() < due_at {
+            return Ok(None);
+        }
+        self.request_periodic_clock(queue_id).map(Some)
+    }
+
+    /// Next periodic query deadline in this session's monotonic time base.
+    pub fn next_periodic_clock_at(&self) -> Option<f64> {
+        self.next_periodic_clock_at
     }
 
     /// Whether a periodic get_clock request is awaiting its response.
