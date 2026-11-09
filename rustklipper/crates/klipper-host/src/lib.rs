@@ -9,7 +9,7 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
-use klipper_config::ConfigDocument;
+use klipper_config::{ConfigDocument, ConfigFileLoader, ConfigLoadError};
 use klipper_gcode::{DispatchOutcome, GCodeDispatcher};
 use thiserror::Error;
 
@@ -97,6 +97,17 @@ impl Printer {
             .read()
             .expect("printer state message lock poisoned")
             .clone()
+    }
+
+    /// Load a Klipper config file, recursively expand its includes, and
+    /// install the resulting host configuration.
+    pub fn load_config_file(
+        &self,
+        path: impl AsRef<std::path::Path>,
+    ) -> Result<(), ConfigLoadError> {
+        let config = ConfigFileLoader::load(path)?;
+        self.install_config(config);
+        Ok(())
     }
 
     /// Install a parsed host configuration and enter the configuring state.
@@ -326,6 +337,26 @@ mod tests {
             printer.config().unwrap().section("printer").unwrap().get("kinematics"),
             Some("cartesian")
         );
+    }
+
+
+    #[test]
+    fn config_file_loading_uses_recursive_config_loader() {
+        let path = std::env::temp_dir().join(format!(
+            "klipper-host-config-{}.cfg",
+            std::process::id()
+        ));
+        std::fs::write(&path, "[printer]\\nkinematics: cartesian\\n").unwrap();
+
+        let printer = Printer::new();
+        printer.load_config_file(&path).unwrap();
+        assert_eq!(printer.state(), PrinterState::Configuring);
+        assert_eq!(
+            printer.config().unwrap().section("printer").unwrap().get("kinematics"),
+            Some("cartesian")
+        );
+
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
