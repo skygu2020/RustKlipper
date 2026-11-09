@@ -1373,8 +1373,7 @@ mod tests {
     fn config_reinstall_clears_component_gcode_handlers() {
         let printer = Printer::new();
         {
-            let dispatcher = printer.gcode_dispatcher();
-            let mut dispatcher = dispatcher.lock().unwrap();
+            let mut dispatcher = printer.gcode_dispatcher();
             dispatcher
                 .register_command("M105", true, None, |_| Ok(Vec::new()))
                 .unwrap();
@@ -1386,14 +1385,11 @@ mod tests {
         }
         assert!(printer
             .gcode_dispatcher()
-            .lock()
-            .unwrap()
             .registered_commands()
             .contains(&"M105".to_owned()));
 
         printer.install_config(ConfigDocument::parse("[printer]\n").unwrap());
         let dispatcher = printer.gcode_dispatcher();
-        let dispatcher = dispatcher.lock().unwrap();
         assert!(dispatcher.registered_commands().is_empty());
         assert!(!dispatcher.is_ready());
     }
