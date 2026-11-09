@@ -3,11 +3,13 @@ pub mod ack;
 pub mod response;
 pub mod retry;
 pub mod scheduler;
+pub mod clock;
 
 pub use ack::{AckEvent, AckTracker};
 pub use response::{Response, ResponseRouter, ResponseWaiter, WaitError};
 pub use retry::RetryPolicy;
 pub use scheduler::{CommandScheduler, ScheduleError, ScheduledCommand, ScheduledFrame, BACKGROUND_PRIORITY_CLOCK};
+pub use clock::{ClockEstimate, ClockSync, ClockSyncError, ClockUpdate, UartTiming};
 
 
 use std::io::{Read, Write};
