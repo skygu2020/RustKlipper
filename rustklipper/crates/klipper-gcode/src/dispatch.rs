@@ -30,6 +30,11 @@ struct Registration {
     help: Option<String>,
 }
 
+struct MuxRegistration {
+    key: String,
+    values: HashMap<Option<String>, Handler>,
+}
+
 /// Result of processing one input line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DispatchOutcome {
@@ -48,6 +53,7 @@ pub struct DispatchOutcome {
 pub struct GCodeDispatcher {
     ready_handlers: HashMap<String, Registration>,
     base_handlers: HashMap<String, Registration>,
+    mux_commands: HashMap<String, MuxRegistration>,
     ready: bool,
     state_message: String,
 }
@@ -124,11 +130,62 @@ impl GCodeDispatcher {
         Ok(())
     }
 
+    /// Register one value handler for a Klipper-style mux command.
+    ///
+    /// Multiple registrations for the same command must use the same key and
+    /// distinct values. A `None` value registers the optional/default branch.
+    pub fn register_mux_command<F>(
+        &mut self,
+        command: &str,
+        key: &str,
+        value: Option<&str>,
+        help: Option<&str>,
+        handler: F,
+    ) -> Result<(), GCodeError>
+    where
+        F: Fn(&GCodeCommand) -> Result<Vec<DispatchEvent>, GCodeError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        let name = command.trim();
+        if let Some(existing) = self.mux_commands.get(name) {
+            if existing.key != key {
+                return Err(GCodeError::MalformedCommand {
+                    line: format!(
+                        "mux command {name} may have only one key ({}), not {key}",
+                        existing.key
+                    ),
+                });
+            }
+        } else {
+            self.register_command(name, false, help, |_| Ok(Vec::new()))?;
+            self.mux_commands.insert(
+                name.to_owned(),
+                MuxRegistration {
+                    key: key.to_owned(),
+                    values: HashMap::new(),
+                },
+            );
+        }
+
+        let mux = self.mux_commands.get_mut(name).expect("mux inserted above");
+        let value = value.map(str::to_owned);
+        if mux.values.contains_key(&value) {
+            return Err(GCodeError::MalformedCommand {
+                line: format!("mux command {name} {key} {value:?} already registered"),
+            });
+        }
+        mux.values.insert(value, Arc::new(handler));
+        Ok(())
+    }
+
     /// Remove a command from both readiness tables.
     pub fn unregister_command(&mut self, command: &str) -> bool {
         let name = command.trim();
         let removed = self.ready_handlers.remove(name).is_some();
         self.base_handlers.remove(name);
+        self.mux_commands.remove(name);
         removed
     }
 
@@ -189,13 +246,16 @@ impl GCodeDispatcher {
         let mut handler_found = registration.is_some();
         let mut events = Vec::new();
 
-        if let Some(registration) = registration {
-            match (registration.handler)(&command) {
+        match (registration, self.mux_commands.get(command.command())) {
+            (Some(_), Some(mux)) => match dispatch_mux(mux, &command) {
                 Ok(mut responses) => events.append(&mut responses),
                 Err(error) => events.push(DispatchEvent::Error(error.to_string())),
-            }
-        } else {
-            match command.command() {
+            },
+            (Some(registration), None) => match (registration.handler)(&command) {
+                Ok(mut responses) => events.append(&mut responses),
+                Err(error) => events.push(DispatchEvent::Error(error.to_string())),
+            },
+            (None, _) => match command.command() {
                 // Klipper intentionally handles these two requests before the
                 // printer is ready; M105 includes its ACK payload.
                 "M105" => {
@@ -212,7 +272,7 @@ impl GCodeDispatcher {
                 _ => events.push(DispatchEvent::Info(format!(
                     "Unknown command:\"{}\"", command.command()
                 ))),
-            }
+            },
         }
 
         if !need_ack {
@@ -237,6 +297,52 @@ impl GCodeDispatcher {
             &self.base_handlers
         }
     }
+}
+
+
+fn dispatch_mux(
+    mux: &MuxRegistration,
+    command: &GCodeCommand,
+) -> Result<Vec<DispatchEvent>, GCodeError> {
+    let value = match command.get(&mux.key) {
+        Some(value) => Some(value.to_owned()),
+        None if mux.values.contains_key(&None) => None,
+        None => {
+            return Err(GCodeError::MissingParameter {
+                line: command.commandline().to_owned(),
+                parameter: mux.key.clone(),
+            });
+        }
+    };
+    if let Some(handler) = mux.values.get(&value) {
+        return handler(command);
+    }
+
+    let value_text = value.as_deref().unwrap_or("");
+    let mut hint = String::new();
+    let suggestion = mux
+        .values
+        .keys()
+        .filter_map(Option::as_deref)
+        .find(|candidate| !value_text.is_empty() && candidate.contains(value_text));
+    if let Some(suggestion) = suggestion {
+        hint = format!(". Did you mean '{suggestion}'?");
+    } else {
+        let options: Vec<_> = mux
+            .values
+            .keys()
+            .filter_map(Option::as_deref)
+            .map(|option| format!("'{option}'"))
+            .collect();
+        if !options.is_empty() {
+            hint = format!(". Options: {}", options.join(", "));
+        }
+    }
+    Err(GCodeError::InvalidMuxValue {
+        key: mux.key.clone(),
+        value: value_text.to_owned(),
+        hint,
+    })
 }
 
 fn valid_command_name(name: &str) -> bool {
