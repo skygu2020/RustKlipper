@@ -6,7 +6,7 @@ use serde_json::Value;
 use klipper_protocol::{encode_identify_request, DictionaryError, Frame, IdentifyAssembler, IdentifyChunk, IdentifyDictionary, IDENTIFY_CHUNK_SIZE, MESSAGE_MAX};
 
 use crate::{
-    AckEvent, AckTracker, CommandScheduler, ConfigAction, Response, ResponseRouter, ResponseWaiter, ScheduleError, ScheduledCommand, TransportError, UsbSerialTransport,
+    AckEvent, AckTracker, CommandScheduler, ConfigAction, ConfigError, ConfigResponse, McuConfigHandshake, Response, ResponseRouter, ResponseWaiter, ScheduleError, ScheduledCommand, TransportError, UsbSerialTransport,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -27,6 +27,10 @@ pub enum SessionError {
     InvalidIdentifyChunkSize,
     #[error(transparent)]
     Dictionary(#[from] DictionaryError),
+    #[error(transparent)]
+    Config(#[from] ConfigError),
+    #[error("expected an unscoped config response, received {name} with oid {oid:?}")]
+    UnexpectedConfigResponse { name: String, oid: Option<u32> },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -191,6 +195,51 @@ impl ReliableSerialSession {
         )?;
         self.scheduler.promote_ready(0);
         Ok(waiter)
+    }
+
+    /// Start the first half of the two-query MCU configuration handshake.
+    pub fn begin_config_handshake(
+        &mut self,
+        queue_id: u64,
+    ) -> Result<ResponseWaiter, SessionError> {
+        self.request_get_config(queue_id)
+    }
+
+    /// Consume the initial response, queue config/restart/init commands, then
+    /// queue the final get_config query on the same FIFO scheduler queue.
+    pub fn advance_config_handshake(
+        &mut self,
+        queue_id: u64,
+        handshake: &mut McuConfigHandshake,
+        initial_response: Response,
+        firmware_restart: bool,
+    ) -> Result<ResponseWaiter, SessionError> {
+        self.ensure_connected()?;
+        let config = Self::parse_config_response(initial_response)?;
+        let action = handshake.handle_initial_response(config, firmware_restart)?;
+        self.enqueue_config_action(queue_id, &action)?;
+        self.request_get_config(queue_id)
+    }
+
+    /// Validate the final response and return the usable move-slot count.
+    pub fn complete_config_handshake(
+        &self,
+        handshake: &mut McuConfigHandshake,
+        final_response: Response,
+    ) -> Result<u16, SessionError> {
+        self.ensure_connected()?;
+        let config = Self::parse_config_response(final_response)?;
+        Ok(handshake.handle_final_response(config)?)
+    }
+
+    fn parse_config_response(response: Response) -> Result<ConfigResponse, SessionError> {
+        if response.name != "config" || response.oid.is_some() {
+            return Err(SessionError::UnexpectedConfigResponse {
+                name: response.name,
+                oid: response.oid,
+            });
+        }
+        Ok(ConfigResponse::from_params(&response.params)?)
     }
 
     /// Queue the command sequence selected by McuConfigPlan. Commands are
