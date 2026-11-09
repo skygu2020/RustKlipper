@@ -67,13 +67,25 @@ mod retransmission_batch_tests {
             Retransmission { sequence: 3, bytes: vec![0x08, 0x13, 0x7e], transmissions: 2, timeout_seconds: 0.5 },
             Retransmission { sequence: 4, bytes: vec![0x09, 0x14, 0x7e], transmissions: 2, timeout_seconds: 0.5 },
         ];
-        let mut batch = Vec::new();
-        batch.push(MESSAGE_SYNC);
-        for retry in &retries {
-            batch.extend_from_slice(&retry.bytes);
-        }
-        assert_eq!(batch, vec![MESSAGE_SYNC, 0x08, 0x13, 0x7e, 0x09, 0x14, 0x7e]);
+        assert_eq!(
+            encode_retransmission_batch(&retries),
+            vec![MESSAGE_SYNC, 0x08, 0x13, 0x7e, 0x09, 0x14, 0x7e]
+        );
+        assert!(encode_retransmission_batch(&[]).is_empty());
     }
+}
+
+fn encode_retransmission_batch(retries: &[Retransmission]) -> Vec<u8> {
+    if retries.is_empty() {
+        return Vec::new();
+    }
+    let capacity = 1 + retries.iter().map(|retry| retry.bytes.len()).sum::<usize>();
+    let mut batch = Vec::with_capacity(capacity);
+    batch.push(MESSAGE_SYNC);
+    for retry in retries {
+        batch.extend_from_slice(&retry.bytes);
+    }
+    batch
 }
 
 pub struct UsbSerialTransport {
@@ -130,14 +142,9 @@ impl UsbSerialTransport {
         &mut self,
         retries: &[Retransmission],
     ) -> Result<(), TransportError> {
-        if retries.is_empty() {
+        let batch = encode_retransmission_batch(retries);
+        if batch.is_empty() {
             return Ok(());
-        }
-        let capacity = 1 + retries.iter().map(|retry| retry.bytes.len()).sum::<usize>();
-        let mut batch = Vec::with_capacity(capacity);
-        batch.push(MESSAGE_SYNC);
-        for retry in retries {
-            batch.extend_from_slice(&retry.bytes);
         }
         self.write_encoded_frame(&batch)
     }
