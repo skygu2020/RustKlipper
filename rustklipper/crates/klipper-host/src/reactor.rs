@@ -340,6 +340,7 @@ impl Reactor {
         if let Some(on_cancel) = on_cancel {
             on_cancel();
         }
+        self.wake.notify_one();
         true
     }
 
@@ -440,6 +441,7 @@ impl Reactor {
                         deadline,
                         id: entry.id,
                     }));
+                    self.wake.notify_one();
                 }
             }
         }
