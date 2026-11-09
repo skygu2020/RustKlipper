@@ -1468,16 +1468,17 @@ impl ReliableSerialSession {
                     return Err(SessionError::Schedule(error));
                 }
             };
-            let write_started_at = self.now();
             if let Err(error) = self.transport.write_scheduled_frame(&frame) {
                 self.disconnected = true;
                 return Err(SessionError::Transport(error));
             }
-            let sent_at = write_started_at;
+            // serialqueue.c assigns one eventtime to every frame accumulated
+            // in the same command_event callback.
+            let sent_at = eventtime;
             let pending_after = self.transport.bytes_to_write()? as usize;
             let observed_at = self.now();
             if let Some(timing) = &mut self.uart_timing {
-                timing.reserve_transmission(write_started_at, 0, frame.bytes.len());
+                timing.reserve_transmission(eventtime, pending_bytes, frame.bytes.len());
                 timing.observe_pending(observed_at, pending_after);
             }
             if let Err(error) = self.scheduler.mark_frame_sent(&frame, sent_at) {
