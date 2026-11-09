@@ -1444,6 +1444,26 @@ mod tests {
     }
 
     #[test]
+    fn script_observes_commands_unregistered_by_prior_handlers() {
+        let printer = Arc::new(Printer::new());
+        printer
+            .register_gcode_command("M998", true, None, |_| Ok(Vec::new()))
+            .unwrap();
+        let unregistering_printer = printer.clone();
+        printer
+            .register_gcode_command("M999", true, None, move |_| {
+                unregistering_printer.unregister_gcode_command("M998");
+                Ok(Vec::new())
+            })
+            .unwrap();
+
+        let outcomes = printer.process_gcode_script("M999\nM998");
+        assert_eq!(outcomes.len(), 2);
+        assert!(outcomes[0].handler_found);
+        assert!(!outcomes[1].handler_found);
+    }
+
+    #[test]
     fn script_observes_state_changes_between_command_handlers() {
         let printer = Arc::new(Printer::new());
         let shutdown_printer = printer.clone();
