@@ -70,6 +70,11 @@ impl GCodeDispatcher {
         self.ready
     }
 
+    /// Clear all registered handlers and return to the initial dispatcher state.
+    pub fn reset(&mut self) {
+        *self = Self::new();
+    }
+
     pub fn set_ready(&mut self) {
         self.ready = true;
     }
@@ -362,6 +367,26 @@ fn valid_command_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reset_clears_handlers_muxes_and_ready_state() {
+        let mut dispatcher = GCodeDispatcher::new();
+        dispatcher
+            .register_command("M105", true, None, |_| Ok(Vec::new()))
+            .unwrap();
+        dispatcher
+            .register_mux_command("SET_HEATER", "HEATER", Some("hotend"), None, |_| {
+                Ok(Vec::new())
+            })
+            .unwrap();
+        dispatcher.set_ready();
+        dispatcher.reset();
+
+        assert!(!dispatcher.is_ready());
+        assert!(dispatcher.registered_commands().is_empty());
+        assert!(dispatcher.command_help().is_empty());
+        assert!(!dispatcher.process_line("M105", true).unwrap().handler_found);
+    }
 
     #[test]
     fn only_base_commands_are_available_before_ready() {
