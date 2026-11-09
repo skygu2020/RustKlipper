@@ -1224,6 +1224,23 @@ mod tests {
     }
 
     #[test]
+    fn unloading_component_removes_its_section_from_validation_allowlist() {
+        let printer = Printer::new();
+        printer.install_config(ConfigDocument::parse("[component]\n").unwrap());
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register("component", |_, _| Ok(()))
+            .unwrap();
+        printer.load_components(&registry).unwrap();
+        assert!(printer.validate_config().is_ok());
+        assert!(printer.unload_component("component"));
+        assert!(matches!(
+            printer.validate_config(),
+            Err(ConfigValidationError::UnknownSection { .. })
+        ));
+    }
+
+    #[test]
     fn loaded_component_without_registered_object_validates_its_section() {
         let printer = Printer::new();
         printer.install_config(ConfigDocument::parse("[component]\n").unwrap());
