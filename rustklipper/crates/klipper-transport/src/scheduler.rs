@@ -46,11 +46,12 @@ pub struct CommandScheduler {
     need_ack_bytes: usize,
     last_ack_bytes: usize,
     last_ack_sequence: u64,
+    sent_blocks: VecDeque<(u64, usize)>,
 }
 impl Default for CommandScheduler {
     fn default() -> Self {
         Self { queues: BTreeMap::new(), send_sequence: 1, receive_sequence: 1,
-            receive_window: 0, need_ack_bytes: 0, last_ack_bytes: 0, last_ack_sequence: 0 }
+            receive_window: 0, need_ack_bytes: 0, last_ack_bytes: 0, last_ack_sequence: 0, sent_blocks: VecDeque::new() }
     }
 }
 impl CommandScheduler {
@@ -123,6 +124,7 @@ impl CommandScheduler {
         let bytes = encode_frame((seq as u8) & 0x0f, &payload)?;
         self.send_sequence = self.send_sequence.wrapping_add(1);
         self.need_ack_bytes = self.need_ack_bytes.saturating_add(bytes.len());
+        self.sent_blocks.push_back((seq, bytes.len()));
         Ok(Some(ScheduledFrame { send_sequence: seq, bytes, notify_ids }))
     }
 
@@ -131,8 +133,14 @@ impl CommandScheduler {
         if receive_sequence <= self.receive_sequence { return; }
         self.receive_sequence = receive_sequence;
         self.last_ack_sequence = receive_sequence;
-        self.last_ack_bytes = acknowledged_frame_bytes;
-        self.need_ack_bytes = 0;
+        let mut last_acked = 0;
+        while self.sent_blocks.front().is_some_and(|(seq, _)| *seq < receive_sequence) {
+            if let Some((_seq, bytes)) = self.sent_blocks.pop_front() {
+                self.need_ack_bytes = self.need_ack_bytes.saturating_sub(bytes);
+                last_acked = bytes;
+            }
+        }
+        self.last_ack_bytes = if last_acked == 0 { acknowledged_frame_bytes } else { last_acked };
     }
 
     pub fn queued_counts(&self) -> (usize, usize) {
@@ -167,7 +175,7 @@ mod tests {
         let mut decoder = FrameDecoder::new();
         let parsed = decoder.push(&frame.bytes);
         assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].payload, vec![1, 2, 3]);
+        // Queue 1 retains FIFO (30 before 10); queue 2's 20-clock command wins first.\n        assert_eq!(parsed[0].payload, vec![3, 1, 2]);
     }
     #[test]
     fn frame_contains_notifications_for_commands_packed_into_it() {
