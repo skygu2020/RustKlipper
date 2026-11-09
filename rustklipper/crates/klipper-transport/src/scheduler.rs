@@ -291,6 +291,12 @@ impl CommandScheduler {
     pub fn retransmit_state(&self) -> &RetransmitState { &self.retransmit }
     pub(crate) fn retransmit_state_mut(&mut self) -> &mut RetransmitState { &mut self.retransmit }
 
+    /// Total bytes currently eligible for frame construction.
+    pub fn ready_bytes(&self) -> usize {
+        self.queues.values().flat_map(|queue| queue.ready.iter())
+            .map(|command| command.bytes.len()).sum()
+    }
+
     pub fn queued_counts(&self) -> (usize, usize) {
         self.queues.values().fold((0, 0), |(up, ready), q| {
             (up + q.upcoming.len(), ready + q.ready.len())
