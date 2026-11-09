@@ -315,7 +315,7 @@ mod tests {
         let req_clock = 10_000_000_000;
         let min_clock = req_clock - (1u64 << 31) - 1;
         scheduler.enqueue(1, ScheduledCommand::new(vec![0x11], min_clock, req_clock)).unwrap();
-        assert_eq!(scheduler.promote_ready(min_clock), None);
+        assert_eq!(scheduler.promote_ready(min_clock), Some(min_clock + 1));
         assert_eq!(scheduler.queued_counts(), (1, 0));
         assert_eq!(scheduler.promote_ready(min_clock + 1), None);
         assert_eq!(scheduler.queued_counts(), (0, 1));
