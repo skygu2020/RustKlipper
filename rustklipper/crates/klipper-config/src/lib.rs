@@ -522,6 +522,9 @@ pub struct ConfigUsageTransaction<'a> {
     tracker: &'a ConfigUsageTracker,
     thread_id: std::thread::ThreadId,
     completed: bool,
+    // Reads are attributed by the creating thread; moving this guard would
+    // silently make subsequent reads bypass the transaction.
+    _not_send: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 
 impl ConfigUsageTransaction<'_> {
@@ -854,6 +857,7 @@ impl ConfigUsageTracker {
             tracker: self,
             thread_id,
             completed: false,
+            _not_send: std::marker::PhantomData,
         }
     }
 
