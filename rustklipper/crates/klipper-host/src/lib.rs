@@ -1462,6 +1462,26 @@ mod tests {
     }
 
     #[test]
+    fn script_observes_commands_registered_by_prior_handlers() {
+        let printer = Arc::new(Printer::new());
+        let registering_printer = printer.clone();
+        printer
+            .register_gcode_command("M999", true, None, move |_| {
+                registering_printer
+                    .register_gcode_command("M998", true, None, |_| Ok(Vec::new()))
+                    .map_err(|error| GCodeError::MalformedCommand {
+                        line: error.to_string(),
+                    })?;
+                Ok(Vec::new())
+            })
+            .unwrap();
+
+        let outcomes = printer.process_gcode_script("M999\nM998");
+        assert_eq!(outcomes.len(), 2);
+        assert!(outcomes.iter().all(|outcome| outcome.handler_found));
+    }
+
+    #[test]
     fn gcode_handler_can_register_another_command_without_deadlock() {
         let printer = Arc::new(Printer::new());
         let handler_printer = printer.clone();
