@@ -60,3 +60,18 @@ but the Rust host will not implement those paths.
   reader or a clock-aware scheduler. In particular, the transport does not
   yet implement retransmission of lost wire frames, RTT/RTO estimation,
   receive-window limits, command batching, or minclock/reqclock scheduling.
+
+
+### Clock-aware command scheduler (first pass)
+
+- `scheduler::CommandScheduler` keeps per-command-queue FIFO order, holds
+  upcoming commands until `min_clock`, and promotes eligible commands.
+- Ready queue heads are selected by lowest `req_clock`, while preserving FIFO
+  within each queue; payloads are packed up to the MCU frame size.
+- Tracks extended send/receive sequence numbers, outstanding frame bytes,
+  cumulative ACK retirement, receive-window backpressure, and notify IDs
+  attached to scheduled frames.
+- This is deliberately a scheduling core, not yet a drop-in serialqueue:
+  it does not own a background I/O thread, clock-estimate conversion, UART
+  bit-time calculation, deadline wakeups, retransmission/RTO, NAK fast
+  retransmit, or the complete receiver notification queue.
