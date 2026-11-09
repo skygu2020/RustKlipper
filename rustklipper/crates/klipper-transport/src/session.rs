@@ -23,6 +23,8 @@ pub enum SessionError {
     CommandAlreadyNotified,
     #[error("identify requests must use the same scheduler queue")]
     IdentifyQueueMismatch,
+    #[error("identify chunk size must be between 1 and 255 bytes")]
+    InvalidIdentifyChunkSize,
     #[error(transparent)]
     Dictionary(#[from] DictionaryError),
 }
@@ -75,6 +77,7 @@ pub struct ReliableSerialSession {
     dictionary: Option<IdentifyDictionary>,
     identify_assembler: IdentifyAssembler,
     identify_queue_id: Option<u64>,
+    identify_chunk_count: Option<u8>,
     started: Instant,
     disconnected: bool,
 }
@@ -97,6 +100,7 @@ impl ReliableSerialSession {
             dictionary: None,
             identify_assembler: IdentifyAssembler::new(),
             identify_queue_id: None,
+            identify_chunk_count: None,
             started: Instant::now(),
             disconnected: false,
         }
@@ -139,7 +143,8 @@ impl ReliableSerialSession {
             // Continue the bootstrap exchange automatically on the queue that
             // carried the initial identify request.
             if let Some(queue_id) = self.identify_queue_id {
-                let bytes = encode_identify_request(next_offset, 40);
+                let count = self.identify_chunk_count.unwrap_or(40);
+                let bytes = encode_identify_request(next_offset, count);
                 self.scheduler.enqueue(queue_id, ScheduledCommand::new(
                     bytes, 0, crate::BACKGROUND_PRIORITY_CLOCK,
                 ))?;
@@ -174,10 +179,15 @@ impl ReliableSerialSession {
                 reason: "dictionary is already installed".into(),
             }));
         }
+        if count == 0 { return Err(SessionError::InvalidIdentifyChunkSize); }
         if self.identify_queue_id.is_some_and(|existing| existing != queue_id) {
             return Err(SessionError::IdentifyQueueMismatch);
         }
+        if self.identify_chunk_count.is_some_and(|existing| existing != count) {
+            return Err(SessionError::InvalidIdentifyChunkSize);
+        }
         self.identify_queue_id = Some(queue_id);
+        self.identify_chunk_count = Some(count);
         let bytes = encode_identify_request(offset, count);
         self.scheduler.enqueue(queue_id, ScheduledCommand::new(
             bytes, 0, crate::BACKGROUND_PRIORITY_CLOCK,
