@@ -167,7 +167,7 @@ impl McuRegistry {
     }
 
     pub fn is_disconnected(&self, name: &str) -> Option<bool> {
-        self.with_session(name, ReliableSerialSession::is_disconnected)
+        self.with_session(name, |session| session.is_disconnected())
     }
 
     /// Poll every registered MCU once, preserving each session's event order.
