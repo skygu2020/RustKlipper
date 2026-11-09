@@ -6,7 +6,7 @@ use serde_json::Value;
 use klipper_protocol::{encode_identify_request, DictionaryError, Frame, IdentifyAssembler, IdentifyChunk, IdentifyDictionary, IDENTIFY_CHUNK_SIZE, MESSAGE_MAX, MESSAGE_MIN};
 
 use crate::{
-    AckEvent, AckTracker, CommandScheduler, ConfigAction, ConfigError, ConfigResponse, McuConfigHandshake, Response, ResponseRouter, ResponseWaiter, ScheduleError, ScheduledCommand, TransportError, UsbSerialTransport,
+    AckEvent, AckRetryDecision, AckTracker, CommandScheduler, ConfigAction, ConfigError, ConfigResponse, McuConfigHandshake, Response, ResponseRouter, ResponseWaiter, RetryTransaction, ScheduleError, ScheduledCommand, TransportError, UsbSerialTransport,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -41,6 +41,7 @@ pub enum SessionEvent {
     },
     AckedNotify { id: u64, sent_time: f64, receive_time: f64 },
     ResponseRouted { name: String, oid: Option<u32>, matched: bool },
+    RetryExhausted { name: String, oid: Option<u32> },
     Output { message: String, receive_time: f64 },
     Sent {
         sequence: u64,
@@ -67,14 +68,26 @@ pub enum IdentifyProgress {
 /// A transport or protocol error is terminal for this session. Re-open the
 /// serial device and perform MCU identify/configuration again before reuse.
 #[derive(Debug, Clone)]
-struct PendingResponseSend { name: String, oid: Option<u32> }
+struct PendingResponseSend { transaction_id: u64, name: String, oid: Option<u32> }
+
+#[derive(Debug, Clone)]
+struct PendingRetryRequest {
+    queue_id: u64,
+    command: ScheduledCommand,
+    name: String,
+    oid: Option<u32>,
+    transaction: RetryTransaction,
+}
 
 pub struct ReliableSerialSession {
     transport: UsbSerialTransport,
     scheduler: CommandScheduler,
     ack_tracker: AckTracker,
     response_router: ResponseRouter,
-    response_requests: HashMap<u64, (String, Option<u32>)>,
+    response_requests: HashMap<u64, u64>,
+    retry_attempts: HashMap<u64, u64>,
+    retry_transactions: HashMap<u64, PendingRetryRequest>,
+    next_retry_transaction_id: u64,
     response_ack_receivers: HashMap<u64, std::sync::mpsc::Receiver<AckEvent>>,
     sent_response_requests: VecDeque<PendingResponseSend>,
     next_response_notify_id: u64,
@@ -107,6 +120,9 @@ impl ReliableSerialSession {
             ack_tracker: AckTracker::new(),
             response_router: ResponseRouter::new(),
             response_requests: HashMap::new(),
+            retry_attempts: HashMap::new(),
+            retry_transactions: HashMap::new(),
+            next_retry_transaction_id: 1,
             response_ack_receivers: HashMap::new(),
             sent_response_requests: VecDeque::new(),
             next_response_notify_id: u64::MAX,
@@ -322,7 +338,35 @@ impl ReliableSerialSession {
         if command.notify_id.is_some() {
             return Err(SessionError::CommandAlreadyNotified);
         }
+        let transaction_id = self.next_retry_transaction_id;
+        self.next_retry_transaction_id = self.next_retry_transaction_id.wrapping_add(1).max(1);
+        while self.retry_transactions.contains_key(&self.next_retry_transaction_id) {
+            self.next_retry_transaction_id = self.next_retry_transaction_id.wrapping_add(1).max(1);
+        }
         let name = response_name.into();
+        let template = command.clone();
+        command.notify_id = None;
+        self.retry_transactions.insert(transaction_id, PendingRetryRequest {
+            queue_id,
+            command: template,
+            name,
+            oid,
+            transaction: RetryTransaction::default(),
+        });
+        if let Err(error) = self.enqueue_retry_attempt(transaction_id, command) {
+            self.retry_transactions.remove(&transaction_id);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Enqueue one attempt for a logical response transaction. Each attempt
+    /// receives a new ACK notify ID; command bytes and clock constraints persist.
+    fn enqueue_retry_attempt(
+        &mut self,
+        transaction_id: u64,
+        mut command: ScheduledCommand,
+    ) -> Result<(), SessionError> {
         let mut candidate = self.next_response_notify_id;
         loop {
             if !self.ack_tracker.contains_notify(candidate)
@@ -333,18 +377,19 @@ impl ReliableSerialSession {
             candidate = candidate.wrapping_sub(1);
         }
         self.next_response_notify_id = candidate.wrapping_sub(1);
-        // Reserve the ID in AckTracker too, preventing collisions with public
-        // notifications and ensuring it is bound only after a successful write.
         let ack_receiver = self.ack_tracker.register_notify(candidate)
             .ok_or(SessionError::Notification(candidate))?;
         self.response_ack_receivers.insert(candidate, ack_receiver);
         command.notify_id = Some(candidate);
+        let queue_id = self.retry_transactions.get(&transaction_id)
+            .ok_or(SessionError::Notification(candidate))?.queue_id;
         if let Err(error) = self.scheduler.enqueue(queue_id, command) {
             self.ack_tracker.cancel_notify(candidate);
             self.response_ack_receivers.remove(&candidate);
             return Err(SessionError::Schedule(error));
         }
-        self.response_requests.insert(candidate, (name, oid));
+        self.response_requests.insert(candidate, transaction_id);
+        self.retry_attempts.insert(candidate, transaction_id);
         Ok(())
     }
 
@@ -370,10 +415,16 @@ impl ReliableSerialSession {
         let matched = if let Some(index) = pending_index {
             let pending = self.sent_response_requests.remove(index)
                 .expect("located response request must exist");
-            self.response_router.dispatch(Response {
+            let delivered = self.response_router.dispatch(Response {
                 name: name.clone(), oid, params: params.clone(),
                 sent_time, receive_time,
-            })
+            });
+            if delivered {
+                if let Some(mut transaction) = self.retry_transactions.remove(&pending.transaction_id) {
+                    transaction.transaction.response_received();
+                }
+            }
+            delivered
         } else { false };
         events.push(SessionEvent::DecodedMessage { name: name.clone(), params, receive_time });
         events.push(SessionEvent::ResponseRouted { name, oid, matched });
@@ -387,6 +438,16 @@ impl ReliableSerialSession {
         // response. Once sent, the entry moves to
         // sent_response_requests and can be pruned normally.
         let router = self.response_router.clone();
+        let abandoned: Vec<u64> = self.retry_transactions.iter()
+            .filter_map(|(id, pending)| {
+                (router.pending_count(&pending.name, pending.oid) == 0).then_some(*id)
+            }).collect();
+        for id in abandoned {
+            self.retry_transactions.remove(&id);
+            self.sent_response_requests.retain(|pending| pending.transaction_id != id);
+            self.response_requests.retain(|_, transaction_id| *transaction_id != id);
+            self.retry_attempts.retain(|_, transaction_id| *transaction_id != id);
+        }
         self.sent_response_requests.retain(|pending| {
             router.pending_count(&pending.name, pending.oid) > 0
         });
@@ -477,9 +538,19 @@ impl ReliableSerialSession {
                 result.receive_sequence, result.has_payload, result.last_receive_sent_time, eventtime,
             ) {
                 if let Some(receiver) = self.response_ack_receivers.remove(&id) {
-                    // Consume the same event through the waiter channel as well;
-                    // retaining the receiver prevents a detached internal notify.
                     let _ = receiver.try_recv();
+                }
+                if let Some(transaction_id) = self.retry_attempts.remove(&id) {
+                    let exhausted = self.retry_transactions.get_mut(&transaction_id)
+                        .and_then(|pending| match pending.transaction.attempt_acked(eventtime) {
+                            AckRetryDecision::Exhausted => Some((pending.name.clone(), pending.oid)),
+                            AckRetryDecision::RetryAfter(_) | AckRetryDecision::Complete => None,
+                        });
+                    if let Some((name, oid)) = exhausted {
+                        self.retry_transactions.remove(&transaction_id);
+                        self.sent_response_requests.retain(|entry| entry.transaction_id != transaction_id);
+                        events.push(SessionEvent::RetryExhausted { name, oid });
+                    }
                 }
                 events.push(SessionEvent::AckedNotify {
                     id, sent_time: ack.sent_time, receive_time: ack.receive_time,
@@ -523,6 +594,23 @@ impl ReliableSerialSession {
         }
 
         let now = self.now();
+        // Application-level retries are distinct from frame retransmissions:
+        // after an ACK, wait 10/20/40/80/160ms, then enqueue a fresh frame.
+        let due: Vec<u64> = self.retry_transactions.iter_mut()
+            .filter_map(|(id, pending)| pending.transaction.take_due_retry(now).then_some(*id))
+            .collect();
+        for transaction_id in due {
+            let mut command = match self.retry_transactions.get(&transaction_id) {
+                Some(pending) => pending.command.clone(),
+                None => continue,
+            };
+            // The first attempt could only have been sent after min_clock was
+            // reached. For later attempts that eligibility has already passed.
+            command.min_clock = 0;
+            self.enqueue_retry_attempt(transaction_id, command)?;
+            self.scheduler.promote_ready(0);
+        }
+
         let timeout_retries = match self.scheduler.poll_retransmissions(now) {
             Ok(retries) => retries,
             Err(error) => {
@@ -555,8 +643,18 @@ impl ReliableSerialSession {
                     self.disconnected = true;
                     return Err(SessionError::Notification(*id));
                 }
-                if let Some((name, oid)) = self.response_requests.remove(id) {
-                    self.sent_response_requests.push_back(PendingResponseSend { name, oid });
+                if let Some(transaction_id) = self.response_requests.remove(id) {
+                    if let Some(pending) = self.retry_transactions.get(&transaction_id) {
+                        if !self.sent_response_requests.iter()
+                            .any(|entry| entry.transaction_id == transaction_id)
+                        {
+                            self.sent_response_requests.push_back(PendingResponseSend {
+                                transaction_id,
+                                name: pending.name.clone(),
+                                oid: pending.oid,
+                            });
+                        }
+                    }
                 }
             }
             events.push(SessionEvent::Sent {
