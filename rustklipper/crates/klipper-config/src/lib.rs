@@ -147,6 +147,8 @@ impl ConfigDocument {
                     source: source.clone(), line: line_no,
                 });
             };
+            let name = &option_text[..delimiter];
+            let value = &option_text[delimiter + 1..];
             let name = name.trim();
             if name.is_empty() {
                 return Err(ConfigParseError::EmptyOption {
