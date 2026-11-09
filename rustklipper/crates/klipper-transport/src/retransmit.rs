@@ -185,15 +185,15 @@ impl RetransmitState {
             self.last_ack_seq = receive_seq;
             return Ok(Vec::new());
         }
-        if receive_seq <= self.ignore_nak_sequence || self.outstanding.is_empty() {
+        if receive_seq <= self.ignore_nak_sequenceuence || self.outstanding.is_empty() {
             return Ok(Vec::new());
         }
         // State update performed by the retransmit timer after a NAK.
-        self.ignore_nak_seq = receive_seq;
-        if receive_seq < self.retransmit_sequence {
-            self.ignore_nak_seq = self.retransmit_seq;
+        self.ignore_nak_sequence = receive_seq;
+        if receive_seq < self.retransmit_sequenceuence {
+            self.ignore_nak_sequence = self.retransmit_sequence;
         }
-        self.retransmit_seq = send_seq;
+        self.retransmit_sequence = send_seq;
         self.rtt_sample_seq = None;
         Ok(self.retransmit_all(now))
     }
@@ -243,9 +243,9 @@ impl RetransmitState {
             return Ok(Vec::new());
         }
         self.rto = (self.rto * 2.0).min(MAX_RTO_SECONDS);
-        self.ignore_nak_seq = self.outstanding.back()
-            .map_or(self.ignore_nak_seq, |entry| entry.frame.sequence.saturating_add(1));
-        self.retransmit_seq = self.ignore_nak_seq;
+        self.ignore_nak_sequence = self.outstanding.back()
+            .map_or(self.ignore_nak_sequence, |entry| entry.frame.sequence.saturating_add(1));
+        self.retransmit_sequence = self.ignore_nak_sequence;
         self.rtt_sample_seq = None;
         Ok(self.retransmit_all(now))
     }
