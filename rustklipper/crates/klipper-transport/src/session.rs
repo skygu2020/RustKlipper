@@ -1330,6 +1330,16 @@ impl ReliableSerialSession {
         self.apply_clock_update(update, self.now())
     }
 
+    fn pending_output_bytes(&mut self) -> Result<usize, SessionError> {
+        match self.transport.bytes_to_write() {
+            Ok(bytes) => Ok(bytes as usize),
+            Err(error) => {
+                self.disconnected = true;
+                Err(SessionError::Transport(error))
+            }
+        }
+    }
+
     fn write_retry_batch(
         &mut self,
         retries: Vec<crate::Retransmission>,
@@ -1345,7 +1355,7 @@ impl ReliableSerialSession {
             return Err(SessionError::Transport(error));
         }
         let sent_at = write_started_at;
-        let pending_after = self.transport.bytes_to_write()? as usize;
+        let pending_after = self.pending_output_bytes()?;
         let observed_at = self.now();
         if let Some(timing) = &mut self.uart_timing {
             timing.reset_idle(write_started_at);
@@ -1617,7 +1627,7 @@ impl ReliableSerialSession {
                     eventtime, idle_time, timing, pending_bytes, frame.bytes.len(),
                 )
             });
-            let pending_after = self.transport.bytes_to_write()? as usize;
+            let pending_after = self.pending_output_bytes()?;
             let observed_at = self.now();
             if let Some(timing) = &mut self.uart_timing {
                 timing.reserve_transmission(eventtime, pending_bytes, frame.bytes.len());
