@@ -2,6 +2,7 @@
 use std::collections::BTreeMap;
 
 use klipper_protocol::IdentifyDictionary;
+use crate::{PinResolver, PinResolverError};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -64,6 +65,8 @@ pub enum ConfigError {
     OidExhausted,
     #[error("OID name already allocated: {0}")]
     DuplicateOidName(String),
+    #[error(transparent)]
+    Pin(#[from] PinResolverError),
     #[error("invalid MCU configuration handshake stage: expected {expected}, got {actual}")]
     UnexpectedHandshakeStage { expected: &'static str, actual: &'static str },
     #[error(transparent)]
@@ -140,6 +143,35 @@ impl McuConfigPlan {
             encode_all(config_lines)?,
             encode_all(restart_lines)?,
             encode_all(init_lines)?,
+        )
+    }
+
+
+    /// Resolve board aliases/reservations in all command groups before encoding
+    /// and CRC calculation, matching Klipper's MCU finalize-config ordering.
+    pub fn from_unresolved_command_lines(
+        dictionary: &IdentifyDictionary,
+        oid_count: u8,
+        config_lines: &[String],
+        restart_lines: &[String],
+        init_lines: &[String],
+        resolver: &mut PinResolver,
+    ) -> Result<Self, ConfigError> {
+        let resolve = |lines: &[String], resolver: &mut PinResolver|
+            -> Result<Vec<String>, ConfigError> {
+            lines.iter()
+                .map(|line| resolver.update_command(line).map_err(ConfigError::from))
+                .collect()
+        };
+        let resolved_config = resolve(config_lines, resolver)?;
+        let resolved_restart = resolve(restart_lines, resolver)?;
+        let resolved_init = resolve(init_lines, resolver)?;
+        Self::from_command_lines(
+            dictionary,
+            oid_count,
+            &resolved_config,
+            &resolved_restart,
+            &resolved_init,
         )
     }
 
@@ -373,6 +405,31 @@ mod tests {
             dictionary.encode_command_line(&restart_lines[0]).unwrap(),
             dictionary.encode_command_line(&init_lines[0]).unwrap(),
         ]);
+    }
+
+
+    #[test]
+    fn unresolved_plan_resolves_aliases_before_crc_and_encoding() {
+        let dictionary = dictionary();
+        let config_lines = vec!["config_pin oid=0 pin=LED value=1".to_owned()];
+        let restart_lines = vec!["restart_pin oid=0 value=0".to_owned()];
+        let init_lines = vec!["init_pin oid=0 value=1".to_owned()];
+        let mut resolver = PinResolver::new(true);
+        resolver.alias_pin("LED", "PA1").unwrap();
+        let plan = McuConfigPlan::from_unresolved_command_lines(
+            &dictionary, 1, &config_lines, &restart_lines, &init_lines, &mut resolver,
+        ).unwrap();
+
+        let mut expected_crc = b"allocate_oids count=1".to_vec();
+        expected_crc.extend_from_slice(b"\nconfig_pin oid=0 pin=PA1 value=1");
+        assert_eq!(plan.crc(), crc32fast::hash(&expected_crc));
+        let action = plan.initial_action(response(0, 0, 0, 32), false).unwrap();
+        let ConfigAction::SendFullConfig { commands, .. } = action else {
+            panic!("expected full configuration");
+        };
+        assert_eq!(commands[1], dictionary.encode_command_line(
+            "config_pin oid=0 pin=PA1 value=1"
+        ).unwrap());
     }
 
     #[test]
