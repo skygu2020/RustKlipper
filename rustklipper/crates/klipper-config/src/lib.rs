@@ -427,6 +427,7 @@ pub enum ConfigValueError {
 #[derive(Debug, Default)]
 pub struct ConfigUsageTracker {
     used: std::sync::Mutex<std::collections::HashSet<(String, String)>>,
+    warnings: std::sync::Mutex<Vec<ConfigWarning>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -434,6 +435,21 @@ pub struct UnusedConfigOption {
     pub section: String,
     pub option: String,
     pub line: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigWarningKind {
+    DeprecatedOption,
+    DeprecatedValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigWarning {
+    pub kind: ConfigWarningKind,
+    pub section: String,
+    pub option: String,
+    pub value: Option<String>,
+    pub message: String,
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -467,6 +483,19 @@ impl<'a> TrackedConfigSection<'a> {
 
     pub fn has_option(&self, option: &str) -> bool {
         self.section.has_option(option)
+    }
+
+    /// Record a deprecation warning when the option exists in this section.
+    pub fn deprecate(
+        &self,
+        option: &str,
+        value: Option<&str>,
+        message: Option<&str>,
+    ) {
+        if self.has_option(option) {
+            self.tracker
+                .deprecate(&self.section.name, option, value, message);
+        }
     }
 
     /// Read an option or return a default; a supplied default counts as used.
@@ -637,6 +666,49 @@ impl ConfigUsageTracker {
             .lock()
             .expect("config usage lock poisoned")
             .clear();
+        self.warnings
+            .lock()
+            .expect("config warning lock poisoned")
+            .clear();
+    }
+
+    /// Add a deduplicated deprecation warning.
+    pub fn deprecate(
+        &self,
+        section: &str,
+        option: &str,
+        value: Option<&str>,
+        message: Option<&str>,
+    ) {
+        let kind = if value.is_some() {
+            ConfigWarningKind::DeprecatedValue
+        } else {
+            ConfigWarningKind::DeprecatedOption
+        };
+        let default_message = match value {
+            Some(value) => format!(
+                "Value '{value}' in option '{option}' in section '{section}' is deprecated."
+            ),
+            None => format!("Option '{option}' in section '{section}' is deprecated."),
+        };
+        let warning = ConfigWarning {
+            kind,
+            section: section.to_owned(),
+            option: option.to_owned(),
+            value: value.map(str::to_owned),
+            message: message.unwrap_or(&default_message).to_owned(),
+        };
+        let mut warnings = self.warnings.lock().expect("config warning lock poisoned");
+        if !warnings.contains(&warning) {
+            warnings.push(warning);
+        }
+    }
+
+    pub fn warnings(&self) -> Vec<ConfigWarning> {
+        self.warnings
+            .lock()
+            .expect("config warning lock poisoned")
+            .clone()
     }
 
     pub fn track_section<'a>(
@@ -896,6 +968,24 @@ mod tests {
         tracker.clear();
         tracker.get(&clean, "printer", "kinematics");
         assert!(tracker.validate(&clean, &valid_sections).is_ok());
+    }
+
+    #[test]
+    fn deprecation_warnings_are_deduplicated_and_reset() {
+        let config = ConfigDocument::parse("[printer]\nkinematics=cartesian\n").unwrap();
+        let tracker = ConfigUsageTracker::new();
+        let section = tracker.track_section(config.section("printer").unwrap());
+        section.deprecate("kinematics", None, None);
+        section.deprecate("kinematics", None, None);
+        assert_eq!(tracker.warnings().len(), 1);
+        assert_eq!(
+            tracker.warnings()[0].kind,
+            ConfigWarningKind::DeprecatedOption
+        );
+        section.deprecate("kinematics", Some("cartesian"), Some("Use a new value"));
+        assert_eq!(tracker.warnings().len(), 2);
+        tracker.clear();
+        assert!(tracker.warnings().is_empty());
     }
 
     #[test]
