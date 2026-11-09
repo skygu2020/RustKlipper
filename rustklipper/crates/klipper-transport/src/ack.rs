@@ -47,13 +47,15 @@ impl AckTracker {
     pub fn acknowledge_events(&mut self, receive_seq: u64, has_payload: bool,
                               fallback_sent_time: f64, receive_time: f64) -> Vec<(u64, AckEvent)> {
         let wake_seq = receive_seq.saturating_sub(if has_payload { 2 } else { 1 });
-        let mut completed: Vec<(u64, u64)> = self.pending.iter()
+        let mut completed: Vec<(u64, u64, u64)> = self.pending.iter()
             .filter_map(|(id, p)| p.required_send_seq
-                .is_some_and(|seq| seq <= wake_seq).then_some((p.send_order, *id))).collect();
-        // Klipper's notify_queue is FIFO by actual send order, not by notify ID.
-        completed.sort_unstable_by_key(|(order, _)| *order);
+                .filter(|seq| *seq <= wake_seq)
+                .map(|seq| (seq, p.send_order, *id))).collect();
+        // Klipper's notify_queue is FIFO by frame sequence and then by command
+        // order within that frame; notify IDs are caller-selected and unrelated.
+        completed.sort_unstable_by_key(|(seq, order, _)| (*seq, *order));
         let mut events = Vec::with_capacity(completed.len());
-        for (_, id) in completed {
+        for (_, _, id) in completed {
             if let Some(p) = self.pending.remove(&id) {
                 let event = AckEvent {
                     sent_time: p.sent_time.unwrap_or(fallback_sent_time),
