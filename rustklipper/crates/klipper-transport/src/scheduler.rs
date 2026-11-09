@@ -311,11 +311,19 @@ mod tests {
     #[test]
     fn cancelling_notify_removes_upcoming_and_ready_commands_only() {
         let mut scheduler = CommandScheduler::new();
-        scheduler.enqueue(1, ScheduledCommand::new(vec![1], 100, 1).with_notify(10)).unwrap();
+        scheduler.enqueue(1, ScheduledCommand::new(
+            vec![1], 100, BACKGROUND_PRIORITY_CLOCK,
+        ).with_notify(10)).unwrap();
         // A stalled command blocks later commands in its own FIFO queue.
         // Put ready commands on a separate queue to exercise both states.
-        scheduler.enqueue(2, ScheduledCommand::new(vec![2], 0, 2).with_notify(11)).unwrap();
-        scheduler.enqueue(2, ScheduledCommand::new(vec![3], 0, 3).with_notify(12)).unwrap();
+        // Use background priority so this test isolates min_clock promotion
+        // from request-clock normalization and cross-queue frame ordering.
+        scheduler.enqueue(2, ScheduledCommand::new(
+            vec![2], 0, BACKGROUND_PRIORITY_CLOCK,
+        ).with_notify(11)).unwrap();
+        scheduler.enqueue(2, ScheduledCommand::new(
+            vec![3], 0, BACKGROUND_PRIORITY_CLOCK,
+        ).with_notify(12)).unwrap();
         scheduler.promote_ready(0);
 
         assert_eq!(scheduler.queued_counts(), (1, 2));
