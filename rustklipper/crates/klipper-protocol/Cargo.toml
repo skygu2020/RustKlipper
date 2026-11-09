@@ -8,3 +8,5 @@ description = "Klipper host-to-MCU wire protocol primitives"
 
 [dependencies]
 thiserror.workspace = true
+flate2 = "1"
+serde_json = "1"
