@@ -556,15 +556,16 @@ impl ReliableSerialSession {
                 reason: "periodic clock response received without an outstanding periodic query".into(),
             }));
         }
+        // The response has been consumed, so this request is no longer
+        // in flight even if its payload or clock estimate proves invalid.
+        // Leaving the flag set on an update error would permanently suppress
+        // every future periodic query (the waiter itself has already gone).
+        self.periodic_clock_in_flight = false;
         let update = self.update_owned_clock_sync(&response, false)?;
-        let result = match update {
+        match update {
             Some(update) => self.apply_clock_update(update, response.receive_time),
             None => Ok(None),
-        };
-        if result.is_ok() {
-            self.periodic_clock_in_flight = false;
         }
-        result
     }
 
     /// Queue one periodic clock query. The caller should invoke this again only
