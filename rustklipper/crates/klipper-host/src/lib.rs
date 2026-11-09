@@ -1561,6 +1561,53 @@ mod tests {
     }
 
     #[test]
+    fn shared_component_dependency_is_loaded_once() {
+        let printer = Printer::new();
+        printer.install_config(
+            ConfigDocument::parse(
+                "[first]\nsource=provider\n[second]\nsource=provider\n[provider]\nvalue=ready\n",
+            )
+            .unwrap(),
+        );
+        let provider_loads = Arc::new(AtomicUsize::new(0));
+        let observed = provider_loads.clone();
+        let mut registry = ComponentRegistry::new();
+        for consumer in ["first", "second"] {
+            registry
+                .register_with_dependencies(
+                    consumer,
+                    vec!["provider".to_owned()],
+                    |printer, section| {
+                        let value = printer
+                            .lookup_object::<String>("provider")
+                            .map_err(|error| error.to_string())?;
+                        printer
+                            .register_object(
+                                section.name(),
+                                format!("{}:{}", value.as_str(), section.get("source").unwrap()),
+                            )
+                            .map_err(|error| error.to_string())
+                    },
+                )
+                .unwrap();
+        }
+        registry
+            .register("provider", move |printer, section| {
+                observed.fetch_add(1, Ordering::SeqCst);
+                printer
+                    .register_object("provider", section.get("value").unwrap().to_owned())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        assert_eq!(
+            printer.load_components(&registry).unwrap(),
+            vec!["provider".to_owned(), "first".to_owned(), "second".to_owned()]
+        );
+        assert_eq!(provider_loads.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn component_dependency_cycles_are_rejected() {
         let printer = Printer::new();
         printer.install_config(
