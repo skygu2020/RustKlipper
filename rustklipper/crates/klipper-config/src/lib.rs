@@ -1429,6 +1429,30 @@ mod tests {
     }
 
     #[test]
+    fn autosave_option_line_numbers_match_source_file() {
+        use std::fs;
+        let path = std::env::temp_dir().join(format!(
+            "rustklipper-config-autosave-lines-{}.cfg",
+            std::process::id()
+        ));
+        fs::write(
+            &path,
+            "[printer]\nkinematics=cartesian\n#*# <---------------------- SAVE_CONFIG ---------------------->\n#*# [printer]\n#*# max_velocity = 250\n",
+        )
+        .unwrap();
+        let config = ConfigFileLoader::load(&path).unwrap();
+        let option = config
+            .section("printer")
+            .unwrap()
+            .options()
+            .iter()
+            .find(|option| option.name == "max_velocity")
+            .unwrap();
+        assert_eq!(option.line, 5);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn autosave_options_are_exempt_from_unused_option_validation() {
         use std::fs;
         let path = std::env::temp_dir().join(format!(
