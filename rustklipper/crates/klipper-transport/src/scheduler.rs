@@ -173,19 +173,34 @@ impl CommandScheduler {
         min_stalled
     }
 
+    /// Whether serialqueue's pending-block and receive-window limits permit
+    /// another frame to be built.
+    pub fn can_send_frame(&self) -> bool {
+        if self.send_sequence.saturating_sub(self.receive_sequence) >= MAX_PENDING_BLOCKS
+            && self.receive_sequence != u64::MAX
+        {
+            return false;
+        }
+        if self.send_sequence > self.receive_sequence && self.receive_window > 0 {
+            let mut need = self.need_ack_bytes + MESSAGE_MAX;
+            if self.last_ack_sequence < self.receive_sequence {
+                need += self.last_ack_bytes;
+            }
+            if need > self.receive_window {
+                return false;
+            }
+        }
+        true
+    }
+
     /// Pack a frame. Call mark_frame_sent only after the UART write succeeds.
     pub fn build_frame(&mut self) -> Result<Option<ScheduledFrame>, ScheduleError> {
         self.build_frame_inner()
     }
 
     fn build_frame_inner(&mut self) -> Result<Option<ScheduledFrame>, ScheduleError> {
-        if self.send_sequence.saturating_sub(self.receive_sequence) >= MAX_PENDING_BLOCKS
-            && self.receive_sequence != u64::MAX
-        { return Ok(None); }
-        if self.send_sequence > self.receive_sequence && self.receive_window > 0 {
-            let mut need = self.need_ack_bytes + MESSAGE_MAX;
-            if self.last_ack_sequence < self.receive_sequence { need += self.last_ack_bytes; }
-            if need > self.receive_window { return Ok(None); }
+        if !self.can_send_frame() {
+            return Ok(None);
         }
         let mut payload = Vec::with_capacity(MESSAGE_PAYLOAD_MAX);
         let mut notify_ids = Vec::new();
@@ -351,6 +366,28 @@ mod tests {
         assert_eq!(scheduler.queued_counts(), (1, 0));
         assert_eq!(scheduler.promote_ready(min_clock + 1), None);
         assert_eq!(scheduler.queued_counts(), (0, 1));
+    }
+
+    #[test]
+    fn can_send_frame_obeys_pending_block_limit() {
+        let mut scheduler = CommandScheduler::new();
+        for index in 0..MAX_PENDING_BLOCKS {
+            scheduler.enqueue(index, ScheduledCommand::new(vec![index as u8], 0, 0)).unwrap();
+            scheduler.promote_ready(0);
+            assert!(scheduler.build_frame().unwrap().is_some());
+        }
+        assert!(!scheduler.can_send_frame());
+    }
+
+    #[test]
+    fn can_send_frame_obeys_receive_window_limit() {
+        let mut scheduler = CommandScheduler::new();
+        scheduler.enqueue(1, ScheduledCommand::new(vec![0x11], 0, 0)).unwrap();
+        scheduler.promote_ready(0);
+        let frame = scheduler.build_frame().unwrap().unwrap();
+        scheduler.mark_frame_sent(&frame, 1.0).unwrap();
+        scheduler.set_receive_window(1);
+        assert!(!scheduler.can_send_frame());
     }
 
     #[test]
