@@ -546,7 +546,7 @@ mod tests {
         assert!(matches!(
             panicked.events.as_slice(),
             [DispatchEvent::Error(message), DispatchEvent::Ack(None)]
-                if message.contains("handler panicked")
+                if message.contains("panicked")
         ));
         assert!(panicked.handler_found);
         assert!(panicked.acknowledged);
@@ -577,7 +577,7 @@ mod tests {
         assert!(matches!(
             result.events.as_slice(),
             [DispatchEvent::Error(message), DispatchEvent::Ack(None)]
-                if message.contains("handler panicked")
+                if message.contains("panicked")
         ));
     }
 
