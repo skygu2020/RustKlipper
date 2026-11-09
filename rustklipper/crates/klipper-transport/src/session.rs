@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::time::Instant;
 
 use serde_json::Value;
-use klipper_protocol::{Frame, IdentifyChunk, IdentifyDictionary};
+use klipper_protocol::{DictionaryError, Frame, IdentifyAssembler, IdentifyChunk, IdentifyDictionary};
 
 use crate::{
     AckEvent, AckTracker, CommandScheduler, Response, ResponseRouter, ResponseWaiter, ScheduleError, ScheduledCommand, TransportError, UsbSerialTransport,
@@ -21,6 +21,8 @@ pub enum SessionError {
     Notification(u64),
     #[error("response-tracked command already has a notification ID")]
     CommandAlreadyNotified,
+    #[error(transparent)]
+    Dictionary(#[from] DictionaryError),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -42,6 +44,7 @@ pub enum SessionEvent {
     },
     IdentifyChunk { chunk: IdentifyChunk, receive_time: f64 },
     DecodedMessage { name: String, params: BTreeMap<String, Value>, receive_time: f64 },
+    IdentifyComplete { version: String },
     DecodeError { error: String, receive_time: f64 },
 }
 
@@ -62,6 +65,7 @@ pub struct ReliableSerialSession {
     sent_response_requests: VecDeque<PendingResponseSend>,
     next_response_notify_id: u64,
     dictionary: Option<IdentifyDictionary>,
+    identify_assembler: IdentifyAssembler,
     started: Instant,
     disconnected: bool,
 }
@@ -82,6 +86,7 @@ impl ReliableSerialSession {
             sent_response_requests: VecDeque::new(),
             next_response_notify_id: u64::MAX,
             dictionary: None,
+            identify_assembler: IdentifyAssembler::new(),
             started: Instant::now(),
             disconnected: false,
         }
@@ -101,6 +106,22 @@ impl ReliableSerialSession {
     }
 
     pub fn has_dictionary(&self) -> bool { self.dictionary.is_some() }
+
+    /// Consume one bootstrap identify_response chunk. Returns the next byte
+    /// offset while more data is needed; installs the dictionary on completion.
+    pub fn accept_identify_chunk(&mut self, chunk: IdentifyChunk) -> Result<Option<u32>, SessionError> {
+        self.ensure_connected()?;
+        let complete = self.identify_assembler.push(chunk)?;
+        if complete {
+            let assembler = std::mem::take(&mut self.identify_assembler);
+            let dictionary = assembler.into_dictionary()?;
+            let version = dictionary.version().to_owned();
+            self.set_dictionary(dictionary);
+            Ok(Some(u32::MAX))
+        } else {
+            Ok(Some(self.identify_assembler.next_offset()?))
+        }
+    }
 
     /// Register a notification before enqueueing a command carrying this ID.
     pub fn register_notify(&mut self, id: u64) -> Result<std::sync::mpsc::Receiver<crate::AckEvent>, SessionError> {
