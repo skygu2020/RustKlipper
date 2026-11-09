@@ -436,6 +436,14 @@ pub struct UnusedConfigOption {
     pub line: usize,
 }
 
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum ConfigValidationError {
+    #[error("section '{section}' is not a valid config section")]
+    UnknownSection { section: String },
+    #[error("option '{option}' is not valid in section '{section}'")]
+    UnknownOption { section: String, option: String },
+}
+
 /// A section view that records option reads against a usage tracker.
 pub struct TrackedConfigSection<'a> {
     section: &'a ConfigSection,
@@ -531,7 +539,7 @@ impl ConfigUsageTracker {
         self.used
             .lock()
             .expect("config usage lock poisoned")
-            .insert((section.to_owned(), option.to_ascii_lowercase()));
+            .insert((section.to_ascii_lowercase(), option.to_ascii_lowercase()));
     }
 
     /// Read an option and mark it as used when it exists.
@@ -593,6 +601,39 @@ impl ConfigUsageTracker {
         }
     }
 
+    /// Validate section and option names against registered objects and reads.
+    pub fn validate(
+        &self,
+        config: &ConfigDocument,
+        valid_sections: &[String],
+    ) -> Result<(), ConfigValidationError> {
+        let mut valid: std::collections::HashSet<String> = valid_sections
+            .iter()
+            .map(|section| section.to_ascii_lowercase())
+            .collect();
+        let used = self.used.lock().expect("config usage lock poisoned");
+        valid.extend(used.iter().map(|(section, _)| section.clone()));
+
+        for section in config.sections() {
+            let section_name = section.name.to_ascii_lowercase();
+            if !valid.contains(&section_name) {
+                return Err(ConfigValidationError::UnknownSection {
+                    section: section.name.clone(),
+                });
+            }
+            for option in section.options() {
+                let key = (section_name.clone(), option.name.clone());
+                if !used.contains(&key) {
+                    return Err(ConfigValidationError::UnknownOption {
+                        section: section.name.clone(),
+                        option: option.name.clone(),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Return every option that no component has read, preserving config order.
     pub fn unused_options(&self, config: &ConfigDocument) -> Vec<UnusedConfigOption> {
         let used = self.used.lock().expect("config usage lock poisoned");
@@ -601,7 +642,7 @@ impl ConfigUsageTracker {
             .iter()
             .flat_map(|section| {
                 section.options().iter().filter_map(|option| {
-                    let key = (section.name.clone(), option.name.clone());
+                    let key = (section.name.to_ascii_lowercase(), option.name.clone());
                     (!used.contains(&key)).then(|| UnusedConfigOption {
                         section: section.name.clone(),
                         option: option.name.clone(),
@@ -673,6 +714,29 @@ mod tests {
         assert_eq!(config.get_f64("printer", "max_accel").unwrap(), 5000.0);
         assert!(config.get_bool("printer", "use_pin").unwrap());
         assert!(config.get_bool("printer", "missing").is_err());
+    }
+
+    #[test]
+    fn usage_tracker_validates_unknown_sections_and_options() {
+        let config = ConfigDocument::parse(
+            "[printer]\nkinematics=cartesian\nunknown_option=1\n[unknown]\nvalue=2\n",
+        )
+        .unwrap();
+        let tracker = ConfigUsageTracker::new();
+        assert_eq!(tracker.get(&config, "printer", "kinematics"), Some("cartesian"));
+        let valid_sections = vec!["printer".to_owned()];
+        assert_eq!(
+            tracker.validate(&config, &valid_sections),
+            Err(ConfigValidationError::UnknownOption {
+                section: "printer".to_owned(),
+                option: "unknown_option".to_owned(),
+            })
+        );
+
+        let clean = ConfigDocument::parse("[printer]\nkinematics=cartesian\n").unwrap();
+        tracker.clear();
+        tracker.get(&clean, "printer", "kinematics");
+        assert!(tracker.validate(&clean, &valid_sections).is_ok());
     }
 
     #[test]
