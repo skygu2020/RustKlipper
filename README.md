@@ -1,17 +1,19 @@
-Welcome to the Klipper project!
+# Klipper
 
-[![Klipper](docs/img/klipper-logo-small.png)](https://www.klipper3d.org/)
+Klipper is a 3D printer firmware project.
 
-https://www.klipper3d.org/
+The original Python host and MCU firmware sources remain at the repository
+root. The staged Rust host implementation is maintained independently in
+[`rustklipper/`](rustklipper/README.md), using the upstream source as its
+compatibility reference.
 
-The Klipper firmware controls 3d-Printers. It combines the power of a
-general purpose computer with one or more micro-controllers. See the
-[features document](https://www.klipper3d.org/Features.html) for more
-information on why you should use the Klipper software.
+The Rust workspace currently contains MCU protocol, USB serial transport,
+and configuration parsing crates. To run its tests:
 
-Start by [installing Klipper software](https://www.klipper3d.org/Installation.html).
+```sh
+cd rustklipper
+cargo test --workspace
+```
 
-Klipper software is Free Software. See the [license](COPYING) or read
-the [documentation](https://www.klipper3d.org/Overview.html). We
-depend on the generous support from our
-[sponsors](https://www.klipper3d.org/Sponsors.html).
+The Rust implementation targets Linux and Windows with USB-serial MCUs;
+CAN transport is intentionally outside the current scope.
