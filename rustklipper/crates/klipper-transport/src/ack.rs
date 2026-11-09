@@ -13,7 +13,10 @@ pub struct AckTracker { next_id: u64, pending: BTreeMap<u64, PendingAck> }
 impl AckTracker {
     pub fn new() -> Self { Self::default() }
     pub fn register(&mut self, required_send_seq: u64) -> (u64, Receiver<AckEvent>) {
-        self.next_id = self.next_id.wrapping_add(1).max(1);
+        loop {
+            self.next_id = self.next_id.wrapping_add(1).max(1);
+            if !self.pending.contains_key(&self.next_id) { break; }
+        }
         let id = self.next_id;
         let (tx, rx) = mpsc::channel();
         self.pending.insert(id, PendingAck { required_send_seq: Some(required_send_seq), sent_time: None, sender: tx });

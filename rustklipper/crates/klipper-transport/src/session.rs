@@ -182,6 +182,11 @@ impl ReliableSerialSession {
         &mut self, queue_id: u64, command: ScheduledCommand,
     ) -> Result<(), SessionError> {
         self.ensure_connected()?;
+        if let Some(id) = command.notify_id {
+            if !self.ack_tracker.contains_notify(id) {
+                return Err(SessionError::Notification(id));
+            }
+        }
         self.scheduler.enqueue(queue_id, command)?;
         Ok(())
     }
