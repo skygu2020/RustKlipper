@@ -814,9 +814,14 @@ mod exhausted_transaction_tests {
         }]);
         let mut events = Vec::new();
 
-        // route_decoded_message() removes a successfully completed transaction
-        // before this deferred exhaustion finalizer runs.
+        // Simulate successful response routing: the exact waiter and sent
+        // response marker are consumed before deferred exhaustion is finalized.
+        assert!(router.dispatch_to_waiter(Response {
+            name: "status".into(), oid: Some(3), params: BTreeMap::new(),
+            sent_time: 1.0, receive_time: 2.0,
+        }, waiter_id));
         transactions.remove(&9);
+        sent.retain(|entry| entry.transaction_id != 9);
         let retired = finalize_exhausted_transactions(
             vec![(9, "status".into(), Some(3), waiter_id)],
             &mut transactions, &mut sent, &router, &mut events,
@@ -824,8 +829,8 @@ mod exhausted_transaction_tests {
 
         assert!(retired.is_empty());
         assert!(events.is_empty());
-        assert_eq!(sent.len(), 1); // normal response routing owns this entry
-        assert_eq!(router.pending_count("status", Some(3)), 1);
+        assert!(sent.is_empty());
+        assert_eq!(router.pending_count("status", Some(3)), 0);
         drop(waiter);
     }
 
