@@ -135,7 +135,9 @@ impl RetransmitState {
     }
 
     /// Record a frame with the session's estimated UART-completion timestamp.
-    /// This allows later frames in one command batch to include preceding bytes.
+    /// This is the serialqueue receive_time used for RTT samples and retry
+    /// deadlines; sent_at remains the common command_event timestamp.
+    /// Later frames in one command batch include preceding bytes.
     pub fn track_sent_with_receive_time(
         &mut self,
         sequence: u64,
