@@ -41,7 +41,18 @@ impl ResponseRouter {
         let key = ResponseKey { name: name.into(), oid };
         let (tx, rx) = mpsc::channel();
         let mut state = self.state.lock().expect("response router poisoned");
-        state.next_waiter_id = state.next_waiter_id.wrapping_add(1).max(1);
+        // Waiter IDs are global across response keys. Skip zero and any
+        // still-live ID after wraparound so an old waiter cannot alias a new one.
+        loop {
+            state.next_waiter_id = state.next_waiter_id.wrapping_add(1).max(1);
+            let candidate = state.next_waiter_id;
+            let in_use = state.pending.values().any(|queue| {
+                queue.iter().any(|waiter| waiter.id == candidate)
+            });
+            if !in_use {
+                break;
+            }
+        }
         let id = state.next_waiter_id;
         state.pending.entry(key.clone()).or_default().push_back(PendingResponse { id, claimed: false, sender: tx });
         ResponseWaiter { receiver: rx, state: self.state.clone(), key, id }
@@ -258,6 +269,24 @@ mod tests {
         }));
         assert_eq!(first.wait(std::time::Duration::from_millis(1)).unwrap().sent_time, 1.25);
         assert_eq!(second.wait(std::time::Duration::from_millis(1)).unwrap().sent_time, 1.75);
+    }
+
+    #[test]
+    fn waiter_id_wraparound_skips_ids_still_in_use() {
+        let router = ResponseRouter::new();
+        let first = router.register("first", None);
+        let first_id = first.id;
+
+        {
+            let mut state = router.state.lock().unwrap();
+            state.next_waiter_id = u64::MAX;
+        }
+
+        let second = router.register("second", None);
+        assert_ne!(first.id, second.id);
+        assert_eq!(first.id, first_id);
+        assert!(router.contains_waiter("first", None, first_id));
+        assert!(router.contains_waiter("second", None, second.id));
     }
 
     #[test]
