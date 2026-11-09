@@ -223,11 +223,17 @@ impl RetransmitState {
         &mut self, sequence: u64, sent_at: f64,
     ) -> Result<(), RetransmitError> {
         self.validate_time(sent_at)?;
+        let is_oldest = self.outstanding.front()
+            .is_some_and(|entry| entry.frame.sequence == sequence);
         let entry = self.outstanding.iter_mut()
             .find(|entry| entry.frame.sequence == sequence)
             .ok_or(RetransmitError::UnknownSequence(sequence))?;
         entry.last_sent_at = sent_at;
-        self.retransmit_deadline = Some(sent_at + self.rto);
+        // serialqueue.c schedules the next timeout from the first block in
+        // the retransmitted window, not from the final block's write completion.
+        if is_oldest {
+            self.retransmit_deadline = Some(sent_at + self.rto);
+        }
         Ok(())
     }
 
@@ -328,6 +334,22 @@ mod tests {
         assert!(state.poll_timeout_all(0.749).unwrap().is_empty());
         assert_eq!(state.poll_timeout_all(0.750).unwrap().len(), 1);
         assert_eq!(state.rto(), 1.0);
+    }
+
+    #[test]
+    fn retransmit_window_deadline_uses_oldest_frame_completion() {
+        let mut state = RetransmitState::new();
+        state.track_sent(1, vec![1], 0.0).unwrap();
+        state.track_sent(2, vec![2], 0.001).unwrap();
+        let retries = state.poll_timeout_all(0.250).unwrap();
+        assert_eq!(retries.len(), 2);
+
+        state.mark_retransmission_sent(1, 0.260).unwrap();
+        let first_deadline = 0.260 + state.rto();
+        state.mark_retransmission_sent(2, 0.300).unwrap();
+
+        assert!(state.poll_timeout_all(first_deadline - 0.000_001).unwrap().is_empty());
+        assert_eq!(state.poll_timeout_all(first_deadline).unwrap().len(), 2);
     }
 
     #[test]
