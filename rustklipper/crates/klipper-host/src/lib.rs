@@ -297,6 +297,22 @@ impl Printer {
         self.config_usage.get_f64(config, section, option)
     }
 
+    pub fn config_choice<T: Clone>(
+        &self,
+        section: &str,
+        option: &str,
+        choices: &[(String, T)],
+        default: Option<&str>,
+    ) -> Result<T, ConfigValueError> {
+        let config = self.config();
+        let config = config.as_deref().ok_or_else(|| ConfigValueError::Missing {
+            section: section.to_owned(),
+            option: option.to_owned(),
+        })?;
+        self.config_usage
+            .get_choice(config, section, option, choices, default)
+    }
+
     pub fn config_bool(
         &self,
         section: &str,
@@ -799,6 +815,20 @@ mod tests {
         assert_eq!(printer.config_i64("printer", "max_velocity").unwrap(), 300);
         assert_eq!(printer.config_f64("printer", "max_accel").unwrap(), 5000.5);
         assert!(printer.config_bool("printer", "use_pin").unwrap());
+        assert!(printer.unused_config_options().is_empty());
+    }
+
+    #[test]
+    fn printer_choice_config_getter_records_access() {
+        let printer = Printer::new();
+        printer.install_config(
+            ConfigDocument::parse("[heater]\ncontrol=pid\n").unwrap(),
+        );
+        let choices = vec![
+            ("pid".to_owned(), 1u8),
+            ("watermark".to_owned(), 2u8),
+        ];
+        assert_eq!(printer.config_choice("heater", "control", &choices, None).unwrap(), 1);
         assert!(printer.unused_config_options().is_empty());
     }
 
