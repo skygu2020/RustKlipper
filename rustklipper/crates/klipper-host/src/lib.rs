@@ -1343,6 +1343,22 @@ mod tests {
     }
 
     #[test]
+    fn ready_transition_cannot_race_shutdown_back_to_ready() {
+        let printer = Arc::new(Printer::new());
+        printer.set_configuring();
+        let ready_printer = printer.clone();
+        let shutdown_printer = printer.clone();
+        let ready = std::thread::spawn(move || ready_printer.set_ready());
+        let shutdown = std::thread::spawn(move || {
+            shutdown_printer.invoke_shutdown("concurrent failure");
+        });
+        ready.join().unwrap();
+        shutdown.join().unwrap();
+        assert_eq!(printer.state(), PrinterState::Shutdown);
+        assert!(printer.is_shutdown());
+    }
+
+    #[test]
     fn concurrent_shutdown_requests_emit_one_event() {
         let printer = Arc::new(Printer::new());
         printer.set_ready();
