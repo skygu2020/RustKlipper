@@ -105,6 +105,14 @@ impl CommandScheduler {
             .min()
     }
 
+    /// Earliest minimum-clock barrier among the heads of upcoming queues.
+    /// Used to wake the scheduler when a command becomes eligible.
+    pub fn minimum_upcoming_min_clock(&self) -> Option<u64> {
+        self.queues.values()
+            .filter_map(|queue| queue.upcoming.front().map(|command| command.min_clock))
+            .min()
+    }
+
     pub fn receive_sequence(&self) -> u64 { self.receive_sequence }
 
     /// Commands within one command queue retain FIFO order.
@@ -319,6 +327,17 @@ mod tests {
         assert_eq!(scheduler.queued_counts(), (1, 0));
         assert_eq!(scheduler.promote_ready(min_clock + 1), None);
         assert_eq!(scheduler.queued_counts(), (0, 1));
+    }
+
+    #[test]
+    fn minimum_upcoming_clock_reports_only_queue_heads() {
+        let mut scheduler = CommandScheduler::new();
+        scheduler.enqueue(1, ScheduledCommand::new(vec![1], 300, 400)).unwrap();
+        scheduler.enqueue(1, ScheduledCommand::new(vec![2], 100, 200)).unwrap();
+        scheduler.enqueue(2, ScheduledCommand::new(vec![3], 250, 350)).unwrap();
+        assert_eq!(scheduler.minimum_upcoming_min_clock(), Some(250));
+        scheduler.promote_ready(250);
+        assert_eq!(scheduler.minimum_upcoming_min_clock(), Some(300));
     }
 
     #[test]
