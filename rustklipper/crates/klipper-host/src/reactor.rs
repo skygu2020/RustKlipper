@@ -42,6 +42,7 @@ struct ReactorState {
     next_id: TaskId,
     queue: BinaryHeap<Reverse<Scheduled>>,
     tasks: HashMap<TaskId, Task>,
+    cancel_hooks: HashMap<TaskId, Box<dyn FnOnce() + Send + 'static>>,
     running: HashSet<TaskId>,
     cancelled: HashSet<TaskId>,
 }
@@ -51,8 +52,11 @@ struct ReactorState {
 ///
 /// Unlike Klipper's greenlet-aware completion, this primitive does not suspend
 /// the reactor. Callers may poll it or wait from a separate host thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompletionCancelled;
+
 pub struct Completion<T> {
-    state: Arc<(Mutex<Option<T>>, Condvar)>,
+    state: Arc<(Mutex<Option<Result<T, CompletionCancelled>>>, Condvar)>,
 }
 
 impl<T> Clone for Completion<T> {
@@ -83,7 +87,7 @@ impl<T> Completion<T> {
         if current.is_some() {
             return Err(result);
         }
-        *current = Some(result);
+        *current = Some(Ok(result));
         ready.notify_all();
         Ok(())
     }
@@ -92,16 +96,36 @@ impl<T> Completion<T> {
         self.state.0.lock().expect("completion lock poisoned").is_some()
     }
 
+    pub fn is_cancelled(&self) -> bool {
+        matches!(
+            self.state.0.lock().expect("completion lock poisoned").as_ref(),
+            Some(Err(_))
+        )
+    }
+
+    /// Cancel a pending completion and wake all waiters.
+    pub fn cancel(&self) -> bool {
+        let (lock, ready) = &*self.state;
+        let mut current = lock.lock().expect("completion lock poisoned");
+        if current.is_some() {
+            return false;
+        }
+        *current = Some(Err(CompletionCancelled));
+        ready.notify_all();
+        true
+    }
+
     /// Clone the result if it has already been produced.
     pub fn result(&self) -> Option<T>
     where
         T: Clone,
     {
-        self.state.0.lock().expect("completion lock poisoned").clone()
+        self.state.0.lock().expect("completion lock poisoned")
+            .as_ref().and_then(|value| value.as_ref().ok()).cloned()
     }
 
-    /// Wait for completion. Do not call this on the reactor dispatch thread.
-    pub fn wait(&self) -> T
+    /// Wait for completion or cancellation. Do not call this on the reactor dispatch thread.
+    pub fn wait(&self) -> Result<T, CompletionCancelled>
     where
         T: Clone,
     {
@@ -114,7 +138,7 @@ impl<T> Completion<T> {
     }
 
     /// Wait up to the given duration; returns None if no result arrives in time.
-    pub fn wait_timeout(&self, timeout: Duration) -> Option<T>
+    pub fn wait_timeout(&self, timeout: Duration) -> Option<Result<T, CompletionCancelled>>
     where
         T: Clone,
     {
@@ -190,11 +214,14 @@ impl Reactor {
         let completion = Completion::new();
         let callback_completion = completion.clone();
         let mut callback = Some(callback);
-        let id = self.insert_task(deadline, move |eventtime| {
+        let cancelled_completion = completion.clone();
+        let id = self.insert_task_with_cancel(deadline, move |eventtime| {
             let callback = callback.take().expect("one-shot callback invoked once");
             let result = callback(eventtime);
             let _ = callback_completion.complete(result);
             None
+        }, move || {
+            cancelled_completion.cancel();
         });
         (id, completion)
     }
@@ -251,6 +278,14 @@ impl Reactor {
     where
         F: FnMut(Instant) -> Option<Instant> + Send + 'static,
     {
+        self.insert_task_with_cancel(deadline, callback, || {})
+    }
+
+    fn insert_task_with_cancel<F, C>(&self, deadline: Instant, callback: F, on_cancel: C) -> TaskId
+    where
+        F: FnMut(Instant) -> Option<Instant> + Send + 'static,
+        C: FnOnce() + Send + 'static,
+    {
         let mut state = self.state.lock().expect("reactor lock poisoned");
         state.next_id = state.next_id.wrapping_add(1).max(1);
         let id = state.next_id;
@@ -262,20 +297,27 @@ impl Reactor {
             },
         );
         state.queue.push(Reverse(Scheduled { deadline, id }));
+        state.cancel_hooks.insert(id, Box::new(on_cancel));
         id
     }
 
     /// Cancel a pending callback or timer. Returns false for an unknown task.
     pub fn unregister(&self, id: TaskId) -> bool {
-        let mut state = self.state.lock().expect("reactor lock poisoned");
-        if state.tasks.remove(&id).is_some() {
-            return true;
+        let on_cancel = {
+            let mut state = self.state.lock().expect("reactor lock poisoned");
+            if state.tasks.remove(&id).is_some() {
+                state.cancel_hooks.remove(&id)
+            } else if state.running.contains(&id) {
+                state.cancelled.insert(id);
+                state.cancel_hooks.remove(&id)
+            } else {
+                return false;
+            }
+        };
+        if let Some(on_cancel) = on_cancel {
+            on_cancel();
         }
-        if state.running.contains(&id) {
-            state.cancelled.insert(id);
-            return true;
-        }
-        false
+        true
     }
 
     /// Execute all tasks due at the supplied monotonic time.
@@ -315,6 +357,7 @@ impl Reactor {
             let mut state = self.state.lock().expect("reactor lock poisoned");
             state.running.remove(&entry.id);
             let cancelled = state.cancelled.remove(&entry.id);
+            state.cancel_hooks.remove(&entry.id);
             if !cancelled {
                 if let Some(deadline) = next_deadline {
                     task.deadline = deadline;
@@ -579,7 +622,7 @@ mod tests {
         assert_eq!(reactor.run_due(Instant::now() + Duration::from_secs(1)), 1);
         assert!(completion.is_complete());
         assert_eq!(completion.result(), Some(42));
-        assert_eq!(completion.wait_timeout(Duration::from_millis(1)), Some(42));
+        assert_eq!(completion.wait_timeout(Duration::from_millis(1)), Some(Ok(42)));
         assert!(!reactor.unregister(id));
     }
 
@@ -596,6 +639,18 @@ mod tests {
         assert!(!completion.is_complete());
         assert_eq!(reactor.run_due(start + Duration::from_secs(5)), 1);
         assert_eq!(completion.result().as_deref(), Some("finished"));
+        assert!(!reactor.unregister(id));
+    }
+
+    #[test]
+    fn cancelling_callback_cancels_completion_and_wakes_waiters() {
+        let reactor = Reactor::new();
+        let (id, completion) = reactor.register_callback_with_completion(|_| 99usize);
+        assert!(reactor.unregister(id));
+        assert!(completion.is_complete());
+        assert!(completion.is_cancelled());
+        assert_eq!(completion.wait(), Err(CompletionCancelled));
+        assert_eq!(completion.result(), None);
         assert!(!reactor.unregister(id));
     }
 
@@ -617,7 +672,7 @@ mod tests {
         let waiter = completion.clone();
         let thread = std::thread::spawn(move || waiter.wait());
         assert_eq!(completion.complete(String::from("ready")), Ok(()));
-        assert_eq!(thread.join().unwrap(), "ready");
+        assert_eq!(thread.join().unwrap(), Ok("ready".to_string()));
         assert_eq!(
             completion.complete(String::from("duplicate")),
             Err(String::from("duplicate"))
