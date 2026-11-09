@@ -245,6 +245,7 @@ impl ComponentRegistry {
         }
 
         let tracked = printer.config_usage.track_section(section);
+        let usage_checkpoint = printer.config_usage.checkpoint();
         // Factories may publish objects before returning an error or panicking.
         // Snapshot names so failed factories do not leave stale objects behind;
         // stale names would make the next load incorrectly skip the factory.
@@ -258,6 +259,7 @@ impl ComponentRegistry {
             Err(_) => Some("component factory panicked".to_owned()),
         };
         if let Some(message) = failure {
+            printer.config_usage.restore(usage_checkpoint);
             printer.remove_component_gcode_commands(name);
             for object_name in printer.object_names() {
                 if !objects_before.contains(&object_name) {
@@ -3030,6 +3032,30 @@ mod tests {
         assert_eq!(loaded, 1);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(events.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn failed_component_factory_rolls_back_config_usage_and_warnings() {
+        let printer = Printer::new();
+        printer.install_config(ConfigDocument::parse("[fan]\npin=PA0\n").unwrap());
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register("fan", |_, section| {
+                assert_eq!(section.get("pin"), Some("PA0"));
+                section.deprecate("pin", None, None);
+                Err("temporary factory failure".to_owned())
+            })
+            .unwrap();
+
+        assert!(matches!(
+            printer.load_components(&registry),
+            Err(ComponentError::LoadFailed { .. })
+        ));
+        let unused = printer.unused_config_options();
+        assert_eq!(unused.len(), 1);
+        assert_eq!(unused[0].section, "fan");
+        assert_eq!(unused[0].option, "pin");
+        assert!(printer.config_warnings().is_empty());
     }
 
     #[test]
