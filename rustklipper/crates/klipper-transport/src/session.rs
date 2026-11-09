@@ -744,6 +744,12 @@ impl ReliableSerialSession {
         action: &ConfigAction,
     ) -> Result<(), SessionError> {
         self.ensure_connected()?;
+        if self.startup_stage != McuStartupStage::Configuring {
+            return Err(SessionError::StartupOrder {
+                expected: "Configuring",
+                actual: self.startup_stage,
+            });
+        }
         let commands = match action {
             ConfigAction::SendFullConfig { commands, .. }
             | ConfigAction::SendRestartAndInit { commands, .. } => commands,
