@@ -46,15 +46,17 @@ impl ResponseRouter {
         state.pending.entry(key.clone()).or_default().push_back(PendingResponse { id, claimed: false, sender: tx });
         ResponseWaiter { receiver: rx, state: self.state.clone(), key, id }
     }
-    /// Dispatch to the oldest waiter matching the exact name and oid.
+    /// Dispatch to the oldest unclaimed waiter matching the exact name and oid.
+    /// Claimed waiters are reserved for the request transaction that owns them.
     pub fn dispatch(&self, response: Response) -> bool {
         let key = ResponseKey { name: response.name.clone(), oid: response.oid };
         let mut state = self.state.lock().expect("response router poisoned");
         let Some(queue) = state.pending.get_mut(&key) else { return false; };
         // A waiter may have timed out or been dropped. Skip disconnected
-        // receivers without allowing one stale waiter to block later FIFO waiters.
+        // unclaimed receivers without allowing one stale waiter to block later FIFO waiters.
         let mut delivered = false;
-        while let Some(waiter) = queue.pop_front() {
+        while let Some(index) = queue.iter().position(|waiter| !waiter.claimed) {
+            let waiter = queue.remove(index).expect("located response waiter must exist");
             if waiter.sender.send(response.clone()).is_ok() {
                 delivered = true;
                 break;
@@ -170,6 +172,20 @@ mod tests {
         assert_eq!(first.wait(Duration::from_millis(1)).unwrap().oid, Some(7));
         assert_eq!(second.wait(Duration::from_millis(1)).unwrap().oid, Some(7));
         assert_eq!(other.wait(Duration::from_millis(1)).unwrap().oid, Some(8));
+    }
+
+    #[test]
+    fn generic_dispatch_skips_waiters_reserved_by_request_transactions() {
+        let router = ResponseRouter::new();
+        let claimed = router.register("status", Some(3));
+        let unclaimed = router.register("status", Some(3));
+        let claimed_id = router.claim_oldest("status", Some(3)).unwrap();
+
+        assert!(router.dispatch(response("status", Some(3))));
+        assert_eq!(unclaimed.wait(Duration::from_millis(1)).unwrap().oid, Some(3));
+        assert!(router.contains_waiter("status", Some(3), claimed_id));
+        assert!(router.dispatch_to_waiter(response("status", Some(3)), claimed_id));
+        assert_eq!(claimed.wait(Duration::from_millis(1)).unwrap().oid, Some(3));
     }
 
     #[test]
