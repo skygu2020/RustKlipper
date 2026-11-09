@@ -1822,6 +1822,65 @@ mod tests {
     }
 
     #[test]
+    fn component_gcode_command_cannot_be_owned_by_two_components() {
+        let printer = Printer::new();
+        printer
+            .register_component_gcode_command("first", "M999", true, None, |_| {
+                Ok(Vec::new())
+            })
+            .unwrap();
+        assert!(printer
+            .register_component_mux_gcode_command(
+                "second", "M999", "MODE", Some("fast"), None, |_| Ok(Vec::new()),
+            )
+            .is_err());
+        assert!(printer.registered_gcode_commands().contains(&"M999".to_owned()));
+    }
+
+    #[test]
+    fn config_reinstall_clears_component_gcode_ownership_and_handlers() {
+        let printer = Printer::new();
+        printer
+            .register_component_gcode_command("macro", "M999", true, None, |_| {
+                Ok(Vec::new())
+            })
+            .unwrap();
+        printer.install_config(ConfigDocument::parse("[macro]\n").unwrap());
+        assert!(!printer.registered_gcode_commands().contains(&"M999".to_owned()));
+
+        printer
+            .register_component_gcode_command("macro", "M999", true, None, |_| {
+                Ok(vec![DispatchEvent::Info("reloaded".to_owned())])
+            })
+            .unwrap();
+        printer.set_ready();
+        assert!(printer.process_gcode_line("M999", true).unwrap().handler_found);
+    }
+
+    #[test]
+    fn panicking_component_factory_rolls_back_owned_gcode_commands() {
+        let printer = Printer::new();
+        printer.install_config(ConfigDocument::parse("[macro]\n").unwrap());
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register("macro", |printer, _| {
+                printer
+                    .register_component_gcode_command("macro", "M999", true, None, |_| {
+                        Ok(Vec::new())
+                    })
+                    .map_err(|error| error.to_string())?;
+                panic!("factory panic after registering command");
+            })
+            .unwrap();
+
+        assert!(matches!(
+            printer.load_components(&registry),
+            Err(ComponentError::LoadFailed { section, .. }) if section == "macro"
+        ));
+        assert!(!printer.registered_gcode_commands().contains(&"M999".to_owned()));
+    }
+
+    #[test]
     fn unloading_component_unregisters_owned_gcode_commands() {
         let printer = Printer::new();
         printer
