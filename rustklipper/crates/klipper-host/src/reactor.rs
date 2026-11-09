@@ -6,6 +6,7 @@
 
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -428,13 +429,25 @@ impl Reactor {
             };
 
             let (entry, mut task) = next;
-            let next_deadline = (task.callback)(now);
+            let callback_result = catch_unwind(AssertUnwindSafe(|| (task.callback)(now)));
             executed += 1;
 
             let mut state = self.state.lock().expect("reactor lock poisoned");
             state.running.remove(&entry.id);
             let cancelled = state.cancelled.remove(&entry.id);
-            state.cancel_hooks.remove(&entry.id);
+            let cancel_hook = state.cancel_hooks.remove(&entry.id);
+
+            let next_deadline = match callback_result {
+                Ok(deadline) => deadline,
+                Err(payload) => {
+                    drop(state);
+                    if let Some(cancel_hook) = cancel_hook {
+                        cancel_hook();
+                    }
+                    resume_unwind(payload);
+                }
+            };
+
             if !cancelled {
                 if let Some(deadline) = next_deadline {
                     task.deadline = deadline;
