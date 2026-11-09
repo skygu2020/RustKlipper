@@ -85,6 +85,15 @@ pub struct GCodeCommand {
 impl GCodeCommand {
     pub fn new(parsed: ParsedLine) -> Self { Self { parsed } }
 
+    /// Build the command object exactly as dispatch expects: extended commands
+    /// replace the legacy letter-token map with shell-style KEY=value fields.
+    pub fn new_for_dispatch(mut parsed: ParsedLine) -> Result<Self, GCodeError> {
+        if !is_traditional_command(&parsed.command) {
+            parsed.parameters = parsed.extended_parameters()?;
+        }
+        Ok(Self { parsed })
+    }
+
     pub fn command(&self) -> &str { &self.parsed.command }
     pub fn commandline(&self) -> &str { &self.parsed.original }
     pub fn parameters(&self) -> &HashMap<String, String> { &self.parsed.parameters }
@@ -169,7 +178,15 @@ impl GCodeCommand {
     }
 }
 
-/// Parse one input line. Empty lines and comment-only lines return `None`.
+
+/// Klipper treats a command as traditional when its first character is a
+/// letter and its second character is a digit (for example G1 or M105).
+pub fn is_traditional_command(command: &str) -> bool {
+    let mut chars = command.trim().chars();
+    matches!((chars.next(), chars.next()), (Some(first), Some(second))
+        if first.is_ascii_alphabetic() && second.is_ascii_digit())
+}
+\n/// Parse one input line. Empty lines and comment-only lines return `None`.
 pub fn parse_line(input: &str) -> Option<ParsedLine> {
     let original = input.trim();
     let command_text = original.split_once(';').map_or(original, |(head, _)| head).trim();
