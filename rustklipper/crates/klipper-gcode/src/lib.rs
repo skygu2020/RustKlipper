@@ -246,19 +246,25 @@ fn shell_tokens(input: &str) -> Result<Vec<String>, ()> {
     let mut token = String::new();
     let mut quote = None;
     let mut escaped = false;
+    let mut escaped_in_double_quote = false;
     let mut active = false;
 
     for ch in input.chars() {
         if escaped {
+            if escaped_in_double_quote && ch != '"' && ch != '\\' {
+                token.push('\\');
+            }
             token.push(ch);
             escaped = false;
+            escaped_in_double_quote = false;
             active = true;
             continue;
         }
-        // Match POSIX shlex behavior: backslash escapes outside quotes
-        // and inside double quotes, but remains literal inside single quotes.
+        // POSIX shlex removes escapes outside quotes, but inside double
+        // quotes only an escaped quote or backslash loses its backslash.
         if ch == '\\' && quote != Some('\'') {
             escaped = true;
+            escaped_in_double_quote = quote == Some('"');
             continue;
         }
         if let Some(delimiter) = quote {
@@ -352,6 +358,17 @@ mod tests {
         assert_eq!(
             hash.extended_parameters().unwrap().get("MSG").map(String::as_str),
             Some("#status")
+        );
+
+        let double_quoted = parse_line(r#"RESPOND MSG="hello\ world""#).unwrap();
+        assert_eq!(
+            double_quoted.extended_parameters().unwrap().get("MSG").map(String::as_str),
+            Some(r#"hello\ world"#)
+        );
+        let single_quoted = parse_line(r#"RESPOND MSG='hello\ world'"#).unwrap();
+        assert_eq!(
+            single_quoted.extended_parameters().unwrap().get("MSG").map(String::as_str),
+            Some(r#"hello\ world"#)
         );
     }
 
