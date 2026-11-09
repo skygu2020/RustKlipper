@@ -209,7 +209,9 @@ impl ComponentRegistry {
     ) -> Result<(), ComponentError> {
         if loaded_set.contains(name)
             || printer.is_component_loaded(name)
-            || printer.has_object(name)
+            // A pre-registered object may satisfy a dependency, but it must
+            // not suppress the factory when this section is loaded directly.
+            || (requested_by.is_some() && printer.has_object(name))
         {
             return Ok(());
         }
@@ -2879,6 +2881,45 @@ mod tests {
         assert_eq!(
             &*printer.lookup_object::<String>("consumer").unwrap(),
             "ready:provider"
+        );
+    }
+
+    #[test]
+    fn pre_registered_object_does_not_skip_its_own_component_factory() {
+        let printer = Printer::new();
+        printer.install_config(
+            ConfigDocument::parse("[provider]\nvalue=initialized\n").unwrap(),
+        );
+        printer
+            .register_object("provider", "preloaded".to_owned())
+            .unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register("provider", move |printer, section| {
+                observed.fetch_add(1, Ordering::SeqCst);
+                printer
+                    .register_object(
+                        "provider child",
+                        section.get("value").unwrap().to_owned(),
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        assert_eq!(
+            printer.load_components(&registry).unwrap(),
+            vec!["provider".to_owned()]
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            &*printer.lookup_object::<String>("provider").unwrap(),
+            "preloaded"
+        );
+        assert_eq!(
+            &*printer.lookup_object::<String>("provider child").unwrap(),
+            "initialized"
         );
     }
 
