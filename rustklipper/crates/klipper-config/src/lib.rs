@@ -1074,6 +1074,11 @@ mod tests {
         );
         section.deprecate("kinematics", Some("cartesian"), Some("Use a new value"));
         assert_eq!(tracker.warnings().len(), 2);
+        assert_eq!(
+            tracker.warnings()[1].kind,
+            ConfigWarningKind::DeprecatedValue
+        );
+        assert_eq!(tracker.warnings()[1].message, "Use a new value");
         tracker.clear();
         assert!(tracker.warnings().is_empty());
     }
