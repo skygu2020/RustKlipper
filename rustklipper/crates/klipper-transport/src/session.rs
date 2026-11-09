@@ -243,6 +243,20 @@ fn earliest_deadline(send: Option<f64>, retry: Option<f64>) -> Option<f64> {
     }
 }
 
+/// Combine the independent wake sources owned by one serial session.
+/// Keeping this policy pure makes it possible to verify that adding a new
+/// timer cannot accidentally hide an earlier reactor wakeup.
+fn combined_poll_deadline(
+    command_or_retry: Option<f64>,
+    periodic_clock: Option<f64>,
+    application_retry: Option<f64>,
+) -> Option<f64> {
+    earliest_deadline(
+        earliest_deadline(command_or_retry, periodic_clock),
+        application_retry,
+    )
+}
+
 fn read_timeout_until(base: Duration, now: f64, deadline: Option<f64>) -> Duration {
     let Some(deadline) = deadline else { return base; };
     let base_seconds = base.as_secs_f64();
@@ -399,10 +413,7 @@ impl ReliableSerialSession {
             self.retry_transactions.values()
                 .filter_map(|pending| pending.transaction.retry_deadline()),
         );
-        earliest_deadline(
-            earliest_deadline(command_or_retry, periodic),
-            application_retry,
-        )
+        combined_poll_deadline(command_or_retry, periodic, application_retry)
     }
 
     fn kick_scheduler(&mut self) {
@@ -2105,5 +2116,31 @@ mod ack_clock_promotion_tests {
         // A stale caller update must not move the clock behind a retry's
         // already-satisfied min_clock.
         assert_eq!(advance_ack_clock(150, 90), 150);
+    }
+}
+
+#[cfg(test)]
+mod combined_poll_deadline_tests {
+    use super::combined_poll_deadline;
+
+    #[test]
+    fn chooses_the_earliest_deadline_across_all_timer_sources() {
+        assert_eq!(
+            combined_poll_deadline(Some(4.0), Some(2.0), Some(3.0)),
+            Some(2.0),
+        );
+    }
+
+    #[test]
+    fn includes_each_timer_source_when_it_is_the_only_one_armed() {
+        assert_eq!(combined_poll_deadline(Some(1.0), None, None), Some(1.0));
+        assert_eq!(combined_poll_deadline(None, Some(2.0), None), Some(2.0));
+        assert_eq!(combined_poll_deadline(None, None, Some(3.0)), Some(3.0));
+    }
+
+    #[test]
+    fn ignores_unarmed_sources_and_returns_none_when_idle() {
+        assert_eq!(combined_poll_deadline(Some(5.0), None, Some(7.0)), Some(5.0));
+        assert_eq!(combined_poll_deadline(None, None, None), None);
     }
 }
