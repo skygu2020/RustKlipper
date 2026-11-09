@@ -105,6 +105,19 @@ fn advance_ack_clock(last_ack_clock: u64, observed_ack_clock: u64) -> u64 {
     last_ack_clock.max(observed_ack_clock)
 }
 
+/// Compute the next reactor-style periodic clock deadline.
+///
+/// The cadence is anchored to the prior scheduled deadline. If polling was
+/// delayed across one or more intervals, advance to the first future tick
+/// instead of emitting a burst of catch-up requests.
+fn next_periodic_clock_deadline(due_at: f64, now: f64) -> f64 {
+    let mut next_due = due_at + PERIODIC_CLOCK_INTERVAL_SECONDS;
+    while next_due <= now {
+        next_due += PERIODIC_CLOCK_INTERVAL_SECONDS;
+    }
+    next_due
+}
+
 fn allocate_retry_transaction_id(
     next_id: &mut u64,
     in_flight: &HashMap<u64, PendingRetryRequest>,
@@ -598,10 +611,7 @@ impl ReliableSerialSession {
         // Keep the reactor-style cadence anchored to the previous scheduled
         // event, not to response latency. Skip missed ticks rather than
         // issuing a burst of catch-up queries after a slow response.
-        let mut next_due = due_at + PERIODIC_CLOCK_INTERVAL_SECONDS;
-        while next_due <= now {
-            next_due += PERIODIC_CLOCK_INTERVAL_SECONDS;
-        }
+        let next_due = next_periodic_clock_deadline(due_at, now);
         let waiter = self.request_periodic_clock(queue_id)?;
         self.next_periodic_clock_at = Some(next_due);
         Ok(Some(waiter))
@@ -1406,6 +1416,36 @@ mod config_handshake_session_tests {
     }
 }
 
+
+#[cfg(test)]
+mod periodic_clock_deadline_tests {
+    use super::{next_periodic_clock_deadline, PERIODIC_CLOCK_INTERVAL_SECONDS};
+
+    #[test]
+    fn next_tick_is_anchored_to_previous_deadline() {
+        let due_at = 10.0;
+        let next = next_periodic_clock_deadline(due_at, due_at);
+        assert!((next - (due_at + PERIODIC_CLOCK_INTERVAL_SECONDS)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn delayed_poll_skips_missed_ticks_without_catch_up_burst() {
+        let due_at = 10.0;
+        let now = due_at + PERIODIC_CLOCK_INTERVAL_SECONDS * 3.4;
+        let next = next_periodic_clock_deadline(due_at, now);
+        assert!(next > now);
+        assert!((next - (due_at + PERIODIC_CLOCK_INTERVAL_SECONDS * 4.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn exact_tick_boundary_advances_to_a_future_deadline() {
+        let due_at = 10.0;
+        let now = due_at + PERIODIC_CLOCK_INTERVAL_SECONDS;
+        let next = next_periodic_clock_deadline(due_at, now);
+        assert!(next > now);
+        assert!((next - (due_at + PERIODIC_CLOCK_INTERVAL_SECONDS * 2.0)).abs() < 1e-9);
+    }
+}
 
 #[cfg(test)]
 mod ack_clock_promotion_tests {
