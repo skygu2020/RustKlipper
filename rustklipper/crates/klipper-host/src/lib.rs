@@ -1769,6 +1769,45 @@ mod tests {
     }
 
     #[test]
+    fn initialization_can_retry_after_connect_handler_panic() {
+        let printer = Printer::new();
+        printer.install_config(ConfigDocument::parse("[fan]\npin=PA0\n").unwrap());
+        let factory_calls = Arc::new(AtomicUsize::new(0));
+        let observed_factory_calls = factory_calls.clone();
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register("fan", move |printer, section| {
+                observed_factory_calls.fetch_add(1, Ordering::SeqCst);
+                printer
+                    .register_object("fan", section.get("pin").unwrap().to_owned())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        let should_panic = Arc::new(AtomicBool::new(true));
+        let panic_flag = should_panic.clone();
+        let connect_calls = Arc::new(AtomicUsize::new(0));
+        let observed_connect_calls = connect_calls.clone();
+        printer.register_event_handler(PrinterEventKind::Connect, move |_| {
+            if panic_flag.swap(false, Ordering::SeqCst) {
+                panic!("first connect attempt fails");
+            }
+            observed_connect_calls.fetch_add(1, Ordering::SeqCst);
+        });
+
+        assert!(matches!(
+            printer.initialize_components(&registry),
+            Err(ComponentError::EventHandlerPanicked {
+                event: PrinterEventKind::Connect,
+                count: 1,
+            })
+        ));
+        assert_eq!(printer.initialize_components(&registry).unwrap(), Vec::<String>::new());
+        assert_eq!(factory_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(connect_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn component_initialization_events_are_emitted_once() {
         let printer = Printer::new();
         printer.install_config(ConfigDocument::parse("[fan]\npin=PA0\n").unwrap());
