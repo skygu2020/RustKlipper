@@ -616,7 +616,7 @@ impl ReliableSerialSession {
 
     /// Validate the final response and return the usable move-slot count.
     pub fn complete_config_handshake(
-        &self,
+        &mut self,
         handshake: &mut McuConfigHandshake,
         final_response: Response,
     ) -> Result<u16, SessionError> {
