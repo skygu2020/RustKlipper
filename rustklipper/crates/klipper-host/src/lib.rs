@@ -152,6 +152,8 @@ impl ComponentRegistry {
         self.register_with_dependencies(section, Vec::new(), factory)
     }
 
+    /// Register a component with config-section or pre-registered-object dependencies.
+    /// Dependencies are loaded recursively before this section's factory runs.
     pub fn register_with_dependencies<F>(
         &mut self,
         section: impl Into<String>,
