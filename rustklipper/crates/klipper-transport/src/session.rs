@@ -21,6 +21,8 @@ pub enum SessionError {
     Notification(u64),
     #[error("response-tracked command already has a notification ID")]
     CommandAlreadyNotified,
+    #[error("identify requests must use the same scheduler queue")]
+    IdentifyQueueMismatch,
     #[error(transparent)]
     Dictionary(#[from] DictionaryError),
 }
@@ -72,6 +74,7 @@ pub struct ReliableSerialSession {
     next_response_notify_id: u64,
     dictionary: Option<IdentifyDictionary>,
     identify_assembler: IdentifyAssembler,
+    identify_queue_id: Option<u64>,
     started: Instant,
     disconnected: bool,
 }
@@ -93,6 +96,7 @@ impl ReliableSerialSession {
             next_response_notify_id: u64::MAX,
             dictionary: None,
             identify_assembler: IdentifyAssembler::new(),
+            identify_queue_id: None,
             started: Instant::now(),
             disconnected: false,
         }
@@ -131,9 +135,17 @@ impl ReliableSerialSession {
             self.set_dictionary(dictionary);
             Ok(IdentifyProgress::Complete { version })
         } else {
-            Ok(IdentifyProgress::More {
-                next_offset: self.identify_assembler.next_offset()?,
-            })
+            let next_offset = self.identify_assembler.next_offset()?;
+            // Continue the bootstrap exchange automatically on the queue that
+            // carried the initial identify request.
+            if let Some(queue_id) = self.identify_queue_id {
+                let bytes = encode_identify_request(next_offset, 40);
+                self.scheduler.enqueue(queue_id, ScheduledCommand::new(
+                    bytes, 0, crate::BACKGROUND_PRIORITY_CLOCK,
+                ))?;
+                self.scheduler.promote_ready(0);
+            }
+            Ok(IdentifyProgress::More { next_offset })
         }
     }
 
@@ -162,6 +174,10 @@ impl ReliableSerialSession {
                 reason: "dictionary is already installed".into(),
             }));
         }
+        if self.identify_queue_id.is_some_and(|existing| existing != queue_id) {
+            return Err(SessionError::IdentifyQueueMismatch);
+        }
+        self.identify_queue_id = Some(queue_id);
         let bytes = encode_identify_request(offset, count);
         self.scheduler.enqueue(queue_id, ScheduledCommand::new(
             bytes, 0, crate::BACKGROUND_PRIORITY_CLOCK,
