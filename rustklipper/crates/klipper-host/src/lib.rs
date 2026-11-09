@@ -240,6 +240,20 @@ impl Printer {
             .map(str::to_owned)
     }
 
+    /// Read a config option with an optional default and explicit tracking policy.
+    pub fn config_value_or(
+        &self,
+        section: &str,
+        option: &str,
+        default: Option<&str>,
+        note_valid: bool,
+    ) -> Option<String> {
+        let config = self.config()?;
+        self.config_usage
+            .get_with_default(&config, section, option, default, note_valid)
+            .map(str::to_owned)
+    }
+
     pub fn config_required(
         &self,
         section: &str,
@@ -749,6 +763,28 @@ mod tests {
                 section: "unknown_section".to_owned(),
             })
         );
+    }
+
+    #[test]
+    fn printer_config_defaults_can_control_validation_tracking() {
+        let tracked = Printer::new();
+        tracked.install_config(ConfigDocument::parse("[printer]\n").unwrap());
+        assert_eq!(
+            tracked.config_value_or("printer", "optional", Some("fallback"), true),
+            Some("fallback".to_owned())
+        );
+        assert!(tracked.validate_config().is_ok());
+
+        let untracked = Printer::new();
+        untracked.install_config(ConfigDocument::parse("[printer]\n").unwrap());
+        assert_eq!(
+            untracked.config_value_or("printer", "optional", Some("fallback"), false),
+            Some("fallback".to_owned())
+        );
+        assert!(matches!(
+            untracked.validate_config(),
+            Err(ConfigValidationError::UnknownSection { .. })
+        ));
     }
 
     #[test]
