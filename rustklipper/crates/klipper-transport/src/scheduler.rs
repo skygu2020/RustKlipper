@@ -70,12 +70,16 @@ pub struct CommandScheduler {
     sent_blocks: VecDeque<(u64, usize)>,
     retransmit: RetransmitState,
     background_priority_clock: u64,
+    background_priority_clock_per_byte: f64,
+    background_priority_min_bytes: usize,
 }
 impl Default for CommandScheduler {
     fn default() -> Self {
         Self { queues: BTreeMap::new(), send_sequence: 1, receive_sequence: 1,
             receive_window: 0, need_ack_bytes: 0, last_ack_bytes: 0, last_ack_sequence: 0, sent_blocks: VecDeque::new(), retransmit: RetransmitState::new(),
-            background_priority_clock: BACKGROUND_PRIORITY_CLOCK }
+            background_priority_clock: BACKGROUND_PRIORITY_CLOCK,
+            background_priority_clock_per_byte: 0.0,
+            background_priority_min_bytes: MESSAGE_MIN }
     }
 }
 impl CommandScheduler {
@@ -92,7 +96,19 @@ impl CommandScheduler {
     /// Set the current effective request clock for background-priority messages.
     /// Klipper recomputes this from its clock estimate before each send decision.
     pub fn set_background_priority_clock(&mut self, clock: u64) {
+        self.set_background_priority_clock_model(clock, 0.0, MESSAGE_MIN);
+    }
+
+    /// Configure the moving background request clock while a frame is packed.
+    /// `clock_per_byte` converts additional UART bytes into MCU clocks; the
+    /// first selection uses `clock` and later selections account for bytes
+    /// already accumulated in the current frame plus the minimum frame header.
+    pub fn set_background_priority_clock_model(
+        &mut self, clock: u64, clock_per_byte: f64, min_bytes: usize,
+    ) {
         self.background_priority_clock = clock;
+        self.background_priority_clock_per_byte = clock_per_byte.max(0.0);
+        self.background_priority_min_bytes = min_bytes;
     }
 
     pub fn receive_sequence(&self) -> u64 { self.receive_sequence }
@@ -170,7 +186,15 @@ impl CommandScheduler {
                 }))
                 .min_by_key(|(_, priority, _)| {
                     if *priority == BACKGROUND_PRIORITY_CLOCK {
-                        self.background_priority_clock
+                        let pending_bytes = if payload.is_empty() {
+                            0
+                        } else {
+                            payload.len().saturating_add(self.background_priority_min_bytes)
+                        };
+                        let pending_clocks =
+                            (pending_bytes as f64 * self.background_priority_clock_per_byte)
+                                .max(0.0) as u64;
+                        self.background_priority_clock.saturating_add(pending_clocks)
                     } else {
                         *priority
                     }
