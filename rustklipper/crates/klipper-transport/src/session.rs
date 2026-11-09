@@ -613,6 +613,18 @@ impl ReliableSerialSession {
         self.promote_ready(queue_clock)
     }
 
+    /// Apply a clock update at the session's current monotonic time.
+    ///
+    /// Prefer this over `apply_clock_update` when the update was produced from
+    /// this session's timestamps. It prevents accidentally mixing the session
+    /// clock with process-wide or system-wide monotonic timestamps.
+    pub fn apply_clock_update_now(
+        &mut self,
+        update: ClockUpdate,
+    ) -> Result<Option<u64>, SessionError> {
+        self.apply_clock_update(update, self.now())
+    }
+
     fn write_retry_batch(
         &mut self,
         retries: Vec<crate::Retransmission>,
