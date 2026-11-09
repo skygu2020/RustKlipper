@@ -533,6 +533,24 @@ mod tests {
         assert!(matches!(invalid.events.first(), Some(DispatchEvent::Error(message)) if message.contains("Did you mean 'quiet'?")));
     }
 
+
+    #[test]
+    fn mux_without_default_requires_its_key_parameter() {
+        let mut dispatcher = GCodeDispatcher::new();
+        dispatcher.set_ready();
+        dispatcher
+            .register_mux_command("SET_MODE", "MODE", Some("quiet"), None, |_| {
+                Ok(Vec::new())
+            })
+            .unwrap();
+
+        let result = dispatcher.process_line("SET_MODE", true).unwrap();
+        assert!(matches!(
+            result.events.first(),
+            Some(DispatchEvent::Error(message)) if message.contains("missing MODE")
+        ));
+    }
+
     #[test]
     fn mux_command_rejects_mixed_keys_and_duplicate_values() {
         let mut dispatcher = GCodeDispatcher::new();
