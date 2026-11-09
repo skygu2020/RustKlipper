@@ -439,12 +439,19 @@ impl Printer {
 
     /// Install a parsed host configuration and enter the configuring state.
     pub fn install_config(&self, config: ConfigDocument) {
+        // Serialize configuration replacement with component factories so a
+        // factory cannot register handlers or objects into a discarded config.
+        let _load_guard = self
+            .component_load_lock
+            .lock()
+            .expect("component load lock poisoned");
         self.config_usage.clear();
         self.connection_initialized.store(false, std::sync::atomic::Ordering::SeqCst);
-        self.component_gcode
+        let mut component_gcode = self
+            .component_gcode
             .lock()
-            .expect("component G-code ownership lock poisoned")
-            .clear();
+            .expect("component G-code ownership lock poisoned");
+        component_gcode.clear();
         self.gcode
             .lock()
             .expect("gcode dispatcher lock poisoned")
