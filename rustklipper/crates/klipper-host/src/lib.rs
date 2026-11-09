@@ -1726,6 +1726,47 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_component_initialization_runs_once() {
+        let printer = Arc::new(Printer::new());
+        printer.install_config(ConfigDocument::parse("[fan]\npin=PA0\n").unwrap());
+        let registry = Arc::new(ComponentRegistry::new());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed_calls = calls.clone();
+        Arc::get_mut(&mut registry.clone()).map(|_| ());
+        let mut owned_registry = ComponentRegistry::new();
+        owned_registry
+            .register("fan", move |printer, section| {
+                observed_calls.fetch_add(1, Ordering::SeqCst);
+                printer
+                    .register_object("fan", section.get("pin").unwrap().to_owned())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        let registry = Arc::new(owned_registry);
+        let events = Arc::new(AtomicUsize::new(0));
+        let observed_events = events.clone();
+        printer.register_event_handler(PrinterEventKind::Connect, move |_| {
+            observed_events.fetch_add(1, Ordering::SeqCst);
+        });
+        let start = Arc::new(std::sync::Barrier::new(3));
+        let mut workers = Vec::new();
+        for _ in 0..2 {
+            let printer = printer.clone();
+            let registry = registry.clone();
+            let start = start.clone();
+            workers.push(std::thread::spawn(move || {
+                start.wait();
+                printer.initialize_components(&registry).unwrap().len()
+            }));
+        }
+        start.wait();
+        let loaded: usize = workers.into_iter().map(|worker| worker.join().unwrap()).sum();
+        assert_eq!(loaded, 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(events.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn component_initialization_events_are_emitted_once() {
         let printer = Printer::new();
         printer.install_config(ConfigDocument::parse("[fan]\npin=PA0\n").unwrap());
