@@ -208,6 +208,7 @@ impl Printer {
 
     /// Install a parsed host configuration and enter the configuring state.
     pub fn install_config(&self, config: ConfigDocument) {
+        self.config_usage.clear();
         *self.config.write().expect("printer config lock poisoned") = Some(Arc::new(config));
         self.set_configuring();
         self.send_event(PrinterEvent::ConfigLoaded);
