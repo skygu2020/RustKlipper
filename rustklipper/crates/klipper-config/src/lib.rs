@@ -460,6 +460,48 @@ impl<'a> TrackedConfigSection<'a> {
     pub fn has_option(&self, option: &str) -> bool {
         self.section.has_option(option)
     }
+
+    pub fn get_required(&self, option: &str) -> Result<&'a str, ConfigValueError> {
+        self.get(option).ok_or_else(|| ConfigValueError::Missing {
+            section: self.section.name.clone(),
+            option: option.to_owned(),
+        })
+    }
+
+    pub fn get_i64(&self, option: &str) -> Result<i64, ConfigValueError> {
+        let value = self.get_required(option)?;
+        value.parse().map_err(|_| ConfigValueError::Invalid {
+            section: self.section.name.clone(),
+            option: option.to_owned(),
+            value: value.to_owned(),
+            expected: "integer",
+        })
+    }
+
+    pub fn get_bool(&self, option: &str) -> Result<bool, ConfigValueError> {
+        let value = self.get_required(option)?;
+        match value.to_ascii_lowercase().as_str() {
+            "1" | "yes" | "true" | "on" => Ok(true),
+            "0" | "no" | "false" | "off" => Ok(false),
+            _ => Err(ConfigValueError::Invalid {
+                section: self.section.name.clone(),
+                option: option.to_owned(),
+                value: value.to_owned(),
+                expected: "boolean",
+            }),
+        }
+    }
+
+    pub fn prefixed_options(
+        &self,
+        prefix: &str,
+    ) -> impl Iterator<Item = &'a ConfigOption> {
+        let options: Vec<_> = self.section.prefixed_options(prefix).collect();
+        for option in &options {
+            self.tracker.mark_used(&self.section.name, &option.name);
+        }
+        options.into_iter()
+    }
 }
 
 impl ConfigUsageTracker {
@@ -631,6 +673,24 @@ mod tests {
         assert_eq!(config.get_f64("printer", "max_accel").unwrap(), 5000.0);
         assert!(config.get_bool("printer", "use_pin").unwrap());
         assert!(config.get_bool("printer", "missing").is_err());
+    }
+
+    #[test]
+    fn tracked_section_supports_typed_and_prefixed_reads() {
+        let config = ConfigDocument::parse(
+            "[heater]\nmax_temp=275\ncontrol=pid\npid_kp=22.2\npid_ki=1.1\n",
+        )
+        .unwrap();
+        let tracker = ConfigUsageTracker::new();
+        let section = tracker.track_section(config.section("heater").unwrap());
+        assert_eq!(section.get_i64("max_temp").unwrap(), 275);
+        assert_eq!(
+            section.prefixed_options("pid_").count(),
+            2
+        );
+        let unused = tracker.unused_options(&config);
+        assert_eq!(unused.len(), 1);
+        assert_eq!(unused[0].option, "control");
     }
 
     #[test]
