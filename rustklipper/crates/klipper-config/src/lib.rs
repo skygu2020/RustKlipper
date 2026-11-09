@@ -123,7 +123,7 @@ impl ConfigDocument {
                 source: source.clone(), line: line_no,
             })?;
 
-            if line.starts_with(char::is_whitespace) {
+            if line.chars().next().is_some_and(char::is_whitespace)\n                && !trimmed.contains('=') && !trimmed.contains(':') {
                 let Some((option_section, option_index)) = last_option else {
                     return Err(ConfigParseError::OrphanContinuation {
                         source: source.clone(), line: line_no,
@@ -142,7 +142,7 @@ impl ConfigDocument {
             }
 
             let option_text = strip_inline_comment(trimmed);
-            let Some((name, value)) = option_text.split_once('=') else {
+            let Some(delimiter) = option_text.find(|ch| ch == '=' || ch == ':') else {
                 return Err(ConfigParseError::InvalidOption {
                     source: source.clone(), line: line_no,
                 });
