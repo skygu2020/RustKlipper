@@ -255,7 +255,9 @@ fn shell_tokens(input: &str) -> Result<Vec<String>, ()> {
             active = true;
             continue;
         }
-        if ch == '\\' && quote.is_some() {
+        // Match POSIX shlex behavior: backslash escapes outside quotes
+        // and inside double quotes, but remains literal inside single quotes.
+        if ch == '\\' && quote != Some('\'') {
             escaped = true;
             continue;
         }
@@ -273,7 +275,7 @@ fn shell_tokens(input: &str) -> Result<Vec<String>, ()> {
                 quote = Some(ch);
                 active = true;
             }
-            '#' | ';' => break,
+            ';' => break,
             c if c.is_whitespace() => {
                 if active {
                     tokens.push(std::mem::take(&mut token));
@@ -336,6 +338,21 @@ mod tests {
         assert_eq!(params.get("TARGET").map(String::as_str), Some("205"));
         let quoted = parse_line("RESPOND MSG=\"hello world\"").unwrap();
         assert_eq!(quoted.extended_parameters().unwrap().get("MSG").map(String::as_str), Some("hello world"));
+    }
+
+    #[test]
+    fn extended_parameters_support_unquoted_escapes_and_hash_values() {
+        let escaped = parse_line(r#"RESPOND MSG=hello\ world"#).unwrap();
+        assert_eq!(
+            escaped.extended_parameters().unwrap().get("MSG").map(String::as_str),
+            Some("hello world")
+        );
+
+        let hash = parse_line("RESPOND MSG=#status").unwrap();
+        assert_eq!(
+            hash.extended_parameters().unwrap().get("MSG").map(String::as_str),
+            Some("#status")
+        );
     }
 
     #[test]
