@@ -214,6 +214,18 @@ fn estimate_frame_receive_time(
     batch_receive.max(observed_receive)
 }
 
+fn periodic_clock_deadline(
+    queue_configured: bool,
+    request_in_flight: bool,
+    next_deadline: Option<f64>,
+) -> Option<f64> {
+    if queue_configured && !request_in_flight {
+        next_deadline
+    } else {
+        None
+    }
+}
+
 fn earliest_deadline(send: Option<f64>, retry: Option<f64>) -> Option<f64> {
     match (send, retry) {
         (Some(send), Some(retry)) => Some(send.min(retry)),
@@ -369,13 +381,11 @@ impl ReliableSerialSession {
     pub fn next_poll_deadline(&self) -> Option<f64> {
         let command_or_retry =
             earliest_deadline(self.next_send_at, self.scheduler.next_retransmit_at());
-        let periodic = if self.periodic_clock_queue_id.is_some()
-            && !self.periodic_clock_in_flight
-        {
-            self.next_periodic_clock_at
-        } else {
-            None
-        };
+        let periodic = periodic_clock_deadline(
+            self.periodic_clock_queue_id.is_some(),
+            self.periodic_clock_in_flight,
+            self.next_periodic_clock_at,
+        );
         earliest_deadline(command_or_retry, periodic)
     }
 
@@ -1780,6 +1790,19 @@ mod frame_receive_time_tests {
 
         let receive = estimate_frame_receive_time(1.0, 0.0, timing, 10, 10);
         assert!((receive - 1.016).abs() < 1e-12);
+    }
+}
+
+#[cfg(test)]
+mod periodic_deadline_tests {
+    use super::periodic_clock_deadline;
+
+    #[test]
+    fn periodic_clock_deadline_is_hidden_until_queue_is_configured() {
+        assert_eq!(periodic_clock_deadline(false, false, Some(1.0)), None);
+        assert_eq!(periodic_clock_deadline(true, true, Some(1.0)), None);
+        assert_eq!(periodic_clock_deadline(true, false, Some(1.0)), Some(1.0));
+        assert_eq!(periodic_clock_deadline(true, false, None), None);
     }
 }
 
