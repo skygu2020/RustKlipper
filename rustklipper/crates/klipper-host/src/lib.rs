@@ -2089,6 +2089,33 @@ mod tests {
     }
 
     #[test]
+    fn config_reinstall_allows_a_fresh_component_connection_cycle() {
+        let printer = Printer::new();
+        printer.install_config(ConfigDocument::parse("[fan]\npin=PA0\n").unwrap());
+        let connects = Arc::new(AtomicUsize::new(0));
+        let observed = connects.clone();
+        printer.register_event_handler(PrinterEventKind::Connect, move |_| {
+            observed.fetch_add(1, Ordering::SeqCst);
+        });
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register("fan", |printer, section| {
+                printer
+                    .register_object("fan", section.get("pin").unwrap().to_owned())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        printer.initialize_components(&registry).unwrap();
+        printer.set_ready();
+        printer.install_config(ConfigDocument::parse("[fan]\npin=PB0\n").unwrap());
+        assert_eq!(printer.state(), PrinterState::Configuring);
+        printer.initialize_components(&registry).unwrap();
+        assert_eq!(connects.load(Ordering::SeqCst), 2);
+        assert_eq!(&*printer.lookup_object::<String>("fan").unwrap(), "PB0");
+    }
+
+    #[test]
     fn component_initialization_events_are_emitted_once() {
         let printer = Printer::new();
         printer.install_config(ConfigDocument::parse("[fan]\npin=PA0\n").unwrap());
