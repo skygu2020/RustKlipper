@@ -24,9 +24,10 @@ the compatibility reference and is not modified by the Rust implementation.
 - `klipper-config`: ordered Klipper-style section/option parsing, typed
   configuration access, and recursive `[include ...]` expansion with relative
   paths, sorted glob matches, recursive-include detection, tracked option
-  access, unknown section/option validation, deduplicated deprecation warnings,
-  and Klipper `SAVE_CONFIG` autosave-block loading. Full printer-object
-  validation remains future work.
+  access, typed/list/choice getters, unknown section/option validation,
+  deduplicated deprecation warnings, and Klipper `SAVE_CONFIG` autosave-block
+  loading with source-line preservation. Full printer-object validation remains
+  future work.
 - `klipper-gcode`: Klipper-style traditional/extended G-code parsing, typed
   parameter access, readiness-aware command dispatch, mux commands, script
   execution, and ACK/response events.
