@@ -41,6 +41,8 @@ pub enum PrinterStateCategory {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PrinterEventKind {
     ConfigLoaded,
+    McuIdentify,
+    Connect,
     Ready,
     Shutdown,
     Disconnect,
@@ -49,6 +51,8 @@ pub enum PrinterEventKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PrinterEvent {
     ConfigLoaded,
+    McuIdentify,
+    Connect,
     Ready,
     Shutdown { reason: String },
     Disconnect,
@@ -58,6 +62,8 @@ impl PrinterEvent {
     pub fn kind(&self) -> PrinterEventKind {
         match self {
             Self::ConfigLoaded => PrinterEventKind::ConfigLoaded,
+            Self::McuIdentify => PrinterEventKind::McuIdentify,
+            Self::Connect => PrinterEventKind::Connect,
             Self::Ready => PrinterEventKind::Ready,
             Self::Shutdown { .. } => PrinterEventKind::Shutdown,
             Self::Disconnect => PrinterEventKind::Disconnect,
@@ -401,6 +407,21 @@ impl Printer {
         registry: &ComponentRegistry,
     ) -> Result<Vec<String>, ComponentError> {
         registry.load_registered(self)
+    }
+
+    /// Load registered components and emit the ordered connection events.
+    ///
+    /// MCU identify and connect handlers run after configuration components
+    /// have been constructed; the caller transitions to Ready after hardware
+    /// initialization has completed.
+    pub fn initialize_components(
+        &self,
+        registry: &ComponentRegistry,
+    ) -> Result<Vec<String>, ComponentError> {
+        let loaded = self.load_components(registry)?;
+        self.send_event(PrinterEvent::McuIdentify);
+        self.send_event(PrinterEvent::Connect);
+        Ok(loaded)
     }
 
     pub fn set_configuring(&self) {
@@ -934,6 +955,37 @@ mod tests {
         );
         assert!(printer.unused_config_options().is_empty());
         assert!(printer.validate_config().is_ok());
+    }
+
+    #[test]
+    fn component_initialization_emits_identify_then_connect_events() {
+        let printer = Printer::new();
+        printer.install_config(ConfigDocument::parse("[fan]\npin=PA0\n").unwrap());
+        let order = Arc::new(Mutex::new(Vec::new()));
+        for (kind, value) in [
+            (PrinterEventKind::McuIdentify, "identify"),
+            (PrinterEventKind::Connect, "connect"),
+        ] {
+            let order = order.clone();
+            printer.register_event_handler(kind, move |_| {
+                order.lock().unwrap().push(value);
+            });
+        }
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register("fan", |printer, section| {
+                printer
+                    .register_object("fan", section.get("pin").unwrap().to_owned())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        assert_eq!(
+            printer.initialize_components(&registry).unwrap(),
+            vec!["fan".to_owned()]
+        );
+        assert_eq!(*order.lock().unwrap(), vec!["identify", "connect"]);
+        assert_eq!(&*printer.lookup_object::<String>("fan").unwrap(), "PA0");
     }
 
     #[test]
