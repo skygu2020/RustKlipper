@@ -4,7 +4,7 @@
 //! `klippy/configfile.py`. It intentionally preserves section order and
 //! option insertion order so later config loading can reproduce Klipper's
 //! deterministic traversal. File includes are handled by the loader layer.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +60,7 @@ impl ConfigSection {
 pub struct ConfigDocument {
     sections: Vec<ConfigSection>,
     index: HashMap<String, usize>,
+    autosave_options: HashSet<(String, String)>,
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -185,6 +186,10 @@ impl ConfigDocument {
             };
             for option in incoming.options {
                 if !self.sections[section_index].has_option(&option.name) {
+                    self.autosave_options.insert((
+                        incoming.name.to_ascii_lowercase(),
+                        option.name.to_ascii_lowercase(),
+                    ));
                     self.sections[section_index].set(
                         option.name,
                         option.value,
@@ -218,6 +223,11 @@ impl ConfigDocument {
     pub fn has_section(&self, name: &str) -> bool { self.index.contains_key(name) }
 
     pub fn sections(&self) -> &[ConfigSection] { &self.sections }
+
+    pub fn is_autosave_option(&self, section: &str, option: &str) -> bool {
+        self.autosave_options
+            .contains(&(section.to_ascii_lowercase(), option.to_ascii_lowercase()))
+    }
 
     pub fn sections_with_prefix(&self, prefix: &str) -> impl Iterator<Item = &ConfigSection> {
         self.sections.iter().filter(move |section| section.name.starts_with(prefix))
@@ -913,6 +923,12 @@ impl ConfigUsageTracker {
             .collect();
         let used = self.used.lock().expect("config usage lock poisoned");
         valid.extend(used.iter().map(|(section, _)| section.clone()));
+        valid.extend(
+            config
+                .autosave_options
+                .iter()
+                .map(|(section, _)| section.clone()),
+        );
 
         for section in config.sections() {
             let section_name = section.name.to_ascii_lowercase();
@@ -923,6 +939,9 @@ impl ConfigUsageTracker {
             }
             for option in section.options() {
                 let key = (section_name.clone(), option.name.clone());
+                if config.is_autosave_option(&section.name, &option.name) {
+                    continue;
+                }
                 if !used.contains(&key) {
                     return Err(ConfigValidationError::UnknownOption {
                         section: section.name.clone(),
@@ -943,7 +962,9 @@ impl ConfigUsageTracker {
             .flat_map(|section| {
                 section.options().iter().filter_map(|option| {
                     let key = (section.name.to_ascii_lowercase(), option.name.clone());
-                    (!used.contains(&key)).then(|| UnusedConfigOption {
+                    (!config.is_autosave_option(&section.name, &option.name)
+                        && !used.contains(&key))
+                    .then(|| UnusedConfigOption {
                         section: section.name.clone(),
                         option: option.name.clone(),
                         line: option.line,
@@ -1231,6 +1252,25 @@ mod tests {
         assert_eq!(config.get("printer", "kinematics"), Some("cartesian"));
         assert_eq!(config.get("printer", "max_velocity"), Some("250"));
         assert_eq!(config.get("stepper_x", "position_endstop"), Some("0"));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn autosave_options_are_exempt_from_unused_option_validation() {
+        use std::fs;
+        let path = std::env::temp_dir().join(format!(
+            "rustklipper-config-autosave-validation-{}.cfg",
+            std::process::id()
+        ));
+        fs::write(
+            &path,
+            "[printer]\nkinematics=cartesian\n#*# <---------------------- SAVE_CONFIG ---------------------->\n#*# [bed_mesh]\n#*# profile = default\n",
+        )
+        .unwrap();
+        let config = ConfigFileLoader::load(&path).unwrap();
+        let tracker = ConfigUsageTracker::new();
+        assert!(tracker.unused_options(&config).is_empty());
+        assert!(tracker.validate(&config, &[]).is_ok());
         fs::remove_file(path).unwrap();
     }
 
