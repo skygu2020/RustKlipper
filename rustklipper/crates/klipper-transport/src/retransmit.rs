@@ -328,7 +328,14 @@ mod tests {
         assert_eq!(retries[1].bytes, vec![0x11]);
         assert!(state.nak(0.012).unwrap().is_empty());
         state.acknowledge(11, 0.013).unwrap();
-        assert_eq!(state.nak(0.014).unwrap().len(), 2);
+        assert!(state.nak(0.014).unwrap().is_empty());
+        state.track_sent(12, vec![0x12], 0.015).unwrap();
+        state.acknowledge(12, 0.016).unwrap();
+        state.track_sent(13, vec![0x13], 0.017).unwrap();
+        state.acknowledge(13, 0.018).unwrap();
+        let next_nak = state.nak(0.019).unwrap();
+        assert_eq!(next_nak.len(), 1);
+        assert_eq!(next_nak[0].sequence, 13);
     }
 
     #[test]
