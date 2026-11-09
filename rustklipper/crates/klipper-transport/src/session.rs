@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::time::Instant;
 
 use serde_json::Value;
-use klipper_protocol::{encode_identify_request, DictionaryError, Frame, IdentifyAssembler, IdentifyChunk, IdentifyDictionary};
+use klipper_protocol::{encode_identify_request, DictionaryError, Frame, IdentifyAssembler, IdentifyChunk, IdentifyDictionary, IDENTIFY_CHUNK_SIZE};
 
 use crate::{
     AckEvent, AckTracker, CommandScheduler, Response, ResponseRouter, ResponseWaiter, ScheduleError, ScheduledCommand, TransportError, UsbSerialTransport,
@@ -143,7 +143,7 @@ impl ReliableSerialSession {
             // Continue the bootstrap exchange automatically on the queue that
             // carried the initial identify request.
             if let Some(queue_id) = self.identify_queue_id {
-                let count = self.identify_chunk_count.unwrap_or(40);
+                let count = self.identify_chunk_count.unwrap_or(IDENTIFY_CHUNK_SIZE);
                 let bytes = encode_identify_request(next_offset, count);
                 self.scheduler.enqueue(queue_id, ScheduledCommand::new(
                     bytes, 0, crate::BACKGROUND_PRIORITY_CLOCK,

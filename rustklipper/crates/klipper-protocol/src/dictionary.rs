@@ -25,6 +25,9 @@ pub struct IdentifyChunk {
     pub data: Vec<u8>,
 }
 
+/// Default bootstrap identify response chunk size used by Klipper hosts.
+pub const IDENTIFY_CHUNK_SIZE: u8 = 40;
+
 /// Encode the built-in Klipper `identify offset=%u count=%c` request (message id 1).
 pub fn encode_identify_request(offset: u32, count: u8) -> Vec<u8> {
     let mut out = Vec::with_capacity(7);
