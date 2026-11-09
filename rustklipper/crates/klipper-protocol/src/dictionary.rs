@@ -54,7 +54,7 @@ pub fn decode_identify_response(body: &[u8]) -> Result<IdentifyChunk, Dictionary
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MessageKind { Command, Response }
+pub enum MessageKind { Command, Response, Output }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ParamKind { U32, I32, U16, I16, Byte, String, Progmem, Buffer }
 impl ParamKind {
@@ -69,7 +69,50 @@ impl ParamKind {
 #[derive(Debug, Clone)]
 struct Param { name:String, kind:ParamKind, enumeration:Option<String> }
 #[derive(Debug, Clone)]
-struct Message { id:i32, name:String, format:String, kind:MessageKind, params:Vec<Param> }
+struct Message { id:i32, name:String, format:String, kind:MessageKind, params:Vec<Param>, output:Option<OutputFormat> }
+#[derive(Debug, Clone)]
+enum OutputPart { Literal(String), Parameter(ParamKind) }
+#[derive(Debug, Clone)]
+struct OutputFormat { parts:Vec<OutputPart> }
+impl OutputFormat {
+    fn parse(format:&str)->Result<Self,DictionaryError>{
+        const TOKENS:[(&str,ParamKind);8]=[("%.*s",ParamKind::Progmem),("%*s",ParamKind::Buffer),("%hu",ParamKind::U16),("%hi",ParamKind::I16),("%u",ParamKind::U32),("%i",ParamKind::I32),("%c",ParamKind::Byte),("%s",ParamKind::String)];
+        let bytes=format.as_bytes(); let mut parts=Vec::new(); let mut literal=String::new(); let mut pos=0;
+        while pos<bytes.len(){
+            if bytes[pos]!=b'%' { let start=pos; while pos<bytes.len() && bytes[pos]!=b'%' {pos+=1;} literal.push_str(&format[start..pos]); continue; }
+            if pos+1<bytes.len() && bytes[pos+1]==b'%' {literal.push('%');pos+=2;continue;}
+            let found=TOKENS.iter().find(|(token,_)|format[pos..].starts_with(token));
+            let (token,kind)=found.ok_or_else(||invalid_field("output",&format!("invalid output format near {}",&format[pos..])))?;
+            if !literal.is_empty(){parts.push(OutputPart::Literal(std::mem::take(&mut literal)));}
+            parts.push(OutputPart::Parameter(*kind));pos+=token.len();
+        }
+        if !literal.is_empty(){parts.push(OutputPart::Literal(literal));}
+        Ok(Self{parts})
+    }
+    fn render(&self,body:&[u8],pos:&mut usize)->Result<String,DictionaryError>{
+        let mut out=String::new();
+        for part in &self.parts { match part {
+            OutputPart::Literal(s)=>out.push_str(s),
+            OutputPart::Parameter(kind)=>{
+                let value=if kind.dynamic(){
+                    let len=*body.get(*pos).ok_or(ProtocolError::TruncatedInteger)? as usize;*pos+=1;
+                    let end=pos.checked_add(len).ok_or(ProtocolError::TruncatedInteger)?;
+                    let bytes=body.get(*pos..end).ok_or(ProtocolError::TruncatedInteger)?;*pos=end;
+                    python_bytes_repr(bytes)
+                }else{
+                    let (raw,used)=decode_i32(body.get(*pos..).ok_or(ProtocolError::TruncatedInteger)?)?;*pos+=used;
+                    if kind.signed(){raw.to_string()}else{(raw as u32).to_string()}
+                }; out.push_str(&value);
+            }
+        }} Ok(out)
+    }
+}
+fn python_bytes_repr(bytes:&[u8])->String{
+    let quote=if bytes.contains(&b'\'') && !bytes.contains(&b'"'){b'"'}else{b'\''};
+    let mut out=String::from("b");out.push(quote as char);
+    for &b in bytes { match b { b'\\'=>out.push_str("\\\\"), b'\n'=>out.push_str("\\n"), b'\r'=>out.push_str("\\r"), b'\t'=>out.push_str("\\t"), x if x==quote=>{out.push('\\');out.push(x as char)}, 0x20..=0x7e=>out.push(b as char), _=>out.push_str(&format!("\\x{b:02x}")) }}
+    out.push(quote as char);out
+}
 #[derive(Debug, Clone, Default)]
 struct Enumeration { names:BTreeMap<String,i32>, values:BTreeMap<i32,String> }
 impl Enumeration {
@@ -117,6 +160,9 @@ impl IdentifyDictionary {
         let responses=obj.get("responses").and_then(Value::as_object).ok_or(DictionaryError::MissingField("responses"))?;
         for (fmt,id) in commands {d.add_message(fmt,id,MessageKind::Command)?;}
         for (fmt,id) in responses {d.add_message(fmt,id,MessageKind::Response)?;}
+        if let Some(output)=obj.get("output") {
+            for (fmt,id) in output.as_object().ok_or_else(||invalid_field("output","expected object"))? { d.add_output(fmt,id)?; }
+        }
         if let Some(config)=obj.get("config").and_then(Value::as_object){
             for (k,v) in config {d.constants.insert(k.clone(),v.as_str().map(str::to_owned).unwrap_or_else(||v.to_string()));}
         }
@@ -133,8 +179,15 @@ impl IdentifyDictionary {
             let enumeration=self.enums.keys().find(|e|p==e.as_str()||p.ends_with(&format!("_{e}"))).cloned();
             params.push(Param{name:p.into(),kind,enumeration});
         }
-        let m=Message{id,name:name.clone(),format:fmt.into(),kind,params};
+        let m=Message{id,name:name.clone(),format:fmt.into(),kind,params,output:None};
         self.by_id.insert(id,m.clone());self.by_name.insert(name,m);Ok(())
+    }
+    fn add_output(&mut self,fmt:&str,id:&Value)->Result<(),DictionaryError>{
+        let id=i32::try_from(id.as_i64().ok_or_else(||invalid_field(fmt,"output message id must be integer"))?).map_err(|_|invalid_field(fmt,"output message id outside i32"))?;
+        let output=OutputFormat::parse(fmt)?;
+        let m=Message{id,name:"#output".into(),format:fmt.into(),kind:MessageKind::Output,params:Vec::new(),output:Some(output)};
+        if self.by_id.contains_key(&id){return Err(invalid_field(fmt,"duplicate message id"));}
+        self.by_id.insert(id,m); Ok(())
     }
     pub fn version(&self)->&str{&self.version}
     pub fn build_versions(&self)->&str{&self.build_versions}
@@ -195,6 +248,12 @@ impl IdentifyDictionary {
     pub fn decode_message(&self,body:&[u8])->Result<(String,BTreeMap<String,Value>),DictionaryError>{
         let (id,mut pos)=crate::decode_i32(body)?;
         let m=self.by_id.get(&id).ok_or_else(||DictionaryError::UnknownMessage(format!("id {id}")))?;
+        if let Some(output)=&m.output {
+            let rendered=output.render(body,&mut pos)?;
+            if pos!=body.len(){return Err(invalid_field("output",&format!("{} trailing bytes",body.len()-pos)));}
+            let mut values=BTreeMap::new();values.insert("#msg".into(),Value::String(rendered));
+            return Ok(("#output".into(),values));
+        }
         let mut result=BTreeMap::new();
         for p in &m.params{
             let value=if p.kind.dynamic(){
@@ -227,6 +286,18 @@ fn decode_hex(s:&str)->Result<Vec<u8>,String>{
 mod tests{
     use super::*;
     const JSON:&str=r#"{"version":"test-fw","build_versions":"build","enumerations":{"pin":{"PA0":1,"PA1":2},"mode":{"MODE_A":0,"MODE_B":1}},"commands":{"set_pin oid=%c pin=%u value=%c mode=%c":17,"send_data data=%*s":18},"responses":{"uptime high=%u clock=%u":19},"config":{"CLOCK_FREQ":"16000000"}}"#;
+    #[test] fn output_format_parses_literals_escapes_and_typed_values(){
+        let json=r#"{"commands":{},"responses":{},"output":{"mcu: clock=%u signed=%i text=%.*s percent=%%":5}}"#;
+        let d=IdentifyDictionary::from_json(json.as_bytes()).unwrap();
+        let mut body=Vec::new();encode_i32(5,&mut body);encode_u32(16000000,&mut body);encode_i32(-7,&mut body);body.push(2);body.extend_from_slice(b"ok");
+        let (name,values)=d.decode_message(&body).unwrap();
+        assert_eq!(name,"#output");assert_eq!(values["#msg"],"mcu: clock=16000000 signed=-7 text=b'\\x6fk' percent=%");
+    }
+    #[test] fn output_format_rejects_unknown_conversion(){
+        let json=r#"{"commands":{},"responses":{},"output":{"bad %q":5}}"#;
+        assert!(IdentifyDictionary::from_json(json.as_bytes()).is_err());
+    }
+
     #[test] fn bootstrap_identify_request_and_response() {
         let request = encode_identify_request(300, 40);
         assert_eq!(decode_i32(&request).unwrap().0, 1);
