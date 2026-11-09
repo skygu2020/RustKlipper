@@ -516,7 +516,10 @@ impl Printer {
     pub fn set_ready(&self) {
         {
             let mut state = self.state.write().expect("printer state lock poisoned");
-            if matches!(*state, PrinterState::Shutdown | PrinterState::Disconnected) {
+            if matches!(
+                *state,
+                PrinterState::Ready | PrinterState::Shutdown | PrinterState::Disconnected
+            ) {
                 return;
             }
             *state = PrinterState::Ready;
@@ -1392,6 +1395,20 @@ mod tests {
         }
         assert_eq!(events.load(Ordering::SeqCst), 1);
         assert_eq!(printer.state(), PrinterState::Disconnected);
+    }
+
+    #[test]
+    fn repeated_ready_transition_emits_one_event() {
+        let printer = Printer::new();
+        let events = Arc::new(AtomicUsize::new(0));
+        let observed = events.clone();
+        printer.register_event_handler(PrinterEventKind::Ready, move |_| {
+            observed.fetch_add(1, Ordering::SeqCst);
+        });
+        printer.set_ready();
+        printer.set_ready();
+        assert_eq!(events.load(Ordering::SeqCst), 1);
+        assert!(printer.is_ready());
     }
 
     #[test]
