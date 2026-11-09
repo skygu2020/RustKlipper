@@ -455,9 +455,15 @@ impl Printer {
     }
 
     pub fn set_configuring(&self) {
-        *self.state.write().expect("printer state lock poisoned") = PrinterState::Configuring;
-        *self.state_message.write().expect("printer state message lock poisoned") =
-            "Printer is configuring".to_owned();
+        {
+            let mut state = self.state.write().expect("printer state lock poisoned");
+            *state = PrinterState::Configuring;
+            *self
+                .state_message
+                .write()
+                .expect("printer state message lock poisoned") =
+                "Printer is configuring".to_owned();
+        }
         self.gcode
             .lock()
             .expect("gcode dispatcher lock poisoned")
@@ -471,9 +477,12 @@ impl Printer {
                 return;
             }
             *state = PrinterState::Ready;
+            *self
+                .state_message
+                .write()
+                .expect("printer state message lock poisoned") =
+                "Printer is ready".to_owned();
         }
-        *self.state_message.write().expect("printer state message lock poisoned") =
-            "Printer is ready".to_owned();
         self.gcode
             .lock()
             .expect("gcode dispatcher lock poisoned")
@@ -484,6 +493,7 @@ impl Printer {
     /// Enter shutdown. Klipper's shutdown event is emitted only if the printer
     /// had reached the ready state.
     pub fn invoke_shutdown(&self, reason: impl Into<String>) {
+        let reason = reason.into();
         let was_ready = {
             let mut state = self.state.write().expect("printer state lock poisoned");
             if *state == PrinterState::Shutdown {
@@ -491,11 +501,12 @@ impl Printer {
             }
             let was_ready = *state == PrinterState::Ready;
             *state = PrinterState::Shutdown;
+            *self
+                .state_message
+                .write()
+                .expect("printer state message lock poisoned") = reason.clone();
             was_ready
         };
-        let reason = reason.into();
-        *self.state_message.write().expect("printer state message lock poisoned") =
-            reason.clone();
         self.gcode
             .lock()
             .expect("gcode dispatcher lock poisoned")
@@ -524,9 +535,12 @@ impl Printer {
                 return;
             }
             *state = PrinterState::Disconnected;
+            *self
+                .state_message
+                .write()
+                .expect("printer state message lock poisoned") =
+                "Printer is disconnected".to_owned();
         }
-        *self.state_message.write().expect("printer state message lock poisoned") =
-            "Printer is disconnected".to_owned();
         self.gcode
             .lock()
             .expect("gcode dispatcher lock poisoned")
