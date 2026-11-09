@@ -486,6 +486,73 @@ mod tests {
         assert!(results.iter().all(|result| !result.acknowledged));
     }
 
+
+    #[test]
+    fn mux_dispatch_selects_registered_value_handlers() {
+        let mut dispatcher = GCodeDispatcher::new();
+        dispatcher.set_ready();
+        dispatcher
+            .register_mux_command("SET_MODE", "MODE", Some("quiet"), None, |_| {
+                Ok(vec![DispatchEvent::Info("quiet mode".to_owned())])
+            })
+            .unwrap();
+        dispatcher
+            .register_mux_command("SET_MODE", "MODE", Some("fast"), None, |_| {
+                Ok(vec![DispatchEvent::Info("fast mode".to_owned())])
+            })
+            .unwrap();
+
+        let result = dispatcher
+            .process_line("SET_MODE MODE=fast", true)
+            .unwrap();
+        assert_eq!(result.events[0], DispatchEvent::Info("fast mode".to_owned()));
+        assert!(result.handler_found);
+    }
+
+    #[test]
+    fn mux_dispatch_supports_default_and_reports_invalid_values() {
+        let mut dispatcher = GCodeDispatcher::new();
+        dispatcher.set_ready();
+        dispatcher
+            .register_mux_command("SET_MODE", "MODE", None, None, |_| {
+                Ok(vec![DispatchEvent::Info("default mode".to_owned())])
+            })
+            .unwrap();
+        dispatcher
+            .register_mux_command("SET_MODE", "MODE", Some("quiet"), None, |_| {
+                Ok(vec![DispatchEvent::Info("quiet mode".to_owned())])
+            })
+            .unwrap();
+
+        let default = dispatcher.process_line("SET_MODE", true).unwrap();
+        assert_eq!(default.events[0], DispatchEvent::Info("default mode".to_owned()));
+
+        let invalid = dispatcher
+            .process_line("SET_MODE MODE=qui", true)
+            .unwrap();
+        assert!(matches!(invalid.events.first(), Some(DispatchEvent::Error(message)) if message.contains("Did you mean 'quiet'?")));
+    }
+
+    #[test]
+    fn mux_command_rejects_mixed_keys_and_duplicate_values() {
+        let mut dispatcher = GCodeDispatcher::new();
+        dispatcher
+            .register_mux_command("SET_MODE", "MODE", Some("quiet"), None, |_| {
+                Ok(Vec::new())
+            })
+            .unwrap();
+        assert!(dispatcher
+            .register_mux_command("SET_MODE", "PROFILE", Some("fast"), None, |_| {
+                Ok(Vec::new())
+            })
+            .is_err());
+        assert!(dispatcher
+            .register_mux_command("SET_MODE", "MODE", Some("quiet"), None, |_| {
+                Ok(Vec::new())
+            })
+            .is_err());
+    }
+
     #[test]
     fn unregister_removes_command_from_both_tables() {
         let mut dispatcher = GCodeDispatcher::new();
