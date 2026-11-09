@@ -14,14 +14,24 @@ pub struct Response {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ResponseKey { name: String, oid: Option<u32> }
+#[derive(Debug)]
+struct PendingResponse { id: u64, sender: mpsc::Sender<Response> }
 #[derive(Debug, Default)]
-struct RouterState { pending: HashMap<ResponseKey, VecDeque<mpsc::Sender<Response>>> }
+struct RouterState {
+    next_waiter_id: u64,
+    pending: HashMap<ResponseKey, VecDeque<PendingResponse>>,
+}
 
 /// Cloneable response router. Register a waiter before sending its command.
 #[derive(Clone, Debug, Default)]
 pub struct ResponseRouter { state: Arc<Mutex<RouterState>> }
 #[derive(Debug)]
-pub struct ResponseWaiter { receiver: mpsc::Receiver<Response> }
+pub struct ResponseWaiter {
+    receiver: mpsc::Receiver<Response>,
+    state: Arc<Mutex<RouterState>>,
+    key: ResponseKey,
+    id: u64,
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WaitError { Timeout, Disconnected }
 
@@ -30,8 +40,11 @@ impl ResponseRouter {
     pub fn register(&self, name: impl Into<String>, oid: Option<u32>) -> ResponseWaiter {
         let key = ResponseKey { name: name.into(), oid };
         let (tx, rx) = mpsc::channel();
-        self.state.lock().expect("response router poisoned").pending.entry(key).or_default().push_back(tx);
-        ResponseWaiter { receiver: rx }
+        let mut state = self.state.lock().expect("response router poisoned");
+        state.next_waiter_id = state.next_waiter_id.wrapping_add(1).max(1);
+        let id = state.next_waiter_id;
+        state.pending.entry(key.clone()).or_default().push_back(PendingResponse { id, sender: tx });
+        ResponseWaiter { receiver: rx, state: self.state.clone(), key, id }
     }
     /// Dispatch to the oldest waiter matching the exact name and oid.
     pub fn dispatch(&self, response: Response) -> bool {
@@ -41,8 +54,8 @@ impl ResponseRouter {
         // A waiter may have timed out or been dropped. Skip disconnected
         // receivers without allowing one stale waiter to block later FIFO waiters.
         let mut delivered = false;
-        while let Some(sender) = queue.pop_front() {
-            if sender.send(response.clone()).is_ok() {
+        while let Some(waiter) = queue.pop_front() {
+            if waiter.sender.send(response.clone()).is_ok() {
                 delivered = true;
                 break;
             }
@@ -58,6 +71,9 @@ impl ResponseRouter {
     }
 }
 impl ResponseWaiter {
+    /// Explicitly remove this waiter from the router without waiting for a response.
+    pub fn cancel(self) {}
+
     pub fn wait(self, timeout: Duration) -> Result<Response, WaitError> {
         self.receiver.recv_timeout(timeout).map_err(|e| match e {
             mpsc::RecvTimeoutError::Timeout => WaitError::Timeout,
@@ -69,6 +85,17 @@ impl ResponseWaiter {
             Ok(r) => Ok(Some(r)),
             Err(mpsc::TryRecvError::Empty) => Ok(None),
             Err(mpsc::TryRecvError::Disconnected) => Err(WaitError::Disconnected),
+        }
+    }
+}
+impl Drop for ResponseWaiter {
+    fn drop(&mut self) {
+        let mut state = self.state.lock().expect("response router poisoned");
+        if let Some(queue) = state.pending.get_mut(&self.key) {
+            queue.retain(|waiter| waiter.id != self.id);
+            if queue.is_empty() {
+                state.pending.remove(&self.key);
+            }
         }
     }
 }
@@ -109,6 +136,16 @@ mod tests {
         }));
         assert_eq!(first.wait(std::time::Duration::from_millis(1)).unwrap().sent_time, 1.25);
         assert_eq!(second.wait(std::time::Duration::from_millis(1)).unwrap().sent_time, 1.75);
+    }
+
+    #[test]
+    fn dropping_waiter_removes_pending_registration() {
+        let router = ResponseRouter::new();
+        let waiter = router.register("config", Some(12));
+        assert_eq!(router.pending_count("config", Some(12)), 1);
+        drop(waiter);
+        assert_eq!(router.pending_count("config", Some(12)), 0);
+        assert!(!router.dispatch(response("config", Some(12))));
     }
 
     #[test]
