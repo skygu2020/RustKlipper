@@ -1666,7 +1666,7 @@ mod config_handshake_session_tests {
 
 #[cfg(test)]
 mod command_send_timing_tests {
-    use super::{should_send_command, MESSAGE_MAX, MESSAGE_MIN};
+    use super::{command_send_deadline, should_send_command, MESSAGE_MAX, MESSAGE_MIN};
     use crate::{ClockEstimate, ClockUpdate, CommandScheduler, ScheduledCommand, UartTiming, BACKGROUND_PRIORITY_CLOCK};
 
     fn update() -> ClockUpdate {
