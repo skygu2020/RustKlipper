@@ -256,6 +256,12 @@ impl UartTiming {
     }
     pub fn idle_until(self) -> f64 { self.idle_until }
 
+    /// Reset the estimated output deadline after the transport discards its
+    /// pending driver bytes (for example before Klipper's sync-prefixed retry).
+    pub fn reset_idle(&mut self, now: f64) {
+        self.idle_until = now;
+    }
+
     /// Reserve UART time including bytes already pending in the host driver.
     pub fn reserve_transmission(&mut self, now: f64, pending_bytes: usize, frame_bytes: usize) -> f64 {
         let start = now.max(self.idle_until);
@@ -383,6 +389,16 @@ mod tests {
         let frame_time = uart.seconds_for_bytes(10);
         assert!((first - (1.0 + frame_time)).abs() < 1e-12);
         assert!((second - (first + frame_time)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn uart_idle_deadline_can_be_reset_after_output_queue_flush() {
+        let mut uart = UartTiming::new(100_000).unwrap();
+        let first = uart.reserve_transmission(1.0, 0, 100);
+        assert!(first > 1.0);
+        uart.reset_idle(1.001);
+        let retry = uart.reserve_transmission(1.001, 0, 10);
+        assert!((retry - 1.002).abs() < 1e-12);
     }
 
     #[test]
