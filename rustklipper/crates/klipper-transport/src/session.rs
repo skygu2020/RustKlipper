@@ -82,6 +82,10 @@ struct PendingRetryRequest {
     transaction: RetryTransaction,
 }
 
+fn advance_ack_clock(last_ack_clock: u64, observed_ack_clock: u64) -> u64 {
+    last_ack_clock.max(observed_ack_clock)
+}
+
 fn allocate_retry_transaction_id(
     next_id: &mut u64,
     in_flight: &HashMap<u64, PendingRetryRequest>,
@@ -571,7 +575,7 @@ impl ReliableSerialSession {
     /// Release commands whose minimum MCU clock is now eligible.
     pub fn promote_ready(&mut self, ack_clock: u64) -> Result<Option<u64>, SessionError> {
         self.ensure_connected()?;
-        self.last_ack_clock = self.last_ack_clock.max(ack_clock);
+        self.last_ack_clock = advance_ack_clock(self.last_ack_clock, ack_clock);
         Ok(self.scheduler.promote_ready(self.last_ack_clock))
     }
 
@@ -953,5 +957,20 @@ mod config_handshake_session_tests {
             ReliableSerialSession::parse_config_response(response("config", Some(3))),
             Err(SessionError::UnexpectedConfigResponse { .. })
         ));
+    }
+}
+
+
+#[cfg(test)]
+mod ack_clock_promotion_tests {
+    use super::advance_ack_clock;
+
+    #[test]
+    fn ack_clock_advances_monotonically() {
+        assert_eq!(advance_ack_clock(0, 120), 120);
+        assert_eq!(advance_ack_clock(120, 150), 150);
+        // A stale caller update must not move the clock behind a retry's
+        // already-satisfied min_clock.
+        assert_eq!(advance_ack_clock(150, 90), 150);
     }
 }
