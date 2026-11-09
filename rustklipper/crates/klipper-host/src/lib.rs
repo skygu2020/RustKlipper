@@ -1522,6 +1522,33 @@ mod tests {
     }
 
     #[test]
+    fn gcode_handler_can_replace_itself_during_dispatch() {
+        let printer = Arc::new(Printer::new());
+        let callback_printer = printer.clone();
+        printer
+            .register_gcode_command("REPLACE_ME", true, None, move |_| {
+                assert!(callback_printer.unregister_gcode_command("REPLACE_ME"));
+                callback_printer
+                    .register_gcode_command("REPLACE_ME", true, None, |_| {
+                        Ok(vec![DispatchEvent::Info("replacement".to_owned())])
+                    })
+                    .map_err(|error| error)?;
+                Ok(vec![DispatchEvent::Info("original".to_owned())])
+            })
+            .unwrap();
+
+        printer.set_ready();
+        let original = printer.process_gcode_line("REPLACE_ME", true).unwrap();
+        assert_eq!(original.events[0], DispatchEvent::Info("original".to_owned()));
+
+        let replacement = printer.process_gcode_line("REPLACE_ME", true).unwrap();
+        assert_eq!(
+            replacement.events[0],
+            DispatchEvent::Info("replacement".to_owned())
+        );
+    }
+
+    #[test]
     fn printer_gcode_registration_helpers_manage_commands() {
         let printer = Printer::new();
         printer
