@@ -348,7 +348,7 @@ impl ConfigFileLoader {
             file.read_to_string(&mut data).map_err(|source| ConfigLoadError::Io {
                 path: canonical.display().to_string(), source,
             })?;
-            let data = data.replace("\\r\\n", "\\n");
+            let data = data.replace("\r\n", "\n");
             let mut merged = ConfigDocument::default();
             let mut buffered = Vec::new();
             let parent = canonical.parent().unwrap_or_else(|| std::path::Path::new("."));
@@ -358,7 +358,7 @@ impl ConfigFileLoader {
                     lines.clear();
                     return Ok(());
                 }
-                let chunk = lines.join("\\n");
+                let chunk = lines.join("\n");
                 let parsed = ConfigDocument::parse_named_at(&chunk, canonical.display().to_string(), 0)?;
                 merged.merge(parsed);
                 lines.clear();
@@ -385,10 +385,8 @@ impl ConfigFileLoader {
                         })?);
                     }
                     matches.sort();
-                    if matches.is_empty() && !glob::Pattern::new(&pattern_text)
-                        .map(|pattern| pattern.matches_path(&pattern.as_path()))
-                        .unwrap_or(false)
-                    {
+                    let has_wildcards = spec.chars().any(|ch| matches!(ch, '*' | '?' | '['));
+                    if matches.is_empty() && !has_wildcards {
                         return Err(ConfigLoadError::IncludeNotFound { pattern: pattern_text });
                     }
                     for included in matches {
