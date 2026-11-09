@@ -252,7 +252,7 @@ impl Reactor {
         &self,
         delay: Duration,
         interval: Option<Duration>,
-        mut callback: F,
+        callback: F,
     ) -> Result<TaskId, ReactorError>
     where
         F: FnMut() + Send + 'static,
