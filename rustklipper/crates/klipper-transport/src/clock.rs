@@ -351,6 +351,13 @@ mod tests {
     }
 
     #[test]
+    fn clock_sync_errors_implement_standard_error_traits() {
+        let error = ClockSyncError::InvalidFrequency;
+        assert_eq!(error.to_string(), "invalid MCU clock frequency");
+        let _: &dyn std::error::Error = &error;
+    }
+
+    #[test]
     fn clock_conversion_uses_estimated_frequency() {
         let estimate = ClockEstimate { sample_time: 5.0, clock: 1_000.0, frequency: 2_000.0 };
         assert_eq!(estimate.clock_at(6.0), 3_000);
