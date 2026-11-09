@@ -142,6 +142,33 @@ mod tests {
         assert_eq!(AckTracker::extend_wire_sequence(17, 2), 18);
     }
     #[test]
+    fn cancelled_notify_id_reuse_is_not_completed_by_a_late_ack() {
+        let mut tracker = AckTracker::new();
+
+        let old_receiver = tracker.register_notify(77).unwrap();
+        assert!(tracker.mark_sent(77, 10, 1.0));
+        assert!(tracker.cancel_notify(77));
+        assert!(old_receiver.recv().is_err());
+
+        // Reusing an ID must bind it to the new frame sequence, not the
+        // abandoned request's already-written frame.
+        let new_receiver = tracker.register_notify(77).unwrap();
+        assert!(tracker.mark_sent(77, 11, 2.0));
+
+        // Empty ACK for sequence 11 acknowledges frames strictly before 11.
+        assert!(tracker.acknowledge_events(11, false, 3.0, 3.1).is_empty());
+        assert!(tracker.contains_notify(77));
+
+        let completed = tracker.acknowledge_events(12, false, 4.0, 4.1);
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].0, 77);
+        assert_eq!(new_receiver.recv().unwrap(), AckEvent {
+            sent_time: 4.0,
+            receive_time: 4.1,
+        });
+    }
+
+    #[test]
     fn cancel_all_drops_pending_notifications() {
         let mut tracker = AckTracker::new();
         let (_, rx) = tracker.register(3);
