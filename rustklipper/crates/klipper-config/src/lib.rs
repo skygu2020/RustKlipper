@@ -960,6 +960,32 @@ impl ConfigUsageTracker {
             .collect()
     }
 
+    pub fn get_choice<T: Clone>(
+        &self,
+        config: &ConfigDocument,
+        section: &str,
+        option: &str,
+        choices: &[(String, T)],
+        default: Option<&str>,
+    ) -> Result<T, ConfigValueError> {
+        let value = self
+            .get_with_default(config, section, option, default, true)
+            .ok_or_else(|| ConfigValueError::Missing {
+                section: section.to_owned(),
+                option: option.to_owned(),
+            })?;
+        choices
+            .iter()
+            .find(|(choice, _)| choice == value)
+            .map(|(_, result)| result.clone())
+            .ok_or_else(|| ConfigValueError::Invalid {
+                section: section.to_owned(),
+                option: option.to_owned(),
+                value: value.to_owned(),
+                expected: "valid choice",
+            })
+    }
+
     pub fn get_i64(
         &self,
         config: &ConfigDocument,
