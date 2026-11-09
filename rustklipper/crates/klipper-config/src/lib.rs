@@ -123,7 +123,8 @@ impl ConfigDocument {
                 source: source.clone(), line: line_no,
             })?;
 
-            if line.chars().next().is_some_and(char::is_whitespace)\n                && !trimmed.contains('=') && !trimmed.contains(':') {
+            if line.chars().next().is_some_and(char::is_whitespace)
+                && !trimmed.contains('=') && !trimmed.contains(':') {
                 let Some((option_section, option_index)) = last_option else {
                     return Err(ConfigParseError::OrphanContinuation {
                         source: source.clone(), line: line_no,
