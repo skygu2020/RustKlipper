@@ -238,6 +238,7 @@ impl ReliableSerialSession {
             started: Instant::now(),
             wire_time_per_byte: 0.0,
             last_ack_clock: 0,
+            queue_clock_update: None,
             disconnected: false,
         }
     }
