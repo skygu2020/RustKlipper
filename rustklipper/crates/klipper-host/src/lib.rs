@@ -961,6 +961,27 @@ mod tests {
     }
 
     #[test]
+    fn component_factory_failure_prevents_connection_events() {
+        let printer = Printer::new();
+        printer.install_config(ConfigDocument::parse("[fan]\npin=PA0\n").unwrap());
+        let events = Arc::new(AtomicUsize::new(0));
+        let observed = events.clone();
+        printer.register_event_handler(PrinterEventKind::Connect, move |_| {
+            observed.fetch_add(1, Ordering::SeqCst);
+        });
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register("fan", |_, _| Err("factory failed".to_owned()))
+            .unwrap();
+
+        assert!(matches!(
+            printer.initialize_components(&registry),
+            Err(ComponentError::LoadFailed { .. })
+        ));
+        assert_eq!(events.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
     fn component_initialization_validates_before_connect_events() {
         let printer = Printer::new();
         printer.install_config(
