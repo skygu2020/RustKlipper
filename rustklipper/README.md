@@ -39,7 +39,8 @@ the compatibility reference and is not modified by the Rust implementation.
   lazy component loading, tracked configuration reads, pre-connect validation,
   reactor callbacks, G-code handler reset on configuration reload, and
   callback dispatch outside the printer lock with per-line script state refresh,
-  panic-contained handlers, and component-owned G-code command lifecycle.
+  panic-contained handlers, component-owned G-code command lifecycle, and
+  normal/mux command cleanup when a component unloads.
 
 The upstream Python implementation remains the behavioral oracle during the
 staged port. Run the Rust workspace tests from this directory with:
