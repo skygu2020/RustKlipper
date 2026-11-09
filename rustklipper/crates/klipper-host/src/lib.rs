@@ -1617,6 +1617,16 @@ mod tests {
     }
 
     #[test]
+    fn lazy_component_load_requires_installed_config() {
+        let printer = Printer::new();
+        let registry = ComponentRegistry::new();
+        assert_eq!(
+            registry.load_component(&printer, "fan"),
+            Err(ComponentError::ConfigNotLoaded)
+        );
+    }
+
+    #[test]
     fn lazy_component_load_skips_unrelated_sections() {
         let printer = Printer::new();
         printer.install_config(
