@@ -135,10 +135,11 @@ impl ConfigDocument {
                 if option_section == section_index {
                     let continuation = strip_inline_comment(trimmed).trim_end();
                     if !continuation.is_empty() {
-                        document.sections[section_index].options[option_index]
-                            .value.push('\n');
-                        document.sections[section_index].options[option_index]
-                            .value.push_str(continuation);
+                        let value = &mut document.sections[section_index].options[option_index].value;
+                        if !value.is_empty() {
+                            value.push('\n');
+                        }
+                        value.push_str(continuation);
                     }
                     continue;
                 }
