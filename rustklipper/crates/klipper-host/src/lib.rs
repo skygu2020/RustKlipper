@@ -988,6 +988,10 @@ impl Printer {
             .count()
     }
 
+    /// Access the dispatcher for registration and inspection.
+    ///
+    /// Use process_gcode_line / process_gcode_script for execution so
+    /// callbacks run after the printer's dispatcher lock has been released.
     pub fn gcode_dispatcher(&self) -> MutexGuard<'_, GCodeDispatcher> {
         self.gcode.lock().expect("gcode dispatcher lock poisoned")
     }
