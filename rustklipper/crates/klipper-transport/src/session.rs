@@ -151,10 +151,14 @@ impl ReliableSerialSession {
             if !frame.payload.is_empty() {
                 let receive_time = self.now();
                 if let Some(dictionary) = self.dictionary.as_ref() {
-                    match dictionary.decode_message(&frame.payload) {
-                        Ok((name, params)) => events.push(SessionEvent::DecodedMessage {
-                            name, params, receive_time,
-                        }),
+                    match dictionary.decode_messages(&frame.payload) {
+                        Ok(messages) => {
+                            for (name, params) in messages {
+                                events.push(SessionEvent::DecodedMessage {
+                                    name, params, receive_time,
+                                });
+                            }
+                        }
                         Err(error) => events.push(SessionEvent::DecodeError {
                             error: error.to_string(), receive_time,
                         }),

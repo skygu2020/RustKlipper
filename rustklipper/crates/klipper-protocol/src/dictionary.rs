@@ -245,39 +245,75 @@ impl IdentifyDictionary {
             encode_i32(raw,&mut out);
         } Ok(out)
     }
-    pub fn decode_message(&self,body:&[u8])->Result<(String,BTreeMap<String,Value>),DictionaryError>{
-        let (id,mut pos)=crate::decode_i32(body)?;
-        let Some(m)=self.by_id.get(&id) else {
-            // Match Klipper's UnknownFormat behavior: preserve the unknown
-            // message id and the complete message body for diagnostics.
-            let mut values=BTreeMap::new();
-            values.insert("#msgid".into(),Value::from(id));
-            values.insert("#msg".into(),Value::Array(body.iter().map(|b|Value::from(*b)).collect()));
-            return Ok(("#unknown".into(),values));
+    /// Decode one message and reject trailing bytes.
+    pub fn decode_message(&self, body: &[u8]) -> Result<(String, BTreeMap<String, Value>), DictionaryError> {
+        let (name, params, used) = self.decode_message_prefix(body)?;
+        if used != body.len() {
+            return Err(invalid_field(&name, &format!("{} trailing bytes", body.len() - used)));
+        }
+        Ok((name, params))
+    }
+
+    /// Decode every concatenated MCU message in a frame payload.
+    pub fn decode_messages(&self, body: &[u8]) -> Result<Vec<(String, BTreeMap<String, Value>)>, DictionaryError> {
+        let mut messages = Vec::new();
+        let mut offset = 0usize;
+        while offset < body.len() {
+            let (name, params, used) = self.decode_message_prefix(&body[offset..])?;
+            if used == 0 {
+                return Err(invalid_field("message", "decoder consumed zero bytes"));
+            }
+            messages.push((name.clone(), params));
+            offset += used;
+            // An unknown message has no schema, so its end cannot be inferred.
+            if name == "#unknown" { break; }
+        }
+        if offset != body.len() {
+            return Err(invalid_field("message", &format!("{} undecoded trailing bytes", body.len() - offset)));
+        }
+        Ok(messages)
+    }
+
+    fn decode_message_prefix(&self, body: &[u8]) -> Result<(String, BTreeMap<String, Value>, usize), DictionaryError> {
+        let (id, mut pos) = crate::decode_i32(body)?;
+        let Some(m) = self.by_id.get(&id) else {
+            let mut values = BTreeMap::new();
+            values.insert("#msgid".into(), Value::from(id));
+            values.insert("#msg".into(), Value::Array(body.iter().map(|b| Value::from(*b)).collect()));
+            return Ok(("#unknown".into(), values, body.len()));
         };
-        if let Some(output)=&m.output {
-            let rendered=output.render(body,&mut pos)?;
-            if pos!=body.len(){return Err(invalid_field("output",&format!("{} trailing bytes",body.len()-pos)));}
-            let mut values=BTreeMap::new();values.insert("#msg".into(),Value::String(rendered));
-            return Ok(("#output".into(),values));
+        if let Some(output) = &m.output {
+            let rendered = output.render(body, &mut pos)?;
+            let mut values = BTreeMap::new();
+            values.insert("#msg".into(), Value::String(rendered));
+            return Ok(("#output".into(), values, pos));
         }
-        let mut result=BTreeMap::new();
-        for p in &m.params{
-            let value=if p.kind.dynamic(){
-                let len=*body.get(pos).ok_or(ProtocolError::TruncatedInteger)? as usize;pos+=1;
-                let end=pos.checked_add(len).ok_or(ProtocolError::TruncatedInteger)?;
-                let b=body.get(pos..end).ok_or(ProtocolError::TruncatedInteger)?;pos=end;
-                Value::Array(b.iter().map(|x|Value::from(*x)).collect())
-            }else{
-                let (raw,n)=decode_i32(body.get(pos..).ok_or(ProtocolError::TruncatedInteger)?)?;pos+=n;
-                if let Some(en)=&p.enumeration{
-                    match self.enums.get(en).and_then(|e|e.values.get(&raw)){Some(s)=>Value::String(s.clone()),None=>Value::String(format!("?{raw}"))}
-                }else if p.kind.signed(){Value::from(raw)}else{Value::from(raw as u32)}
+        let mut result = BTreeMap::new();
+        for p in &m.params {
+            let value = if p.kind.dynamic() {
+                let len = *body.get(pos).ok_or(ProtocolError::TruncatedInteger)? as usize;
+                pos += 1;
+                let end = pos.checked_add(len).ok_or(ProtocolError::TruncatedInteger)?;
+                let bytes = body.get(pos..end).ok_or(ProtocolError::TruncatedInteger)?;
+                pos = end;
+                Value::Array(bytes.iter().map(|x| Value::from(*x)).collect())
+            } else {
+                let (raw, used) = decode_i32(body.get(pos..).ok_or(ProtocolError::TruncatedInteger)?)?;
+                pos += used;
+                if let Some(en) = &p.enumeration {
+                    match self.enums.get(en).and_then(|e| e.values.get(&raw)) {
+                        Some(name) => Value::String(name.clone()),
+                        None => Value::String(format!("?{raw}")),
+                    }
+                } else if p.kind.signed() {
+                    Value::from(raw)
+                } else {
+                    Value::from(raw as u32)
+                }
             };
-            result.insert(p.name.clone(),value);
+            result.insert(p.name.clone(), value);
         }
-        if pos!=body.len(){return Err(invalid_field(&m.name,&format!("{} trailing bytes",body.len()-pos)));}
-        Ok((m.name.clone(),result))
+        Ok((m.name.clone(), result, pos))
     }
 }
 fn decode_hex(s:&str)->Result<Vec<u8>,String>{
