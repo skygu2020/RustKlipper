@@ -36,14 +36,21 @@ impl ResponseRouter {
     /// Dispatch to the oldest waiter matching the exact name and oid.
     pub fn dispatch(&self, response: Response) -> bool {
         let key = ResponseKey { name: response.name.clone(), oid: response.oid };
-        let sender = {
-            let mut state = self.state.lock().expect("response router poisoned");
-            let queue = match state.pending.get_mut(&key) { Some(q) => q, None => return false };
-            let sender = queue.pop_front();
-            if queue.is_empty() { state.pending.remove(&key); }
-            sender
-        };
-        sender.is_some_and(|tx| tx.send(response).is_ok())
+        let mut state = self.state.lock().expect("response router poisoned");
+        let Some(queue) = state.pending.get_mut(&key) else { return false; };
+        // A waiter may have timed out or been dropped. Skip disconnected
+        // receivers without allowing one stale waiter to block later FIFO waiters.
+        let mut delivered = false;
+        while let Some(sender) = queue.pop_front() {
+            if sender.send(response.clone()).is_ok() {
+                delivered = true;
+                break;
+            }
+        }
+        if queue.is_empty() {
+            state.pending.remove(&key);
+        }
+        delivered
     }
     pub fn pending_count(&self, name: &str, oid: Option<u32>) -> usize {
         self.state.lock().expect("response router poisoned").pending
@@ -102,6 +109,17 @@ mod tests {
         }));
         assert_eq!(first.wait(std::time::Duration::from_millis(1)).unwrap().sent_time, 1.25);
         assert_eq!(second.wait(std::time::Duration::from_millis(1)).unwrap().sent_time, 1.75);
+    }
+
+    #[test]
+    fn dropped_waiter_does_not_block_next_fifo_waiter() {
+        let router = ResponseRouter::new();
+        let dropped = router.register("config", Some(9));
+        let live = router.register("config", Some(9));
+        drop(dropped);
+        assert!(router.dispatch(response("config", Some(9))));
+        assert_eq!(live.wait(Duration::from_millis(1)).unwrap().oid, Some(9));
+        assert_eq!(router.pending_count("config", Some(9)), 0);
     }
 
     #[test]
