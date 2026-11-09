@@ -42,6 +42,7 @@ pub enum RetransmitError {
     NonMonotonicTime,
     SequenceNotIncreasing,
     EmptyFrame,
+    UnknownSequence(u64),
 }
 
 #[derive(Debug, Clone)]

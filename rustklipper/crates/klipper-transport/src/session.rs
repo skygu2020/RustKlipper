@@ -108,7 +108,7 @@ impl ReliableSerialSession {
         Ok(())
     }
 
-    /// Perform one non-blocking session iteration.
+    /// Perform one session iteration, bounded by the configured serial read timeout.
     ///
     /// Reads all available frames, processes ACK/NAK, writes required retries,
     /// then writes newly eligible scheduled frames. Serial read timeout is idle.
