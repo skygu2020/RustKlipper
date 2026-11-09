@@ -461,7 +461,7 @@ impl<'a> TrackedConfigSection<'a> {
 
     pub fn get(&self, option: &str) -> Option<&'a str> {
         let value = self.section.get(option)?;
-        self.tracker.mark_used(self.section.name(), option);
+        self.tracker.mark_used(&self.section.name, option);
         Some(value)
     }
 
