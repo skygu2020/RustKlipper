@@ -308,7 +308,7 @@ mod tests {
         // get_clock samples are ordered observations. A lower low-word is
         // interpreted as the next 32-bit epoch, not a stale event timestamp.
         assert_eq!(sync.update(0xffff_fff0, 0.0, 0.0).unwrap(), None);
-        assert_eq!(sync.last_clock(), 0x2_0000_0000);
+        assert_eq!(sync.last_clock(), 0x1_ffff_fff0);
     }
 
     #[test]
@@ -379,7 +379,7 @@ mod tests {
     fn uart_reservations_serialize_frames_without_recounting_driver_bytes() {
         let mut uart = UartTiming::new(115_200).unwrap();
         let first = uart.reserve_transmission(1.0, 0, 10);
-        let second = uart.reserve_transmission(1.001, 0, 10);
+        let second = uart.reserve_transmission(1.0005, 0, 10);
         let frame_time = uart.seconds_for_bytes(10);
         assert!((first - (1.0 + frame_time)).abs() < 1e-12);
         assert!((second - (first + frame_time)).abs() < 1e-12);
