@@ -25,6 +25,11 @@ the compatibility reference and is not modified by the Rust implementation.
   configuration access, and recursive `[include ...]` expansion with relative
   paths, sorted glob matches, and recursive-include detection. Autosave blocks,
   access/deprecation tracking, and printer-object validation remain future work.
+- `klipper-gcode`: Klipper-style traditional/extended G-code parsing, typed
+  parameter access, readiness-aware command dispatch, mux commands, script
+  execution, and ACK/response events.
+- `klipper-host`: printer lifecycle and events, typed object registry,
+  configuration ownership/loading, and integration with G-code readiness.
 
 The upstream Python implementation remains the behavioral oracle during the
 staged port. Run the Rust workspace tests from this directory with:
