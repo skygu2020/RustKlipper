@@ -9,8 +9,8 @@ Implemented:
 - Parsed configuration ownership and recursive config-file loading.
 - Configuration-ordered component factory registry.
 - Integration with the host G-code dispatcher and its readiness gating.
-- Cooperative Reactor for immediate callbacks, delayed/periodic timers, and
-  cancellation, driven by the host runtime.
+- Cooperative Reactor for immediate callbacks, delayed/periodic timers,
+  cancellation, and next-deadline polling, driven by the host runtime.
 
 This crate does not compile, configure, flash, or emulate MCU firmware. MCU
 communication remains the responsibility of the host protocol and transport
