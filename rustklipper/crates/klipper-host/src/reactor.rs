@@ -175,10 +175,11 @@ impl Reactor {
     }
 
     /// Queue a callback for the next run_due() call.
-    pub fn register_callback<F>(&self, mut callback: F) -> TaskId
+    pub fn register_callback<F>(&self, callback: F) -> TaskId
     where
         F: FnMut() + Send + 'static,
     {
+        let mut callback = callback;
         self.insert_task(Instant::now(), move |_| {
             callback();
             None
@@ -260,6 +261,7 @@ impl Reactor {
         }
         let deadline = Instant::now() + delay;
         let next_interval = interval;
+        let mut callback = callback;
         Ok(self.insert_task(deadline, move |eventtime| {
             callback();
             next_interval.map(|value| eventtime + value)
