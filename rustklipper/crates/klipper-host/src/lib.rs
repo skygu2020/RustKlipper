@@ -879,7 +879,7 @@ impl Printer {
         matches
     }
 
-    fn is_component_loaded(&self, section: &str) -> bool {
+    pub fn is_component_loaded(&self, section: &str) -> bool {
         self.loaded_components
             .lock()
             .expect("loaded component lock poisoned")
@@ -891,6 +891,18 @@ impl Printer {
             .lock()
             .expect("loaded component lock poisoned")
             .insert(section.to_owned());
+    }
+
+    pub fn loaded_component_names(&self) -> Vec<String> {
+        let mut names: Vec<_> = self
+            .loaded_components
+            .lock()
+            .expect("loaded component lock poisoned")
+            .iter()
+            .cloned()
+            .collect();
+        names.sort();
+        names
     }
 
     pub fn has_object(&self, name: &str) -> bool {
@@ -1835,6 +1847,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(printer.load_components(&registry).unwrap(), vec!["fan"]);
+        assert!(printer.is_component_loaded("fan"));
+        assert_eq!(printer.loaded_component_names(), vec!["fan"]);
         assert_eq!(&*printer.lookup_object::<String>("fan").unwrap(), "PA0");
         assert!(printer.load_components(&registry).unwrap().is_empty());
         assert_eq!(calls.load(Ordering::SeqCst), 1);
