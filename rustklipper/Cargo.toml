@@ -5,6 +5,7 @@ members = [
     "crates/klipper-transport",
     "crates/klipper-config",
     "crates/klipper-gcode",
+    "crates/klipper-host",
 ]
 
 [workspace.package]
