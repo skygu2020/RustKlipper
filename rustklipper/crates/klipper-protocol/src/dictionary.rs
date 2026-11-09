@@ -365,6 +365,25 @@ mod tests{
         let mut p=BTreeMap::new();p.insert("oid".into(),Value::from(3));p.insert("pin".into(),Value::from("PA1"));p.insert("value".into(),Value::from(1));p.insert("mode".into(),Value::from("MODE_B"));
         let bytes=d.encode_command("set_pin",&p).unwrap();let (n,v)=d.decode_message(&bytes).unwrap();assert_eq!(n,"set_pin");assert_eq!(v["mode"],"MODE_B");assert_eq!(v["pin"],"PA1");
     }
+    #[test]
+    fn decodes_multiple_concatenated_messages_in_one_frame() {
+        let d = IdentifyDictionary::from_json(JSON.as_bytes()).unwrap();
+        let mut body = Vec::new();
+        for (high, clock) in [(1, 100), (2, 200)] {
+            encode_i32(19, &mut body);
+            encode_u32(high, &mut body);
+            encode_u32(clock, &mut body);
+        }
+        let messages = d.decode_messages(&body).unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].0, "uptime");
+        assert_eq!(messages[0].1["high"], 1);
+        assert_eq!(messages[0].1["clock"], 100);
+        assert_eq!(messages[1].1["high"], 2);
+        assert_eq!(messages[1].1["clock"], 200);
+        assert!(d.decode_message(&body).is_err());
+    }
+
     #[test] fn dynamic_buffer_codec(){
         let d=IdentifyDictionary::from_json(JSON.as_bytes()).unwrap();let mut p=BTreeMap::new();p.insert("data".into(),Value::from("00a1ff"));
         let b=d.encode_command("send_data",&p).unwrap();assert_eq!(&b[1..],&[3,0,0xa1,0xff]);let (_,v)=d.decode_message(&b).unwrap();assert_eq!(v["data"],serde_json::json!([0,161,255]));
