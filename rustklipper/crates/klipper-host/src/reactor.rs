@@ -571,6 +571,18 @@ mod tests {
     }
 
     #[test]
+    fn completion_timeout_returns_none_without_consuming_state() {
+        let completion = Completion::<u8>::new();
+        assert_eq!(
+            completion.wait_timeout(Duration::from_millis(1)),
+            None
+        );
+        assert!(!completion.is_complete());
+        assert_eq!(completion.complete(7), Ok(()));
+        assert_eq!(completion.result(), Some(7));
+    }
+
+    #[test]
     fn completion_is_single_assignment_and_wakes_waiters() {
         let completion = Completion::new();
         let waiter = completion.clone();
