@@ -276,6 +276,21 @@ impl ReliableSerialSession {
         Ok(waiter)
     }
 
+    /// Start the clock bootstrap sequence by requesting MCU uptime.
+    /// After receiving this waiter's response, pass it to
+    /// begin_clock_calibration() to initialize ClockSync and queue sample one.
+    pub fn start_clock_calibration(
+        &mut self,
+        queue_id: u64,
+    ) -> Result<ResponseWaiter, SessionError> {
+        if self.clock_calibration_remaining != 0 {
+            return Err(SessionError::Dictionary(DictionaryError::InvalidField {
+                field: "clock_calibration".into(),
+                reason: "startup clock calibration is already in progress".into(),
+            }));
+        }
+        self.request_get_uptime(queue_id)
+    }
     /// Queue Klipper's initial uptime query after identify has installed the dictionary.
     /// The returned response carries the actual UART-write timestamp used to
     /// establish the initial host/MCU clock correspondence.
