@@ -267,6 +267,10 @@ impl ComponentRegistry {
         printer: &Printer,
         section: &str,
     ) -> Result<Vec<String>, ComponentError> {
+        let _load_guard = printer
+            .component_load_lock
+            .lock()
+            .expect("component load lock poisoned");
         let config = printer.config().ok_or(ComponentError::ConfigNotLoaded)?;
         let mut loaded = Vec::new();
         let mut loaded_set = HashSet::new();
@@ -287,6 +291,10 @@ impl ComponentRegistry {
     /// declared dependencies first. Unregistered sections are left for later
     /// validation/component crates.
     pub fn load_registered(&self, printer: &Printer) -> Result<Vec<String>, ComponentError> {
+        let _load_guard = printer
+            .component_load_lock
+            .lock()
+            .expect("component load lock poisoned");
         let config = printer.config().ok_or(ComponentError::ConfigNotLoaded)?;
         let mut loaded = Vec::new();
         let mut loaded_set = HashSet::new();
@@ -314,6 +322,7 @@ pub struct Printer {
     config: RwLock<Option<Arc<ConfigDocument>>>,
     config_usage: ConfigUsageTracker,
     loaded_components: Mutex<HashSet<String>>,
+    component_load_lock: Mutex<()>,
     connection_initialized: AtomicBool,
     objects: RwLock<HashMap<String, Arc<dyn Any + Send + Sync>>>,
     event_handlers: Mutex<HashMap<PrinterEventKind, Vec<EventHandler>>>,
@@ -335,6 +344,7 @@ impl Printer {
             config: RwLock::new(None),
             config_usage: ConfigUsageTracker::new(),
             loaded_components: Mutex::new(HashSet::new()),
+            component_load_lock: Mutex::new(()),
             connection_initialized: AtomicBool::new(false),
             objects: RwLock::new(HashMap::new()),
             event_handlers: Mutex::new(HashMap::new()),
@@ -1546,6 +1556,40 @@ mod tests {
             ))
         ));
         assert_eq!(events.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn concurrent_lazy_component_loads_run_factory_once() {
+        let printer = Arc::new(Printer::new());
+        printer.install_config(ConfigDocument::parse("[fan]\npin=PA0\n").unwrap());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let mut owned_registry = ComponentRegistry::new();
+        owned_registry
+            .register("fan", move |printer, section| {
+                observed.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                printer
+                    .register_object("fan", section.get("pin").unwrap().to_owned())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        let registry = Arc::new(owned_registry);
+        let start = Arc::new(std::sync::Barrier::new(3));
+        let mut workers = Vec::new();
+        for _ in 0..2 {
+            let printer = printer.clone();
+            let registry = registry.clone();
+            let start = start.clone();
+            workers.push(std::thread::spawn(move || {
+                start.wait();
+                registry.load_component(&printer, "fan").unwrap().len()
+            }));
+        }
+        start.wait();
+        let loaded: usize = workers.into_iter().map(|worker| worker.join().unwrap()).sum();
+        assert_eq!(loaded, 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]
