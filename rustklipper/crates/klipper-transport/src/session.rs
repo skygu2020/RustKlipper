@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::time::Instant;
 
 use serde_json::Value;
-use klipper_protocol::{encode_identify_request, DictionaryError, Frame, IdentifyAssembler, IdentifyChunk, IdentifyDictionary, IDENTIFY_CHUNK_SIZE, MESSAGE_MAX};
+use klipper_protocol::{encode_identify_request, DictionaryError, Frame, IdentifyAssembler, IdentifyChunk, IdentifyDictionary, IDENTIFY_CHUNK_SIZE, MESSAGE_MAX, MESSAGE_MIN};
 
 use crate::{
     AckEvent, AckTracker, CommandScheduler, ConfigAction, ConfigError, ConfigResponse, McuConfigHandshake, Response, ResponseRouter, ResponseWaiter, ScheduleError, ScheduledCommand, TransportError, UsbSerialTransport,
@@ -83,6 +83,7 @@ pub struct ReliableSerialSession {
     identify_queue_id: Option<u64>,
     identify_chunk_count: Option<u8>,
     started: Instant,
+    wire_time_per_byte: f64,
     disconnected: bool,
 }
 
@@ -94,7 +95,8 @@ impl ReliableSerialSession {
             )));
         }
         let mut session = Self::new(UsbSerialTransport::open(settings)?);
-        session.scheduler.set_wire_time_per_byte(10.0 / settings.baud_rate as f64)?;
+        session.wire_time_per_byte = 10.0 / settings.baud_rate as f64;
+        session.scheduler.set_wire_time_per_byte(session.wire_time_per_byte)?;
         Ok(session)
     }
 
@@ -113,6 +115,7 @@ impl ReliableSerialSession {
             identify_queue_id: None,
             identify_chunk_count: None,
             started: Instant::now(),
+            wire_time_per_byte: 0.0,
             disconnected: false,
         }
     }
@@ -457,19 +460,21 @@ impl ReliableSerialSession {
         let mut events = Vec::new();
 
         for frame in incoming {
-            let now = self.now();
-            let result = match self.scheduler.handle_received_frame(&frame, now) {
+            // C serialqueue passes the input-event timestamp to ACK notifications,
+            // but timestamps data messages after read() with the frame's wire time removed.
+            let eventtime = self.now();
+            let result = match self.scheduler.handle_received_frame(&frame, eventtime) {
                 Ok(result) => result,
                 Err(error) => {
                     self.disconnected = true;
                     return Err(SessionError::Schedule(error));
                 }
             };
-            self.write_retry_batch(result.retransmissions.clone(), &mut events)?;
-
-            let receive_time = self.now();
+            let receive_time = adjusted_receive_time(
+                self.now(), self.wire_time_per_byte, frame.payload.len() + MESSAGE_MIN,
+            );
             for (id, ack) in self.ack_tracker.acknowledge_events(
-                result.receive_sequence, result.has_payload, result.last_receive_sent_time, receive_time,
+                result.receive_sequence, result.has_payload, result.last_receive_sent_time, eventtime,
             ) {
                 if let Some(receiver) = self.response_ack_receivers.remove(&id) {
                     // Consume the same event through the waiter channel as well;
@@ -481,8 +486,9 @@ impl ReliableSerialSession {
                 });
             }
 
+            self.write_retry_batch(result.retransmissions.clone(), &mut events)?;
+
             if !frame.payload.is_empty() {
-                let receive_time = self.now();
                 if let Some(dictionary) = self.dictionary.as_ref() {
                     match dictionary.decode_messages(&frame.payload) {
                         Ok(messages) => {
@@ -564,6 +570,28 @@ impl ReliableSerialSession {
 
     pub fn is_disconnected(&self) -> bool { self.disconnected }
 }
+
+/// Match serialqueue.c's data-message receive timestamp: post-read monotonic
+/// time minus the UART time occupied by the complete encoded frame.
+fn adjusted_receive_time(now: f64, wire_time_per_byte: f64, frame_len: usize) -> f64 {
+    (now - wire_time_per_byte * frame_len as f64).max(0.0)
+}
+
+#[cfg(test)]
+mod receive_timestamp_tests {
+    use super::adjusted_receive_time;
+
+    #[test]
+    fn receive_timestamp_subtracts_complete_frame_wire_time() {
+        assert!((adjusted_receive_time(2.0, 0.001, 10) - 1.99).abs() < 1e-9);
+    }
+
+    #[test]
+    fn receive_timestamp_never_precedes_session_start() {
+        assert_eq!(adjusted_receive_time(0.001, 0.001, 10), 0.0);
+    }
+}
+
 #[cfg(test)]
 mod config_handshake_session_tests {
     use super::*;
