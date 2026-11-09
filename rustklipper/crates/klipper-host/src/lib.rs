@@ -1089,6 +1089,8 @@ impl Printer {
 
     /// Register a command owned by one component and remove it automatically
     /// when that component is unloaded or configuration is reinstalled.
+    /// Register a command owned by a component so failed loads and unloads
+    /// can roll back the command together with the component.
     pub fn register_component_gcode_command<F>(
         &self,
         component: &str,
