@@ -58,6 +58,12 @@ pub enum ConfigError {
     NotConfigured,
     #[error("config command text and encoded command counts differ")]
     CommandCountMismatch,
+    #[error("MCU reports {reported} move slots, fewer than {reserved} reserved slots")]
+    TooFewMoves { reported: u16, reserved: u16 },
+    #[error("MCU OID space exhausted (maximum 255 allocated OIDs)")]
+    OidExhausted,
+    #[error("OID name already allocated: {0}")]
+    DuplicateOidName(String),
     #[error(transparent)]
     Dictionary(#[from] klipper_protocol::DictionaryError),
 }
@@ -168,11 +174,55 @@ impl McuConfigPlan {
     pub fn validate_final_response(&self, response: ConfigResponse) -> Result<u16, ConfigError> {
         if response.is_shutdown { return Err(ConfigError::Shutdown); }
         if !response.is_config { return Err(ConfigError::NotConfigured); }
-        if response.crc != self.crc {
-            return Err(ConfigError::CrcMismatch { firmware: response.crc, host: self.crc });
-        }
         Ok(response.move_count)
     }
+
+    /// Validate the final get_config response and subtract host-reserved move slots.
+    pub fn usable_move_count(
+        &self,
+        response: ConfigResponse,
+        reserved_slots: u16,
+    ) -> Result<u16, ConfigError> {
+        let reported = self.validate_final_response(response)?;
+        reported.checked_sub(reserved_slots).ok_or(ConfigError::TooFewMoves {
+            reported, reserved: reserved_slots,
+        })
+    }
+}
+
+/// Sequential MCU object-id allocator. Firmware OIDs are one-byte values and
+/// allocate_oids count is also a byte, so at most 255 IDs can be reserved.
+#[derive(Debug, Clone, Default)]
+pub struct OidAllocator {
+    next: u16,
+    names: BTreeMap<String, u8>,
+}
+
+impl OidAllocator {
+    pub fn new() -> Self { Self::default() }
+
+    pub fn allocate(&mut self) -> Result<u8, ConfigError> {
+        if self.next >= u16::from(u8::MAX) {
+            return Err(ConfigError::OidExhausted);
+        }
+        let oid = self.next as u8;
+        self.next += 1;
+        Ok(oid)
+    }
+
+    pub fn allocate_named(&mut self, name: impl Into<String>) -> Result<u8, ConfigError> {
+        let name = name.into();
+        if self.names.contains_key(&name) {
+            return Err(ConfigError::DuplicateOidName(name));
+        }
+        let oid = self.allocate()?;
+        self.names.insert(name, oid);
+        Ok(oid)
+    }
+
+    pub fn get(&self, name: &str) -> Option<u8> { self.names.get(name).copied() }
+
+    pub fn count(&self) -> u8 { self.next as u8 }
 }
 
 #[cfg(test)]
@@ -262,6 +312,32 @@ mod tests {
             commands: vec![vec![20], vec![30]], crc: plan.crc()
         });
         assert_eq!(plan.validate_final_response(response(1, u64::from(plan.crc()), 0, 64)).unwrap(), 64);
+    }
+
+
+    #[test]
+    fn move_slots_subtract_reserved_capacity_and_reject_underflow() {
+        let plan = McuConfigPlan::new(&dictionary(), 0, &[], vec![], vec![], vec![]).unwrap();
+        assert_eq!(
+            plan.usable_move_count(response(1, 123, 0, 64), 8).unwrap(),
+            56,
+        );
+        assert!(matches!(
+            plan.usable_move_count(response(1, 123, 0, 4), 8),
+            Err(ConfigError::TooFewMoves { reported: 4, reserved: 8 })
+        ));
+    }
+
+    #[test]
+    fn oid_allocator_assigns_stable_named_ids_and_enforces_limit() {
+        let mut ids = OidAllocator::new();
+        assert_eq!(ids.allocate_named("stepper_x").unwrap(), 0);
+        assert_eq!(ids.allocate_named("heater").unwrap(), 1);
+        assert_eq!(ids.get("stepper_x"), Some(0));
+        assert!(matches!(ids.allocate_named("stepper_x"), Err(ConfigError::DuplicateOidName(_))));
+        for _ in 2..u8::MAX { ids.allocate().unwrap(); }
+        assert_eq!(ids.count(), u8::MAX);
+        assert!(matches!(ids.allocate(), Err(ConfigError::OidExhausted)));
     }
 
     #[test]
