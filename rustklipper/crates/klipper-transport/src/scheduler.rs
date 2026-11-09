@@ -69,17 +69,12 @@ pub struct CommandScheduler {
     last_ack_sequence: u64,
     sent_blocks: VecDeque<(u64, usize)>,
     retransmit: RetransmitState,
-    background_priority_clock: u64,
-    background_priority_clock_per_byte: f64,
-    background_priority_min_bytes: usize,
 }
 impl Default for CommandScheduler {
     fn default() -> Self {
         Self { queues: BTreeMap::new(), send_sequence: 1, receive_sequence: 1,
             receive_window: 0, need_ack_bytes: 0, last_ack_bytes: 0, last_ack_sequence: 0, sent_blocks: VecDeque::new(), retransmit: RetransmitState::new(),
-            background_priority_clock: BACKGROUND_PRIORITY_CLOCK,
-            background_priority_clock_per_byte: 0.0,
-            background_priority_min_bytes: MESSAGE_MIN }
+        }
     }
 }
 impl CommandScheduler {
@@ -93,22 +88,21 @@ impl CommandScheduler {
     }
     pub fn send_sequence(&self) -> u64 { self.send_sequence }
 
-    /// Set the current effective request clock for background-priority messages.
-    /// Klipper recomputes this from its clock estimate before each send decision.
-    pub fn set_background_priority_clock(&mut self, clock: u64) {
-        self.set_background_priority_clock_model(clock, 0.0, MESSAGE_MIN);
-    }
-
-    /// Configure the moving background request clock while a frame is packed.
-    /// `clock_per_byte` converts additional UART bytes into MCU clocks; the
-    /// first selection uses `clock` and later selections account for bytes
-    /// already accumulated in the current frame plus the minimum frame header.
-    pub fn set_background_priority_clock_model(
-        &mut self, clock: u64, clock_per_byte: f64, min_bytes: usize,
-    ) {
-        self.background_priority_clock = clock;
-        self.background_priority_clock_per_byte = clock_per_byte.max(0.0);
-        self.background_priority_min_bytes = min_bytes;
+    /// Return the minimum effective request clock among ready queue heads.
+    /// Klipper substitutes a moving clock for BACKGROUND_PRIORITY_CLOCK only
+    /// while deciding when to wake; frame packing itself retains raw req_clock
+    /// ordering, which places background traffic after finite-clock commands.
+    pub fn minimum_ready_request_clock(&self, background_clock: u64) -> Option<u64> {
+        self.queues.values()
+            .filter_map(|queue| queue.ready.front())
+            .map(|command| {
+                if command.req_clock == BACKGROUND_PRIORITY_CLOCK {
+                    background_clock
+                } else {
+                    command.req_clock
+                }
+            })
+            .min()
     }
 
     pub fn receive_sequence(&self) -> u64 { self.receive_sequence }
@@ -184,21 +178,7 @@ impl CommandScheduler {
                 .filter_map(|(id, q)| q.ready.front().map(|cmd| {
                     (*id, cmd.req_clock, cmd.bytes.len())
                 }))
-                .min_by_key(|(_, priority, _)| {
-                    if *priority == BACKGROUND_PRIORITY_CLOCK {
-                        let pending_bytes = if payload.is_empty() {
-                            0
-                        } else {
-                            payload.len().saturating_add(self.background_priority_min_bytes)
-                        };
-                        let pending_clocks =
-                            (pending_bytes as f64 * self.background_priority_clock_per_byte)
-                                .max(0.0) as u64;
-                        self.background_priority_clock.saturating_add(pending_clocks)
-                    } else {
-                        *priority
-                    }
-                });
+                .min_by_key(|(_, priority, _)| *priority);
             let Some((queue_id, _, size)) = selected else { break; };
             if payload.len() + size > MESSAGE_PAYLOAD_MAX { break; }
             let command = self.queues.get_mut(&queue_id)
@@ -375,9 +355,8 @@ mod tests {
     }
 
     #[test]
-    fn background_priority_uses_the_current_clock_instead_of_max_u64() {
+    fn frame_packing_keeps_background_commands_after_finite_req_clock() {
         let mut scheduler = CommandScheduler::new();
-        scheduler.set_background_priority_clock(100);
         scheduler.enqueue(1, ScheduledCommand::new(
             vec![0xA1], 0, BACKGROUND_PRIORITY_CLOCK,
         )).unwrap();
@@ -390,31 +369,23 @@ mod tests {
         let mut decoder = FrameDecoder::new();
         let parsed = decoder.push(&frame.bytes);
         assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].payload, vec![0xA1, 0xB2]);
+        // serialqueue.c uses the moving background clock for wake-up timing,
+        // but raw req_clock ordering during frame construction remains MAX_CLOCK.
+        assert_eq!(parsed[0].payload, vec![0xB2, 0xA1]);
     }
 
     #[test]
-    fn background_priority_advances_with_bytes_already_packed_in_frame() {
+    fn moving_background_clock_only_affects_send_wakeup_priority() {
         let mut scheduler = CommandScheduler::new();
-        scheduler.set_background_priority_clock_model(100, 10.0, 2);
         scheduler.enqueue(1, ScheduledCommand::new(
             vec![0xA1], 0, BACKGROUND_PRIORITY_CLOCK,
         )).unwrap();
         scheduler.enqueue(2, ScheduledCommand::new(
-            vec![0xB2], 0, 110,
-        )).unwrap();
-        scheduler.enqueue(3, ScheduledCommand::new(
-            vec![0xC3], 0, BACKGROUND_PRIORITY_CLOCK,
+            vec![0xB2], 0, 150,
         )).unwrap();
         scheduler.promote_ready(0);
-
-        let frame = scheduler.build_frame().unwrap().unwrap();
-        let mut decoder = FrameDecoder::new();
-        let parsed = decoder.push(&frame.bytes);
-        assert_eq!(parsed.len(), 1);
-        // The first background command is selected at clock 100. Once bytes
-        // are packed, the second background command moves past clock 110.
-        assert_eq!(parsed[0].payload, vec![0xA1, 0xB2, 0xC3]);
+        assert_eq!(scheduler.minimum_ready_request_clock(100), Some(100));
+        assert_eq!(scheduler.minimum_ready_request_clock(200), Some(150));
     }
 
     #[test]
