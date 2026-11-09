@@ -185,12 +185,12 @@ impl RetransmitState {
             self.last_ack_seq = receive_seq;
             return Ok(Vec::new());
         }
-        if receive_seq <= self.ignore_nak_sequenceuence || self.outstanding.is_empty() {
+        if receive_seq <= self.ignore_nak_sequence || self.outstanding.is_empty() {
             return Ok(Vec::new());
         }
         // State update performed by the retransmit timer after a NAK.
         self.ignore_nak_sequence = receive_seq;
-        if receive_seq < self.retransmit_sequenceuence {
+        if receive_seq < self.retransmit_sequence {
             self.ignore_nak_sequence = self.retransmit_sequence;
         }
         self.retransmit_sequence = send_seq;
