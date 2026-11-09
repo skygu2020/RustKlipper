@@ -826,6 +826,7 @@ mod tests {
     fn config_defaults_are_tracked_only_when_non_null_and_valid() {
         let config = ConfigDocument::parse("[printer]\nkinematics=cartesian\n").unwrap();
         let tracker = ConfigUsageTracker::new();
+        assert_eq!(tracker.get(&config, "printer", "kinematics"), Some("cartesian"));
         assert_eq!(
             tracker.get_with_default(&config, "printer", "missing", Some("default"), true),
             Some("default")
