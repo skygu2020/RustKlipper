@@ -299,7 +299,7 @@ mod tests {
 
     #[test]
     fn rejects_unterminated_extended_parameter_quotes() {
-        let parsed = parse_line("RESPOND MSG=\\"unterminated").unwrap();
+        let parsed = parse_line("RESPOND MSG=\"unterminated").unwrap();
         assert!(matches!(
             parsed.extended_parameters(),
             Err(GCodeError::MalformedCommand { .. })
