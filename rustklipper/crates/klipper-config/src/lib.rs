@@ -82,14 +82,17 @@ impl ConfigDocument {
     }
 
     pub fn parse_named(input: &str, source: impl Into<String>) -> Result<Self, ConfigParseError> {
-        let source = source.into();
+        Self::parse_named_at(input, source.into(), 0)
+    }
+
+    fn parse_named_at(input: &str, source: String, line_offset: usize) -> Result<Self, ConfigParseError> {
         let mut document = Self::default();
         let mut current: Option<usize> = None;
         let mut last_option: Option<(usize, usize)> = None;
         let mut last_option_indent: Option<usize> = None;
 
         for (zero_line, raw) in input.lines().enumerate() {
-            let line_no = zero_line + 1;
+            let line_no = zero_line + 1 + line_offset;
             let line = raw.trim_end_matches('\r');
             let uncommented = strip_hash_comment(line);
             let trimmed = uncommented.trim();
@@ -167,6 +170,22 @@ impl ConfigDocument {
             last_option_indent = Some(indent);
         }
         Ok(document)
+    }
+
+    fn merge(&mut self, other: ConfigDocument) {
+        for incoming in other.sections {
+            let section_index = if let Some(&index) = self.index.get(&incoming.name) {
+                index
+            } else {
+                let index = self.sections.len();
+                self.index.insert(incoming.name.clone(), index);
+                self.sections.push(ConfigSection::new(incoming.name.clone(), incoming.line));
+                index
+            };
+            for option in incoming.options {
+                self.sections[section_index].set(option.name, option.value, option.line);
+            }
+        }
     }
 
     pub fn section(&self, name: &str) -> Option<&ConfigSection> {
@@ -281,6 +300,113 @@ impl ConfigDocument {
     }
 }
 
+
+/// Filesystem-backed config loader with Klipper-compatible `[include ...]`
+/// expansion. Includes are expanded in-place, sorted lexicographically, and
+/// resolved relative to the file containing the include directive.
+#[derive(Debug, Error)]
+pub enum ConfigLoadError {
+    #[error("unable to read config file '{path}': {source}")]
+    Io { path: String, #[source] source: std::io::Error },
+    #[error(transparent)]
+    Parse(#[from] ConfigParseError),
+    #[error("include file '{pattern}' does not exist")]
+    IncludeNotFound { pattern: String },
+    #[error("recursive include of config file '{path}'")]
+    RecursiveInclude { path: String },
+    #[error("invalid include pattern '{pattern}': {message}")]
+    InvalidPattern { pattern: String, message: String },
+}
+
+/// Loads a main config file and recursively expands its include directives.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ConfigFileLoader;
+
+impl ConfigFileLoader {
+    pub fn load(path: impl AsRef<std::path::Path>) -> Result<ConfigDocument, ConfigLoadError> {
+        let path = path.as_ref();
+        let mut visited = std::collections::HashSet::new();
+        Self::load_inner(path, &mut visited)
+    }
+
+    fn load_inner(
+        path: &std::path::Path,
+        visited: &mut std::collections::HashSet<std::path::PathBuf>,
+    ) -> Result<ConfigDocument, ConfigLoadError> {
+        use std::io::Read;
+        let canonical = std::fs::canonicalize(path).map_err(|source| ConfigLoadError::Io {
+            path: path.display().to_string(), source,
+        })?;
+        if !visited.insert(canonical.clone()) {
+            return Err(ConfigLoadError::RecursiveInclude { path: path.display().to_string() });
+        }
+        let result = (|| {
+            let mut file = std::fs::File::open(&canonical).map_err(|source| ConfigLoadError::Io {
+                path: canonical.display().to_string(), source,
+            })?;
+            let mut data = String::new();
+            file.read_to_string(&mut data).map_err(|source| ConfigLoadError::Io {
+                path: canonical.display().to_string(), source,
+            })?;
+            let data = data.replace("\\r\\n", "\\n");
+            let mut merged = ConfigDocument::default();
+            let mut buffered = Vec::new();
+            let parent = canonical.parent().unwrap_or_else(|| std::path::Path::new("."));
+
+            let flush = |lines: &mut Vec<String>, merged: &mut ConfigDocument| -> Result<(), ConfigLoadError> {
+                if lines.iter().all(|line| line.trim().is_empty()) {
+                    lines.clear();
+                    return Ok(());
+                }
+                let chunk = lines.join("\\n");
+                let parsed = ConfigDocument::parse_named_at(&chunk, canonical.display().to_string(), 0)?;
+                merged.merge(parsed);
+                lines.clear();
+                Ok(())
+            };
+
+            for line in data.lines() {
+                let without_comment = strip_hash_comment(line);
+                let trimmed = without_comment.trim();
+                let include_spec = trimmed.strip_prefix('[')
+                    .and_then(|value| value.strip_suffix(']'))
+                    .and_then(|header| header.strip_prefix("include "))
+                    .map(str::trim);
+                if let Some(spec) = include_spec {
+                    flush(&mut buffered, &mut merged)?;
+                    let pattern = parent.join(spec);
+                    let pattern_text = pattern.to_string_lossy().into_owned();
+                    let mut matches = Vec::new();
+                    for entry in glob::glob(&pattern_text).map_err(|error| ConfigLoadError::InvalidPattern {
+                        pattern: pattern_text.clone(), message: error.to_string(),
+                    })? {
+                        matches.push(entry.map_err(|error| ConfigLoadError::InvalidPattern {
+                            pattern: pattern_text.clone(), message: error.to_string(),
+                        })?);
+                    }
+                    matches.sort();
+                    if matches.is_empty() && !glob::Pattern::new(&pattern_text)
+                        .map(|pattern| pattern.matches_path(&pattern.as_path()))
+                        .unwrap_or(false)
+                    {
+                        return Err(ConfigLoadError::IncludeNotFound { pattern: pattern_text });
+                    }
+                    for included in matches {
+                        let included_doc = Self::load_inner(&included, visited)?;
+                        merged.merge(included_doc);
+                    }
+                } else {
+                    buffered.push(line.to_owned());
+                }
+            }
+            flush(&mut buffered, &mut merged)?;
+            Ok(merged)
+        })();
+        visited.remove(&canonical);
+        result
+    }
+}
+
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ConfigValueError {
     #[error("required option '{option}' is missing from section '{section}'")]
@@ -377,6 +503,38 @@ mod tests {
             config.get_f64_list("bed_mesh", "mesh_min", ',', Some(2)).unwrap(),
             vec![0.5, 1.25],
         );
+    }
+
+    #[test]
+    fn loads_relative_includes_in_source_order() {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!("rustklipper-config-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("base.cfg"), "[printer]\\nmax_velocity=200\\n").unwrap();
+        fs::write(dir.join("main.cfg"),
+            "[printer]\\nmax_accel=3000\\n[include base.cfg]\\n[stepper_x]\\npin=PA0\\n"
+        ).unwrap();
+        let config = ConfigFileLoader::load(dir.join("main.cfg")).unwrap();
+        assert_eq!(config.get("printer", "max_velocity"), Some("200"));
+        assert_eq!(config.get("printer", "max_accel"), Some("3000"));
+        assert_eq!(config.get("stepper_x", "pin"), Some("PA0"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rejects_recursive_includes() {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!("rustklipper-config-cycle-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("a.cfg"), "[include b.cfg]\\n").unwrap();
+        fs::write(dir.join("b.cfg"), "[include a.cfg]\\n").unwrap();
+        assert!(matches!(
+            ConfigFileLoader::load(dir.join("a.cfg")),
+            Err(ConfigLoadError::RecursiveInclude { .. })
+        ));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
