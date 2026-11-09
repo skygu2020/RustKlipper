@@ -244,12 +244,9 @@ impl ComponentRegistry {
             )?;
         }
 
+        let usage_transaction = printer.config_usage.begin_transaction();
         let tracked = printer.config_usage.track_section(section);
-        let usage_checkpoint = printer.config_usage.checkpoint();
-        // Factories may publish objects before returning an error or panicking.
-        // Snapshot names so failed factories do not leave stale objects behind;
-        // stale names would make the next load incorrectly skip the factory.
-        let objects_before: HashSet<String> = printer.object_names().into_iter().collect();
+        let object_transaction = printer.begin_object_registration_transaction();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             (entry.factory)(printer, &tracked)
         }));
@@ -259,18 +256,16 @@ impl ComponentRegistry {
             Err(_) => Some("component factory panicked".to_owned()),
         };
         if let Some(message) = failure {
-            printer.config_usage.restore(usage_checkpoint);
+            drop(usage_transaction);
+            drop(object_transaction);
             printer.remove_component_gcode_commands(name);
-            for object_name in printer.object_names() {
-                if !objects_before.contains(&object_name) {
-                    printer.remove_object(&object_name);
-                }
-            }
             return Err(ComponentError::LoadFailed {
                 section: section.name.clone(),
                 message,
             });
         }
+        usage_transaction.commit();
+        object_transaction.commit();
         loading.remove(name);
         loaded_set.insert(name.to_owned());
         printer.mark_component_loaded(name);
@@ -339,6 +334,29 @@ impl ComponentRegistry {
     }
 }
 
+type RegisteredObject = (String, Arc<dyn Any + Send + Sync>);
+
+struct ObjectRegistrationTransaction<'a> {
+    printer: &'a Printer,
+    thread_id: std::thread::ThreadId,
+    completed: bool,
+}
+
+impl ObjectRegistrationTransaction<'_> {
+    fn commit(mut self) {
+        self.printer.finish_object_registration_transaction(&self.thread_id, true);
+        self.completed = true;
+    }
+}
+
+impl Drop for ObjectRegistrationTransaction<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.printer.finish_object_registration_transaction(&self.thread_id, false);
+        }
+    }
+}
+
 pub struct Printer {
     state: RwLock<PrinterState>,
     state_message: RwLock<String>,
@@ -349,6 +367,9 @@ pub struct Printer {
     connection_initialized: AtomicBool,
     mcus: McuRegistry,
     objects: RwLock<HashMap<String, Arc<dyn Any + Send + Sync>>>,
+    object_registration_transactions: Mutex<
+        HashMap<std::thread::ThreadId, Vec<Vec<(String, Arc<dyn Any + Send + Sync>)>>>,
+    >,
     event_handlers: Mutex<HashMap<PrinterEventKind, Vec<EventHandler>>>,
     component_gcode: Mutex<HashMap<String, HashSet<String>>>,
     gcode: Mutex<GCodeDispatcher>,
@@ -373,6 +394,7 @@ impl Printer {
             connection_initialized: AtomicBool::new(false),
             mcus: McuRegistry::new(),
             objects: RwLock::new(HashMap::new()),
+            object_registration_transactions: Mutex::new(HashMap::new()),
             event_handlers: Mutex::new(HashMap::new()),
             component_gcode: Mutex::new(HashMap::new()),
             gcode: Mutex::new(GCodeDispatcher::new()),
@@ -850,17 +872,88 @@ impl Printer {
         self.send_event(PrinterEvent::Disconnect);
     }
 
+    fn begin_object_registration_transaction(&self) -> ObjectRegistrationTransaction<'_> {
+        let thread_id = std::thread::current().id();
+        self.object_registration_transactions
+            .lock()
+            .expect("object registration transaction lock poisoned")
+            .entry(thread_id)
+            .or_default()
+            .push(Vec::new());
+        ObjectRegistrationTransaction {
+            printer: self,
+            thread_id,
+            completed: false,
+        }
+    }
+
+    fn finish_object_registration_transaction(
+        &self,
+        thread_id: &std::thread::ThreadId,
+        commit: bool,
+    ) {
+        let registered = {
+            let mut transactions = self
+                .object_registration_transactions
+                .lock()
+                .expect("object registration transaction lock poisoned");
+            let Some(stack) = transactions.get_mut(thread_id) else {
+                return;
+            };
+            let Some(registered) = stack.pop() else {
+                return;
+            };
+            if commit {
+                if let Some(parent) = stack.last_mut() {
+                    parent.extend(registered);
+                    return;
+                }
+            }
+            if stack.is_empty() {
+                transactions.remove(thread_id);
+            }
+            registered
+        };
+
+        if !commit {
+            let mut objects = self.objects.write().expect("printer object lock poisoned");
+            for (name, registered_object) in registered {
+                if objects
+                    .get(&name)
+                    .is_some_and(|current| Arc::ptr_eq(current, &registered_object))
+                {
+                    objects.remove(&name);
+                }
+            }
+        }
+    }
+
     /// Register a named host object. The registry retains shared ownership.
+    /// Objects registered synchronously by a component factory are tracked for
+    /// rollback if that factory fails.
     pub fn register_object<T>(&self, name: impl Into<String>, object: T) -> Result<(), PrinterError>
     where
         T: Any + Send + Sync,
     {
         let name = name.into();
-        let mut objects = self.objects.write().expect("printer object lock poisoned");
-        if objects.contains_key(&name) {
-            return Err(PrinterError::DuplicateObject { name });
+        let object: Arc<dyn Any + Send + Sync> = Arc::new(object);
+        {
+            let mut objects = self.objects.write().expect("printer object lock poisoned");
+            if objects.contains_key(&name) {
+                return Err(PrinterError::DuplicateObject { name });
+            }
+            objects.insert(name.clone(), object.clone());
         }
-        objects.insert(name, Arc::new(object));
+        let thread_id = std::thread::current().id();
+        if let Some(transaction) = self
+            .object_registration_transactions
+            .lock()
+            .expect("object registration transaction lock poisoned")
+            .get_mut(&thread_id)
+            .and_then(|stack| stack.last_mut())
+        {
+            transaction.push((name, object));
+        }
         Ok(())
     }
 
