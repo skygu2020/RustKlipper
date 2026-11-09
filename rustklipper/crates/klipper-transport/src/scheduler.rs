@@ -400,6 +400,8 @@ mod tests {
         s.promote_ready(0);
         let second = s.build_frame().unwrap().unwrap();
 
+        s.enqueue(1, ScheduledCommand::new(vec![0x43], 0, 3)).unwrap();
+        s.promote_ready(0);
         s.set_receive_window(MESSAGE_MAX + second.bytes.len());
 
         let data_ack = Frame { sequence: 2, payload: vec![0x55] };
