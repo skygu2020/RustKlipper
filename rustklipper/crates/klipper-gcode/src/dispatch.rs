@@ -27,7 +27,6 @@ type Handler = Arc<dyn Fn(&GCodeCommand) -> Result<Vec<DispatchEvent>, GCodeErro
 #[derive(Clone)]
 struct Registration {
     handler: Handler,
-    available_before_ready: bool,
     help: Option<String>,
 }
 
@@ -116,7 +115,6 @@ impl GCodeDispatcher {
 
         let registration = Registration {
             handler: Arc::new(handler),
-            available_before_ready,
             help: help.map(str::to_owned),
         };
         self.ready_handlers.insert(name.to_owned(), registration.clone());
@@ -206,7 +204,7 @@ impl GCodeDispatcher {
             }
         }
 
-        let explicit_ack = events.iter().any(|event| matches!(event, DispatchEvent::Ack(_)));
+        if !need_ack {\n            events.retain(|event| !matches!(event, DispatchEvent::Ack(_)));\n        }\n        let explicit_ack = events.iter().any(|event| matches!(event, DispatchEvent::Ack(_)));
         if need_ack && !explicit_ack {
             events.push(DispatchEvent::Ack(None));
         }
