@@ -10,6 +10,7 @@ pub use reactor::{Completion, CompletionCancelled, Reactor, ReactorError, TaskId
 
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use klipper_config::{
@@ -388,7 +389,7 @@ impl Printer {
     /// Install a parsed host configuration and enter the configuring state.
     pub fn install_config(&self, config: ConfigDocument) {
         self.config_usage.clear();
-        self.connection_initialized.store(false, Ordering::SeqCst);
+        self.connection_initialized.store(false, std::sync::atomic::Ordering::SeqCst);
         self.loaded_components
             .lock()
             .expect("loaded component lock poisoned")
@@ -626,7 +627,7 @@ impl Printer {
         if self.state() != PrinterState::Configuring
             || self
                 .connection_initialized
-                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .compare_exchange(false, true, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst)
                 .is_err()
         {
             return Ok(Vec::new());
@@ -655,7 +656,7 @@ impl Printer {
             Ok(loaded)
         })();
         if result.is_err() {
-            self.connection_initialized.store(false, Ordering::SeqCst);
+            self.connection_initialized.store(false, std::sync::atomic::Ordering::SeqCst);
         }
         result
     }
