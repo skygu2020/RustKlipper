@@ -1,25 +1,15 @@
 # klipper-config
 
-Rust configuration primitives for the Klipper host runtime.
+Host-side Klipper configuration support.
 
-The initial parser mirrors the common behavior of
-`klippy/configfile.py` / Python's `RawConfigParser`:
+Implemented:
+- Ordered sections and options with case-insensitive option lookup.
+- Typed scalar and list getters.
+- Multiline option values and inline comments.
+- Recursive `[include ...]` expansion relative to the including file.
+- Sorted glob expansion, optional unmatched globs, missing direct-include errors,
+  and recursive-include detection.
 
-- case-insensitive option names and case-sensitive section names;
-- source-order section and option iteration;
-- duplicate options overwrite their prior value without moving their position;
-- repeated sections merge into the first section;
-- `=` and `:` option delimiters;
-- inline comments, indented multiline values, and typed scalar/list getters.
-
-This crate is deliberately separate from the upstream Python tree. Include
-expansion, autosave blocks, deprecation tracking, and printer-object-specific
-validation remain follow-up work. Error values retain the source filename and
-line number for diagnostics; the parser does not claim to implement those
-features yet.
-
-Run its tests from the Rust workspace:
-
-```sh
-cargo test -p klipper-config
-```
+Not yet implemented: autosave blocks, option access/deprecation tracking,
+printer-object-specific validation, and full parity with Python's
+`configparser.RawConfigParser`.
