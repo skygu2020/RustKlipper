@@ -867,11 +867,19 @@ impl Printer {
     }
 
     pub fn remove_object(&self, name: &str) -> bool {
-        self.objects
+        let removed = self
+            .objects
             .write()
             .expect("printer object lock poisoned")
             .remove(name)
-            .is_some()
+            .is_some();
+        if removed {
+            self.loaded_components
+                .lock()
+                .expect("loaded component lock poisoned")
+                .remove(name);
+        }
+        removed
     }
 
     pub fn object_names(&self) -> Vec<String> {
@@ -1614,6 +1622,27 @@ mod tests {
                 dependency,
             }) if section == "consumer" && dependency == "missing"
         ));
+    }
+
+    #[test]
+    fn removing_component_object_allows_component_reload() {
+        let printer = Printer::new();
+        printer.install_config(ConfigDocument::parse("[fan]\npin=PA0\n").unwrap());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register("fan", move |printer, section| {
+                observed.fetch_add(1, Ordering::SeqCst);
+                printer
+                    .register_object("fan", section.get("pin").unwrap().to_owned())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        printer.load_components(&registry).unwrap();
+        assert!(printer.remove_object("fan"));
+        assert_eq!(printer.load_components(&registry).unwrap(), vec!["fan"]);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     #[test]
