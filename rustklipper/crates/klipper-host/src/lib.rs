@@ -38,6 +38,13 @@ pub enum PrinterStateCategory {
     Error,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrinterStatus {
+    pub state: PrinterState,
+    pub category: PrinterStateCategory,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PrinterEventKind {
     ConfigLoaded,
@@ -234,6 +241,28 @@ impl Printer {
             PrinterState::Ready => PrinterStateCategory::Ready,
             PrinterState::Shutdown => PrinterStateCategory::Shutdown,
             PrinterState::Disconnected => PrinterStateCategory::Error,
+        }
+    }
+
+    /// Read state, UI category, and message under one consistent lock snapshot.
+    pub fn status(&self) -> PrinterStatus {
+        let state = self.state.read().expect("printer state lock poisoned");
+        let message = self
+            .state_message
+            .read()
+            .expect("printer state message lock poisoned");
+        let category = match *state {
+            PrinterState::Startup | PrinterState::Configuring => {
+                PrinterStateCategory::Startup
+            }
+            PrinterState::Ready => PrinterStateCategory::Ready,
+            PrinterState::Shutdown => PrinterStateCategory::Shutdown,
+            PrinterState::Disconnected => PrinterStateCategory::Error,
+        };
+        PrinterStatus {
+            state: *state,
+            category,
+            message: message.clone(),
         }
     }
 
@@ -742,6 +771,29 @@ mod tests {
         printer.set_configuring();
         assert_eq!(printer.state(), PrinterState::Shutdown);
         assert_eq!(printer.state_message(), "startup failure");
+    }
+
+    #[test]
+    fn printer_status_returns_a_consistent_snapshot() {
+        let printer = Printer::new();
+        printer.set_configuring();
+        assert_eq!(
+            printer.status(),
+            PrinterStatus {
+                state: PrinterState::Configuring,
+                category: PrinterStateCategory::Startup,
+                message: "Printer is configuring".to_owned(),
+            }
+        );
+        printer.set_ready();
+        assert_eq!(
+            printer.status(),
+            PrinterStatus {
+                state: PrinterState::Ready,
+                category: PrinterStateCategory::Ready,
+                message: "Printer is ready".to_owned(),
+            }
+        );
     }
 
     #[test]
