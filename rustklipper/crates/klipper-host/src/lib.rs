@@ -2373,7 +2373,13 @@ mod tests {
         registry
             .register("component", |printer, _| {
                 printer
-                    .register_gcode_command("M999", true, None, |_| Ok(Vec::new()))
+                    .register_component_gcode_command(
+                        "component",
+                        "M999",
+                        true,
+                        None,
+                        |_| Ok(Vec::new()),
+                    )
                     .map_err(|error| error.to_string())?;
                 panic!("factory panics after command registration");
             })
