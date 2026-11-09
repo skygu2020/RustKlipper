@@ -104,6 +104,8 @@ pub enum ComponentError {
     DuplicateFactory { section: String },
     #[error("failed to load component section '{section}': {message}")]
     LoadFailed { section: String, message: String },
+    #[error(transparent)]
+    ConfigValidation(#[from] ConfigValidationError),
 }
 
 impl ComponentRegistry {
@@ -419,6 +421,7 @@ impl Printer {
         registry: &ComponentRegistry,
     ) -> Result<Vec<String>, ComponentError> {
         let loaded = self.load_components(registry)?;
+        self.validate_config()?;
         self.send_event(PrinterEvent::McuIdentify);
         self.send_event(PrinterEvent::Connect);
         Ok(loaded)
@@ -955,6 +958,35 @@ mod tests {
         );
         assert!(printer.unused_config_options().is_empty());
         assert!(printer.validate_config().is_ok());
+    }
+
+    #[test]
+    fn component_initialization_validates_before_connect_events() {
+        let printer = Printer::new();
+        printer.install_config(
+            ConfigDocument::parse("[fan]\npin=PA0\nunknown=1\n").unwrap(),
+        );
+        let events = Arc::new(AtomicUsize::new(0));
+        let observed = events.clone();
+        printer.register_event_handler(PrinterEventKind::Connect, move |_| {
+            observed.fetch_add(1, Ordering::SeqCst);
+        });
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register("fan", |printer, section| {
+                printer
+                    .register_object("fan", section.get("pin").unwrap().to_owned())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        assert!(matches!(
+            printer.initialize_components(&registry),
+            Err(ComponentError::ConfigValidation(
+                ConfigValidationError::UnknownOption { .. }
+            ))
+        ));
+        assert_eq!(events.load(Ordering::SeqCst), 0);
     }
 
     #[test]
