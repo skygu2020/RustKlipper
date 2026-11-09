@@ -193,7 +193,9 @@ pub struct ReliableSerialSession {
     identify_chunk_count: Option<u8>,
     started: Instant,
     wire_time_per_byte: f64,
-    last_ack_clock: u64,\n    queue_clock_update: Option<ClockUpdate>,\n    disconnected: bool,
+    last_ack_clock: u64,
+    queue_clock_update: Option<ClockUpdate>,
+    disconnected: bool,
 }
 
 impl ReliableSerialSession {
