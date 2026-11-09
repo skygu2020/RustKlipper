@@ -245,15 +245,24 @@ impl ComponentRegistry {
         let tracked = printer.config_usage.track_section(section);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             (entry.factory)(printer, &tracked)
-        }))
-        .map_err(|_| ComponentError::LoadFailed {
-            section: section.name.clone(),
-            message: "component factory panicked".to_owned(),
-        })?;
-        result.map_err(|message| ComponentError::LoadFailed {
-            section: section.name.clone(),
-            message,
-        })?;
+        }));
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(message)) => {
+                printer.remove_component_gcode_commands(name);
+                return Err(ComponentError::LoadFailed {
+                    section: section.name.clone(),
+                    message,
+                });
+            }
+            Err(_) => {
+                printer.remove_component_gcode_commands(name);
+                return Err(ComponentError::LoadFailed {
+                    section: section.name.clone(),
+                    message: "component factory panicked".to_owned(),
+                });
+            }
+        }
         loading.remove(name);
         loaded_set.insert(name.to_owned());
         printer.mark_component_loaded(name);
@@ -332,6 +341,7 @@ pub struct Printer {
     connection_initialized: AtomicBool,
     objects: RwLock<HashMap<String, Arc<dyn Any + Send + Sync>>>,
     event_handlers: Mutex<HashMap<PrinterEventKind, Vec<EventHandler>>>,
+    component_gcode: Mutex<HashMap<String, HashSet<String>>>,
     gcode: Mutex<GCodeDispatcher>,
     reactor: Reactor,
 }
@@ -354,6 +364,7 @@ impl Printer {
             connection_initialized: AtomicBool::new(false),
             objects: RwLock::new(HashMap::new()),
             event_handlers: Mutex::new(HashMap::new()),
+            component_gcode: Mutex::new(HashMap::new()),
             gcode: Mutex::new(GCodeDispatcher::new()),
             reactor: Reactor::new(),
         }
@@ -430,6 +441,10 @@ impl Printer {
     pub fn install_config(&self, config: ConfigDocument) {
         self.config_usage.clear();
         self.connection_initialized.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.component_gcode
+            .lock()
+            .expect("component G-code ownership lock poisoned")
+            .clear();
         self.gcode
             .lock()
             .expect("gcode dispatcher lock poisoned")
@@ -931,15 +946,34 @@ impl Printer {
             .is_some()
     }
 
-    /// Invalidate one component's load cache entry.
-    ///
-    /// Callers are responsible for removing its objects and unloading any
-    /// dependent components before requesting a reload.
+    /// Unload a component's owned G-code commands and invalidate its load cache.
+    /// Callers remain responsible for removing objects and dependent components.
     pub fn unload_component(&self, section: &str) -> bool {
-        self.loaded_components
+        let removed_commands = self.remove_component_gcode_commands(section);
+        let removed_component = self
+            .loaded_components
             .lock()
             .expect("loaded component lock poisoned")
-            .remove(section)
+            .remove(section);
+        removed_commands || removed_component
+    }
+
+    fn remove_component_gcode_commands(&self, component: &str) -> bool {
+        let mut ownership = self
+            .component_gcode
+            .lock()
+            .expect("component G-code ownership lock poisoned");
+        let Some(commands) = ownership.remove(component) else {
+            return false;
+        };
+        if commands.is_empty() {
+            return false;
+        }
+        let mut dispatcher = self.gcode.lock().expect("gcode dispatcher lock poisoned");
+        for command in commands {
+            dispatcher.unregister_command(&command);
+        }
+        true
     }
 
     pub fn object_names(&self) -> Vec<String> {
@@ -1035,11 +1069,104 @@ impl Printer {
             .register_mux_command(command, key, value, help, handler)
     }
 
+    /// Register a command owned by one component and remove it automatically
+    /// when that component is unloaded or configuration is reinstalled.
+    pub fn register_component_gcode_command<F>(
+        &self,
+        component: &str,
+        command: &str,
+        available_before_ready: bool,
+        help: Option<&str>,
+        handler: F,
+    ) -> Result<(), GCodeError>
+    where
+        F: Fn(&GCodeCommand) -> Result<Vec<DispatchEvent>, GCodeError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.register_owned_gcode_name(component, command, |dispatcher| {
+            dispatcher.register_command(command, available_before_ready, help, handler)
+        })
+    }
+
+    /// Register one mux value for a component-owned command. A command name
+    /// may belong to only one component, while that component may add values.
+    pub fn register_component_mux_gcode_command<F>(
+        &self,
+        component: &str,
+        command: &str,
+        key: &str,
+        value: Option<&str>,
+        help: Option<&str>,
+        handler: F,
+    ) -> Result<(), GCodeError>
+    where
+        F: Fn(&GCodeCommand) -> Result<Vec<DispatchEvent>, GCodeError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.register_owned_gcode_name(component, command, |dispatcher| {
+            dispatcher.register_mux_command(command, key, value, help, handler)
+        })
+    }
+
+    fn register_owned_gcode_name<F>(
+        &self,
+        component: &str,
+        command: &str,
+        register: F,
+    ) -> Result<(), GCodeError>
+    where
+        F: FnOnce(&mut GCodeDispatcher) -> Result<(), GCodeError>,
+    {
+        let component = component.trim();
+        let command = command.trim();
+        if component.is_empty() {
+            return Err(GCodeError::MalformedCommand {
+                line: "component name cannot be empty".to_owned(),
+            });
+        }
+        let mut ownership = self
+            .component_gcode
+            .lock()
+            .expect("component G-code ownership lock poisoned");
+        if ownership
+            .iter()
+            .any(|(owner, commands)| owner != component && commands.contains(command))
+        {
+            return Err(GCodeError::MalformedCommand {
+                line: format!("G-code command {command} is already owned by another component"),
+            });
+        }
+        {
+            let mut dispatcher = self.gcode.lock().expect("gcode dispatcher lock poisoned");
+            register(&mut dispatcher)?;
+        }
+        ownership
+            .entry(component.to_owned())
+            .or_default()
+            .insert(command.to_owned());
+        Ok(())
+    }
+
     pub fn unregister_gcode_command(&self, command: &str) -> bool {
-        self.gcode
+        let command = command.trim();
+        let mut ownership = self
+            .component_gcode
+            .lock()
+            .expect("component G-code ownership lock poisoned");
+        let removed = self
+            .gcode
             .lock()
             .expect("gcode dispatcher lock poisoned")
-            .unregister_command(command)
+            .unregister_command(command);
+        for commands in ownership.values_mut() {
+            commands.remove(command);
+        }
+        ownership.retain(|_, commands| !commands.is_empty());
+        removed
     }
 
     /// Return the sorted command names currently active for this printer state.
@@ -1685,6 +1812,61 @@ mod tests {
             replacement.events[0],
             DispatchEvent::Info("replacement".to_owned())
         );
+    }
+
+    #[test]
+    fn unloading_component_unregisters_owned_gcode_commands() {
+        let printer = Printer::new();
+        printer
+            .register_component_gcode_command("macro", "M999", true, None, |_| {
+                Ok(vec![DispatchEvent::Info("owned".to_owned())])
+            })
+            .unwrap();
+        printer.set_ready();
+        assert!(printer.process_gcode_line("M999", true).unwrap().handler_found);
+
+        assert!(printer.unload_component("macro"));
+        assert!(!printer.registered_gcode_commands().contains(&"M999".to_owned()));
+        assert!(!printer.process_gcode_line("M999", true).unwrap().handler_found);
+    }
+
+    #[test]
+    fn unloading_component_removes_its_mux_command_values() {
+        let printer = Printer::new();
+        for value in ["quiet", "fast"] {
+            printer
+                .register_component_mux_gcode_command(
+                    "heater", "SET_MODE", "MODE", Some(value), None, |_| Ok(Vec::new()),
+                )
+                .unwrap();
+        }
+        printer.set_ready();
+        assert!(printer.process_gcode_line("SET_MODE MODE=quiet", true).unwrap().handler_found);
+        assert!(printer.unload_component("heater"));
+        assert!(!printer.process_gcode_line("SET_MODE MODE=quiet", true).unwrap().handler_found);
+    }
+
+    #[test]
+    fn failed_component_factory_rolls_back_owned_gcode_commands() {
+        let printer = Printer::new();
+        printer.install_config(ConfigDocument::parse("[macro]\n").unwrap());
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register("macro", |printer, _| {
+                printer
+                    .register_component_gcode_command("macro", "M999", true, None, |_| {
+                        Ok(Vec::new())
+                    })
+                    .map_err(|error| error.to_string())?;
+                Err("factory failed after registration".to_owned())
+            })
+            .unwrap();
+
+        assert!(matches!(
+            printer.load_components(&registry),
+            Err(ComponentError::LoadFailed { section, .. }) if section == "macro"
+        ));
+        assert!(!printer.registered_gcode_commands().contains(&"M999".to_owned()));
     }
 
     #[test]
