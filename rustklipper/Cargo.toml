@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/klipper-protocol",
+]
+
+[workspace.package]
+edition = "2024"
+license = "GPL-3.0-only"
+version = "0.1.0"
+authors = ["RustKlipper contributors"]
+
+[workspace.dependencies]
+thiserror = "2"
+tracing = "0.1"
