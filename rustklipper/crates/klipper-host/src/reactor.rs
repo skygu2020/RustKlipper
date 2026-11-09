@@ -150,6 +150,20 @@ impl Reactor {
     }
 
 
+    /// Queue a one-shot callback for an explicit monotonic deadline.
+    pub fn register_callback_at<F>(&self, deadline: Instant, callback: F) -> TaskId
+    where
+        F: FnOnce(Instant) + Send + 'static,
+    {
+        let mut callback = Some(callback);
+        self.insert_task(deadline, move |eventtime| {
+            callback
+                .take()
+                .expect("one-shot callback invoked once")(eventtime);
+            None
+        })
+    }
+
     /// Queue a one-shot callback and return a handle for its result.
     /// The callback runs on the next due dispatch.
     pub fn register_callback_with_completion<F, T>(
@@ -527,6 +541,21 @@ mod tests {
         assert!(!reactor.update_timer(id, start + Duration::from_secs(4)));
     }
 
+
+
+    #[test]
+    fn callback_at_waits_for_its_requested_deadline() {
+        let reactor = Reactor::new();
+        let start = Instant::now();
+        let count = std::sync::Arc::new(AtomicUsize::new(0));
+        let observed = count.clone();
+        reactor.register_callback_at(start + Duration::from_secs(5), move |_| {
+            observed.fetch_add(1, Ordering::SeqCst);
+        });
+        assert_eq!(reactor.run_due(start + Duration::from_secs(4)), 0);
+        assert_eq!(reactor.run_due(start + Duration::from_secs(6)), 1);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn callback_completion_publishes_result() {
