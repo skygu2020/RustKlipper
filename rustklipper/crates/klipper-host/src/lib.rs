@@ -1640,6 +1640,7 @@ mod tests {
             .unwrap();
         printer.load_components(&registry).unwrap();
         assert!(printer.remove_object("fan"));
+        assert!(printer.load_components(&registry).unwrap().is_empty());
         assert!(printer.unload_component("fan"));
         assert_eq!(printer.load_components(&registry).unwrap(), vec!["fan"]);
         assert_eq!(calls.load(Ordering::SeqCst), 2);
