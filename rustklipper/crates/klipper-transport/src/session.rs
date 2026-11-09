@@ -1511,6 +1511,12 @@ impl ReliableSerialSession {
             }
         }
 
+        // read_frames() may block until the configured timeout. A caller can drop a
+        // response waiter while that read is in progress, so prune again before
+        // consuming retry deadlines; otherwise this poll could enqueue one more
+        // application attempt for an abandoned request.
+        self.prune_abandoned_response_requests();
+
         let now = self.now();
         // Application-level retries are distinct from frame retransmissions:
         // after an ACK, wait 10/20/40/80/160ms, then enqueue a fresh frame.
