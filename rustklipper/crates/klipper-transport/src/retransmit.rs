@@ -62,6 +62,8 @@ pub struct RetransmitState {
     ignore_nak_sequence: u64,
     retransmit_sequence: u64,
     last_now: Option<f64>,
+    rtt_sample_seq: Option<u64>,
+    retransmit_deadline: Option<f64>,
 }
 
 impl Default for RetransmitState {
@@ -75,6 +77,8 @@ impl Default for RetransmitState {
             ignore_nak_sequence: 0,
             retransmit_sequence: 0,
             last_now: None,
+            rtt_sample_seq: None,
+            retransmit_deadline: None,
         }
     }
 }
@@ -108,6 +112,12 @@ impl RetransmitState {
         if self.outstanding.back().is_some_and(|entry| sequence <= entry.frame.sequence) {
             return Err(RetransmitError::SequenceNotIncreasing);
         }
+        if self.outstanding.is_empty() {
+            self.retransmit_deadline = Some(now + self.rto);
+        }
+        if self.rtt_sample_seq.is_none() {
+            self.rtt_sample_seq = Some(sequence);
+        }
         self.outstanding.push_back(OutstandingFrame {
             frame: TrackedFrame { sequence, bytes, transmissions: 1 },
             first_sent_at: now,
@@ -128,23 +138,37 @@ impl RetransmitState {
         }
 
         let mut acknowledged = Vec::new();
-        let mut rtt_candidate = None;
+        let mut last_receive_sent_time = None;
+        let mut last_frame_retransmitted = false;
         while self.outstanding.front().is_some_and(|entry| entry.frame.sequence < ack_sequence) {
             let entry = self.outstanding.pop_front().expect("front checked");
-            if !entry.retransmitted {
-                rtt_candidate = Some((now - entry.first_sent_at).max(0.0));
-            } else {
-                rtt_candidate = None;
-            }
+            last_receive_sent_time = Some(entry.last_sent_at);
+            last_frame_retransmitted = entry.retransmitted;
             acknowledged.push(entry.frame);
         }
 
-        // A cumulative ACK covering multiple frames does not identify which
-        // transmission caused the ACK; only a single-frame ACK is an RTT sample.
-        let rtt_sample_seconds = if acknowledged.len() == 1 { rtt_candidate } else { None };
-        if let Some(sample) = rtt_sample_seconds { self.update_rtt(sample); }
+        // serialqueue.c samples once per RTT window, using the transmission
+        // completion time of the block immediately preceding the received seq.
+        let rtt_sample_seconds = if self.rtt_sample_seq.is_some_and(|seq| ack_sequence > seq) {
+            self.rtt_sample_seq = None;
+            if last_frame_retransmitted {
+                None
+            } else {
+                last_receive_sent_time.map(|sent| (now - sent).max(0.0))
+            }
+        } else {
+            None
+        };
+        if let Some(sample) = rtt_sample_seconds {
+            self.update_rtt(sample);
+        }
 
-        // serialqueue.c advances last_ack_seq only for empty ACK messages.
+        if self.outstanding.is_empty() {
+            self.retransmit_deadline = None;
+        } else if !acknowledged.is_empty() {
+            self.retransmit_deadline = Some(now + self.rto);
+        }
+
         Ok(AckResult { acknowledged, fast_retransmit: None, rtt_sample_seconds })
     }
 
@@ -166,12 +190,15 @@ impl RetransmitState {
             self.ignore_nak_seq = self.retransmit_seq;
         }
         self.retransmit_seq = send_seq;
+        self.rtt_sample_seq = None;
         Ok(self.retransmit_all(now))
     }
 
     /// Retransmit the complete outstanding window, preserving each encoded frame.
     pub fn retransmit_all(&mut self, now: f64) -> Vec<Retransmission> {
         let mut retries = Vec::with_capacity(self.outstanding.len());
+        self.rtt_sample_seq = None;
+        self.retransmit_deadline = Some(now + self.rto);
         for entry in &mut self.outstanding {
             entry.frame.transmissions = entry.frame.transmissions.saturating_add(1);
             entry.retransmitted = true;
@@ -193,12 +220,15 @@ impl RetransmitState {
     ) -> Result<Vec<Retransmission>, RetransmitError> {
         self.check_time(now)?;
         self.last_now = Some(now);
-        let Some(front) = self.outstanding.front() else { return Ok(Vec::new()); };
-        if now - front.last_sent_at < self.rto { return Ok(Vec::new()); }
+        if self.outstanding.is_empty() { return Ok(Vec::new()); }
+        if self.retransmit_deadline.is_some_and(|deadline| now < deadline) {
+            return Ok(Vec::new());
+        }
         self.rto = (self.rto * 2.0).min(MAX_RTO_SECONDS);
         self.ignore_nak_seq = self.outstanding.back()
             .map_or(self.ignore_nak_seq, |entry| entry.frame.sequence.saturating_add(1));
         self.retransmit_seq = self.ignore_nak_seq;
+        self.rtt_sample_seq = None;
         Ok(self.retransmit_all(now))
     }
 
@@ -208,9 +238,13 @@ impl RetransmitState {
         -> Result<Option<Retransmission>, RetransmitError>
     {
         self.validate_time(now)?;
-        let Some(front) = self.outstanding.front() else { return Ok(None); };
-        if now - front.last_sent_at < self.rto { return Ok(None); }
+        if self.outstanding.is_empty() { return Ok(None); }
+        if self.retransmit_deadline.is_some_and(|deadline| now < deadline) {
+            return Ok(None);
+        }
         self.rto = (self.rto * 2.0).min(MAX_RTO_SECONDS);
+        self.retransmit_deadline = Some(now + self.rto);
+        self.rtt_sample_seq = None;
         Ok(self.retransmit_front(now))
     }
 
@@ -230,7 +264,7 @@ impl RetransmitState {
     fn update_rtt(&mut self, sample: f64) {
         match (self.srtt, self.rttvar) {
             (None, _) => {
-                self.srtt = Some(sample);
+                self.srtt = Some(sample * 10.0);
                 self.rttvar = Some(sample / 2.0);
             }
             (Some(srtt), Some(rttvar)) => {
@@ -239,7 +273,7 @@ impl RetransmitState {
             }
             _ => unreachable!("SRTT and RTTVAR are initialized together"),
         }
-        let srtt = self.srtt.unwrap_or(sample);
+        let srtt = self.srtt.unwrap_or(sample * 10.0);
         let rttvar = self.rttvar.unwrap_or(sample / 2.0);
         self.rto = (srtt + (4.0 * rttvar).max(0.001))
             .clamp(MIN_RTO_SECONDS, MAX_RTO_SECONDS);
@@ -265,7 +299,7 @@ mod tests {
         state.track_sent(1, vec![1, 2], 1.0).unwrap();
         let ack = state.acknowledge(2, 1.05).unwrap();
         assert_eq!(ack.acknowledged.len(), 1);
-        assert!((state.srtt().unwrap() - 0.05).abs() < 1e-9);
+        assert!((state.srtt().unwrap() - 0.5).abs() < 1e-9);
         assert!((state.rttvar().unwrap() - 0.025).abs() < 1e-9);
         assert_eq!(state.outstanding_len(), 0);
     }

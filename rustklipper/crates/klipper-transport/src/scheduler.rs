@@ -333,7 +333,7 @@ mod tests {
         s.enqueue(1, ScheduledCommand::new(vec![0x41], 0, 1)).unwrap();
         s.promote_ready(0);
         let sent = s.build_frame_at(1.0).unwrap().unwrap();
-        let ack = Frame { sequence: 2, payload: vec![] };
+        let ack = Frame { sequence: 1, payload: vec![] };
         let first = s.handle_received_frame(&ack, 1.01).unwrap();
         assert!(first.retransmissions.is_empty());
         let duplicate = s.handle_received_frame(&ack, 1.02).unwrap();
