@@ -1184,8 +1184,9 @@ impl ReliableSerialSession {
             self.disconnected = true;
             return Err(SessionError::Transport(error));
         }
-        let sent_at = self.now();
+        let sent_at = write_started_at;
         if let Some(timing) = &mut self.uart_timing {
+            timing.reset_idle(write_started_at);
             timing.reserve_transmission(write_started_at, 0, batch_bytes);
         }
         for retry in retries {
@@ -1414,7 +1415,7 @@ impl ReliableSerialSession {
                 self.disconnected = true;
                 return Err(SessionError::Transport(error));
             }
-            let sent_at = self.now();
+            let sent_at = write_started_at;
             if let Some(timing) = &mut self.uart_timing {
                 timing.reserve_transmission(write_started_at, 0, frame.bytes.len());
             }
