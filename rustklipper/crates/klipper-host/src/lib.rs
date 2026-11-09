@@ -1628,6 +1628,12 @@ mod tests {
     }
 
     #[test]
+    fn unloading_unknown_component_returns_false() {
+        let printer = Printer::new();
+        assert!(!printer.unload_component("missing"));
+    }
+
+    #[test]
     fn removing_component_object_allows_component_reload() {
         let printer = Printer::new();
         printer.install_config(ConfigDocument::parse("[fan]\npin=PA0\n").unwrap());
