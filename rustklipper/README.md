@@ -1,3 +1,6 @@
+The Rust host CI is sampled every ten commits; the tenth commit uses the
+`[run ci]` marker to run formatting and the full workspace test suite.
+
 # RustKlipper Host
 
 This directory contains the independent Rust implementation of the Klipper
