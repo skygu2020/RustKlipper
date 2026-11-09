@@ -130,7 +130,11 @@ impl RetransmitState {
             return Err(RetransmitError::SequenceNotIncreasing);
         }
         if self.outstanding.is_empty() {
-            self.retransmit_deadline = Some(now + self.rto);
+            // write() completion does not mean the UART has shifted every byte
+            // onto the wire. Match serialqueue.c's idletime calculation by
+            // reserving the first frame's remaining 8N1 wire time before RTO.
+            let wire_time = self.wire_time_per_byte * bytes.len() as f64;
+            self.retransmit_deadline = Some(now + wire_time + self.rto);
         }
         if self.rtt_sample_seq.is_none() {
             self.rtt_sample_seq = Some(sequence);
@@ -348,6 +352,17 @@ mod tests {
         assert!(state.poll_timeout_all(0.749).unwrap().is_empty());
         assert_eq!(state.poll_timeout_all(0.750).unwrap().len(), 1);
         assert_eq!(state.rto(), 1.0);
+    }
+
+    #[test]
+    fn initial_deadline_includes_first_frame_uart_wire_time() {
+        let mut state = RetransmitState::new();
+        state.set_wire_time_per_byte(0.001).unwrap();
+        state.track_sent(1, vec![0; 20], 1.0).unwrap();
+
+        let deadline = 1.0 + state.rto() + 0.020;
+        assert!(state.poll_timeout_all(deadline - 0.000_001).unwrap().is_empty());
+        assert_eq!(state.poll_timeout_all(deadline).unwrap().len(), 1);
     }
 
     #[test]
