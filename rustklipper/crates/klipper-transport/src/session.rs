@@ -1928,6 +1928,23 @@ mod command_send_timing_tests {
     }
 
     #[test]
+    fn background_wakeup_is_not_starved_by_a_future_finite_request() {
+        let mut scheduler = CommandScheduler::new();
+        scheduler.enqueue(1, ScheduledCommand::new(
+            vec![0x11], 0, BACKGROUND_PRIORITY_CLOCK,
+        )).unwrap();
+        scheduler.enqueue(2, ScheduledCommand::new(
+            vec![0x22], 0, 10_500,
+        )).unwrap();
+        scheduler.promote_ready(0);
+        let timing = UartTiming::new(115_200).unwrap();
+
+        assert!(should_send_command(
+            &mut scheduler, update(), timing, 10.006, 10.0, 0,
+        ).unwrap());
+    }
+
+    #[test]
     fn finite_request_waits_until_the_250ms_send_margin() {
         let mut scheduler = CommandScheduler::new();
         scheduler.enqueue(1, ScheduledCommand::new(
