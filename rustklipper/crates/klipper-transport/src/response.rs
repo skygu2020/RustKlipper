@@ -75,10 +75,10 @@ impl ResponseRouter {
         let key = ResponseKey { name: response.name.clone(), oid: response.oid };
         let mut state = self.state.lock().expect("response router poisoned");
         let Some(queue) = state.pending.get_mut(&key) else { return false; };
-        let Some(index) = queue.iter().position(|waiter| waiter.id == waiter_id) else {
+        let Some(index) = queue.iter().position(|waiter| waiter.id == waiter_id && waiter.claimed) else {
             return false;
         };
-        let waiter = queue.remove(index).expect("located response waiter must exist");
+        let waiter = queue.remove(index).expect("located claimed response waiter must exist");
         let delivered = waiter.sender.send(response).is_ok();
         if queue.is_empty() {
             state.pending.remove(&key);
@@ -210,6 +210,20 @@ mod tests {
         assert_eq!(router.pending_count("status", Some(5)), 1);
         assert!(router.contains_waiter("status", Some(5), registered_first_id));
         drop(registered_first);
+    }
+
+    #[test]
+    fn dispatch_to_waiter_rejects_unclaimed_registration() {
+        let router = ResponseRouter::new();
+        let waiter = router.register("status", Some(10));
+        let waiter_id = router.state.lock().unwrap()
+            .pending.get(&ResponseKey { name: "status".into(), oid: Some(10) })
+            .unwrap()[0].id;
+
+        assert!(!router.dispatch_to_waiter(response("status", Some(10)), waiter_id));
+        assert_eq!(router.pending_count("status", Some(10)), 1);
+        assert!(router.dispatch(response("status", Some(10))));
+        assert_eq!(waiter.wait(Duration::from_millis(1)).unwrap().oid, Some(10));
     }
 
     #[test]
