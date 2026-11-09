@@ -169,6 +169,8 @@ pub struct ReliableSerialSession {
     clock_sync: Option<crate::ClockSync>,
     clock_calibration_remaining: u8,
     periodic_clock_in_flight: bool,
+    periodic_clock_waiter: Option<ResponseWaiter>,
+    periodic_clock_queue_id: Option<u64>,
     next_periodic_clock_at: Option<f64>,
     startup_stage: McuStartupStage,
     identify_assembler: IdentifyAssembler,
@@ -210,6 +212,8 @@ impl ReliableSerialSession {
             clock_sync: None,
             clock_calibration_remaining: 0,
             periodic_clock_in_flight: false,
+            periodic_clock_waiter: None,
+            periodic_clock_queue_id: None,
             next_periodic_clock_at: None,
             startup_stage: McuStartupStage::AwaitingIdentify,
             identify_assembler: IdentifyAssembler::new(),
@@ -509,6 +513,7 @@ impl ReliableSerialSession {
         self.clock_calibration_remaining -= 1;
         if self.clock_calibration_remaining == 0 {
             self.startup_stage = McuStartupStage::ClockReady;
+            self.periodic_clock_queue_id = Some(queue_id);
             self.next_periodic_clock_at = Some(response.receive_time);
             return Ok(None);
         }
@@ -1169,6 +1174,28 @@ impl ReliableSerialSession {
             events.push(SessionEvent::Received { frame, result });
         }
 
+        // Consume the internally-owned periodic clock waiter after routing all
+        // responses from this read batch. Keeping the waiter in the session is
+        // essential: dropping it would unregister the response and cancel retry
+        // bookkeeping before the MCU can answer.
+        if let Some(waiter) = self.periodic_clock_waiter.take() {
+            match waiter.try_recv() {
+                Ok(Some(response)) => {
+                    self.handle_periodic_clock_response(response)?;
+                }
+                Ok(None) => {
+                    self.periodic_clock_waiter = Some(waiter);
+                }
+                Err(_) => {
+                    self.periodic_clock_in_flight = false;
+                    return Err(SessionError::Dictionary(DictionaryError::InvalidField {
+                        field: "clock_sync".into(),
+                        reason: "internally-owned periodic clock waiter disconnected".into(),
+                    }));
+                }
+            }
+        }
+
         let now = self.now();
         // Application-level retries are distinct from frame retransmissions:
         // after an ACK, wait 10/20/40/80/160ms, then enqueue a fresh frame.
@@ -1194,6 +1221,17 @@ impl ReliableSerialSession {
             }
         };
         self.write_retry_batch(timeout_retries, &mut events)?;
+
+        // Once startup calibration has completed, drive Klipper's periodic
+        // get_clock timer from the session poll loop. The waiter remains owned
+        // here until route_decoded_message delivers its response.
+        if self.periodic_clock_waiter.is_none() {
+            if let Some(queue_id) = self.periodic_clock_queue_id {
+                if let Some(waiter) = self.poll_periodic_clock(queue_id)? {
+                    self.periodic_clock_waiter = Some(waiter);
+                }
+            }
+        }
 
         loop {
             let frame = match self.scheduler.build_frame() {
