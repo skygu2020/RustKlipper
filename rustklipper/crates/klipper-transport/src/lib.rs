@@ -122,8 +122,11 @@ impl UsbSerialTransport {
     /// This is the required path for retransmission: callers pass the exact cached
     /// bytes returned by ScheduledFrame or Retransmission.
     pub fn write_encoded_frame(&mut self, encoded: &[u8]) -> Result<(), TransportError> {
+        // Do not call Write::flush here: serialport's POSIX implementation
+        // maps it to tcdrain(), which blocks until the UART has transmitted
+        // every byte. Klipper's serialqueue writes into the OS queue and
+        // tracks the remaining wire time asynchronously.
         self.port.write_all(encoded)?;
-        self.port.flush()?;
         Ok(())
     }
 
