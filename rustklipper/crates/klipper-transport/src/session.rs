@@ -135,6 +135,7 @@ pub struct ReliableSerialSession {
     identify_chunk_count: Option<u8>,
     started: Instant,
     wire_time_per_byte: f64,
+    last_ack_clock: u64,
     disconnected: bool,
 }
 
@@ -170,6 +171,7 @@ impl ReliableSerialSession {
             identify_chunk_count: None,
             started: Instant::now(),
             wire_time_per_byte: 0.0,
+            last_ack_clock: 0,
             disconnected: false,
         }
     }
@@ -216,7 +218,7 @@ impl ReliableSerialSession {
                 self.scheduler.enqueue(queue_id, ScheduledCommand::new(
                     bytes, 0, crate::BACKGROUND_PRIORITY_CLOCK,
                 ))?;
-                self.scheduler.promote_ready(0);
+                self.scheduler.promote_ready(self.last_ack_clock);
             }
             Ok(IdentifyProgress::More { next_offset })
         }
@@ -250,7 +252,7 @@ impl ReliableSerialSession {
             "config",
             None,
         )?;
-        self.scheduler.promote_ready(0);
+        self.scheduler.promote_ready(self.last_ack_clock);
         Ok(waiter)
     }
 
@@ -329,7 +331,7 @@ impl ReliableSerialSession {
                 ),
             )?;
         }
-        self.scheduler.promote_ready(0);
+        self.scheduler.promote_ready(self.last_ack_clock);
         Ok(())
     }
 
@@ -358,7 +360,7 @@ impl ReliableSerialSession {
         self.scheduler.enqueue(queue_id, ScheduledCommand::new(
             bytes, 0, crate::BACKGROUND_PRIORITY_CLOCK,
         ))?;
-        self.scheduler.promote_ready(0);
+        self.scheduler.promote_ready(self.last_ack_clock);
         Ok(())
     }
 
@@ -423,7 +425,7 @@ impl ReliableSerialSession {
         }
         // Promote the initial attempt just like a retry. Otherwise a command
         // with min_clock == 0 stays upcoming and poll() cannot build its frame.
-        self.scheduler.promote_ready(0);
+        self.scheduler.promote_ready(self.last_ack_clock);
         Ok(())
     }
 
@@ -569,7 +571,8 @@ impl ReliableSerialSession {
     /// Release commands whose minimum MCU clock is now eligible.
     pub fn promote_ready(&mut self, ack_clock: u64) -> Result<Option<u64>, SessionError> {
         self.ensure_connected()?;
-        Ok(self.scheduler.promote_ready(ack_clock))
+        self.last_ack_clock = self.last_ack_clock.max(ack_clock);
+        Ok(self.scheduler.promote_ready(self.last_ack_clock))
     }
 
     fn write_retry_batch(
@@ -720,7 +723,7 @@ impl ReliableSerialSession {
             // Preserve the original min_clock and req_clock on every retry,
             // matching SerialRetryCommand's repeated raw_send arguments.
             self.enqueue_retry_attempt(transaction_id, command)?;
-            self.scheduler.promote_ready(0);
+            self.scheduler.promote_ready(self.last_ack_clock);
         }
 
         let timeout_retries = match self.scheduler.poll_retransmissions(now) {
