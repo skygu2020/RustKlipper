@@ -1473,6 +1473,31 @@ mod tests {
     }
 
     #[test]
+    fn autosave_merge_respects_included_config_values() {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!(
+            "rustklipper-config-autosave-include-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("base.cfg"),
+            "[printer]\nkinematics=cartesian\nmax_accel=3000\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("main.cfg"),
+            "[include base.cfg]\n#*# <---------------------- SAVE_CONFIG ---------------------->\n#*# [printer]\n#*# kinematics=delta\n#*# max_velocity=250\n",
+        )
+        .unwrap();
+        let config = ConfigFileLoader::load(dir.join("main.cfg")).unwrap();
+        assert_eq!(config.get("printer", "kinematics"), Some("cartesian"));
+        assert_eq!(config.get("printer", "max_accel"), Some("3000"));
+        assert_eq!(config.get("printer", "max_velocity"), Some("250"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn autosave_option_line_numbers_match_source_file() {
         use std::fs;
         let path = std::env::temp_dir().join(format!(
