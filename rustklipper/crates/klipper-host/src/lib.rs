@@ -455,6 +455,7 @@ impl Printer {
             .expect("component load lock poisoned");
         self.config_usage.clear();
         self.connection_initialized.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.mcus.clear();
         let mut component_gcode = self
             .component_gcode
             .lock()
@@ -843,6 +844,7 @@ impl Printer {
             .lock()
             .expect("gcode dispatcher lock poisoned")
             .set_disconnected();
+        self.mcus.clear();
         self.send_event(PrinterEvent::Disconnect);
     }
 
