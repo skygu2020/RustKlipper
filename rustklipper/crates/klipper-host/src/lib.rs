@@ -636,6 +636,9 @@ impl Printer {
         let result = (|| {
             let loaded = self.load_components(registry)?;
             self.validate_config()?;
+            if self.state() != PrinterState::Configuring {
+                return Ok(loaded);
+            }
             let identify_panics = self.send_event(PrinterEvent::McuIdentify);
             if identify_panics > 0 {
                 return Err(ComponentError::EventHandlerPanicked {
