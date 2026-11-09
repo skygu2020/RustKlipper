@@ -245,25 +245,29 @@ impl ComponentRegistry {
         }
 
         let tracked = printer.config_usage.track_section(section);
+        // Factories may publish objects before returning an error or panicking.
+        // Snapshot names so failed factories do not leave stale objects behind;
+        // stale names would make the next load incorrectly skip the factory.
+        let objects_before: HashSet<String> = printer.object_names().into_iter().collect();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             (entry.factory)(printer, &tracked)
         }));
-        match result {
-            Ok(Ok(())) => {}
-            Ok(Err(message)) => {
-                printer.remove_component_gcode_commands(name);
-                return Err(ComponentError::LoadFailed {
-                    section: section.name.clone(),
-                    message,
-                });
+        let failure = match result {
+            Ok(Ok(())) => None,
+            Ok(Err(message)) => Some(message),
+            Err(_) => Some("component factory panicked".to_owned()),
+        };
+        if let Some(message) = failure {
+            printer.remove_component_gcode_commands(name);
+            for object_name in printer.object_names() {
+                if !objects_before.contains(&object_name) {
+                    printer.remove_object(&object_name);
+                }
             }
-            Err(_) => {
-                printer.remove_component_gcode_commands(name);
-                return Err(ComponentError::LoadFailed {
-                    section: section.name.clone(),
-                    message: "component factory panicked".to_owned(),
-                });
-            }
+            return Err(ComponentError::LoadFailed {
+                section: section.name.clone(),
+                message,
+            });
         }
         loading.remove(name);
         loaded_set.insert(name.to_owned());
@@ -3012,6 +3016,38 @@ mod tests {
         assert_eq!(loaded, 1);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(events.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn failed_component_factory_removes_objects_before_retry() {
+        let printer = Printer::new();
+        printer.install_config(ConfigDocument::parse("[fan]\npin=PA0\n").unwrap());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register("fan", move |printer, section| {
+                let pin = section.get("pin").unwrap().to_owned();
+                printer
+                    .register_object("fan", pin)
+                    .map_err(|error| error.to_string())?;
+                if observed.fetch_add(1, Ordering::SeqCst) == 0 {
+                    return Err("fail after object registration".to_owned());
+                }
+                Ok(())
+            })
+            .unwrap();
+
+        assert!(matches!(
+            printer.load_components(&registry),
+            Err(ComponentError::LoadFailed { .. })
+        ));
+        assert!(!printer.has_object("fan"));
+        assert!(!printer.is_component_loaded("fan"));
+
+        assert_eq!(printer.load_components(&registry).unwrap(), vec!["fan"]);
+        assert_eq!(&*printer.lookup_object::<String>("fan").unwrap(), "PA0");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     #[test]
