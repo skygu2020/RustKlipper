@@ -147,11 +147,16 @@ impl RetransmitState {
         if !receive_time.is_finite() || receive_time < sent_at {
             return Err(RetransmitError::InvalidTime);
         }
-        self.last_now = Some(sent_at);
         if bytes.is_empty() { return Err(RetransmitError::EmptyFrame); }
-        if self.outstanding.back().is_some_and(|entry| sequence <= entry.frame.sequence) {
-            return Err(RetransmitError::SequenceNotIncreasing);
+        if let Some(previous) = self.outstanding.back() {
+            if sequence <= previous.frame.sequence {
+                return Err(RetransmitError::SequenceNotIncreasing);
+            }
+            if receive_time < previous.first_receive_at {
+                return Err(RetransmitError::InvalidTime);
+            }
         }
+        self.last_now = Some(sent_at);
         if self.outstanding.is_empty() {
             // serialqueue.c starts the initial retry timer after the first
             // frame's estimated UART wire time, not at write() completion.
@@ -403,6 +408,20 @@ mod tests {
         // A new advancing sequence with no host frames is the connection
         // initialization/resynchronization case in serialqueue.c.
         assert_eq!(state.acknowledge(3, 1.2).unwrap().last_receive_sent_time, 0.0);
+    }
+
+    #[test]
+    fn receive_timestamps_must_be_finite_monotonic_and_after_write_start() {
+        let mut state = RetransmitState::new();
+        assert_eq!(
+            state.track_sent_with_receive_time(1, vec![1], 1.0, 0.9),
+            Err(RetransmitError::InvalidTime),
+        );
+        state.track_sent_with_receive_time(1, vec![1], 1.0, 1.1).unwrap();
+        assert_eq!(
+            state.track_sent_with_receive_time(2, vec![2], 1.01, 1.05),
+            Err(RetransmitError::InvalidTime),
+        );
     }
 
     #[test]
