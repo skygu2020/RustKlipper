@@ -171,7 +171,7 @@ fn decode_hex(s:&str)->Result<Vec<u8>,String>{
 #[cfg(test)]
 mod tests{
     use super::*;
-    const JSON:&str=r#"{"version":"test-fw","build_versions":"build","enumerations":{"pin":{"PA0":1,"PA1":2},"mode":{"MODE_A":0,"MODE_B":1}},"commands":{"set_pin oid=%c pin=%u value=%c mode=%mode":17,"send_data data=%*s":18},"responses":{"uptime high=%u clock=%u":19},"config":{"CLOCK_FREQ":"16000000"}}"#;
+    const JSON:&str=r#"{"version":"test-fw","build_versions":"build","enumerations":{"pin":{"PA0":1,"PA1":2},"mode":{"MODE_A":0,"MODE_B":1}},"commands":{"set_pin oid=%c pin=%u value=%c mode=%c":17,"send_data data=%*s":18},"responses":{"uptime high=%u clock=%u":19},"config":{"CLOCK_FREQ":"16000000"}}"#;
     #[test] fn identify_and_enum_codec(){
         let d=IdentifyDictionary::from_json(JSON.as_bytes()).unwrap();assert_eq!(d.version(),"test-fw");assert_eq!(d.constant_i64("CLOCK_FREQ"),Some(16_000_000));
         let mut p=BTreeMap::new();p.insert("oid".into(),Value::from(3));p.insert("pin".into(),Value::from(42));p.insert("value".into(),Value::from(1));p.insert("mode".into(),Value::from("MODE_B"));
