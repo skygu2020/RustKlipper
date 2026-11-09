@@ -1936,6 +1936,29 @@ mod tests {
     }
 
     #[test]
+    fn gcode_help_tracks_printer_readiness() {
+        let printer = Printer::new();
+        printer
+            .register_gcode_command("M999", false, Some("Ready-only command"), |_| {
+                Ok(Vec::new())
+            })
+            .unwrap();
+        printer
+            .register_gcode_command("M998", true, Some("Base command"), |_| {
+                Ok(Vec::new())
+            })
+            .unwrap();
+
+        let before_ready = printer.gcode_help();
+        assert!(!before_ready.contains_key("M999"));
+        assert!(before_ready.contains_key("M998"));
+        printer.set_ready();
+        let ready = printer.gcode_help();
+        assert!(ready.contains_key("M999"));
+        assert!(ready.contains_key("M998"));
+    }
+
+    #[test]
     fn printer_exposes_registered_gcode_commands_and_help() {
         let printer = Printer::new();
         printer
