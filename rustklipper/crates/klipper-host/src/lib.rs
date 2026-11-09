@@ -74,8 +74,14 @@ pub enum PrinterError {
     ObjectTypeMismatch { name: String },
 }
 
-type ComponentFactory =
-    Arc<dyn Fn(&Printer, &klipper_config::ConfigSection) -> Result<(), String> + Send + Sync>;
+type ComponentFactory = Arc<
+    dyn for<'a> Fn(
+            &Printer,
+            &klipper_config::TrackedConfigSection<'a>,
+        ) -> Result<(), String>
+        + Send
+        + Sync,
+>;
 
 /// Registry of Rust host components keyed by their Klipper config section.
 #[derive(Default)]
@@ -104,7 +110,10 @@ impl ComponentRegistry {
         factory: F,
     ) -> Result<(), ComponentError>
     where
-        F: Fn(&Printer, &klipper_config::ConfigSection) -> Result<(), String>
+        F: for<'a> Fn(
+                &Printer,
+                &klipper_config::TrackedConfigSection<'a>,
+            ) -> Result<(), String>
             + Send
             + Sync
             + 'static,
@@ -130,7 +139,8 @@ impl ComponentRegistry {
         let mut loaded = Vec::new();
         for section in config.sections() {
             if let Some(factory) = self.factories.get(&section.name) {
-                factory(printer, section).map_err(|message| ComponentError::LoadFailed {
+                let tracked = printer.config_usage.track_section(section);
+                factory(printer, &tracked).map_err(|message| ComponentError::LoadFailed {
                     section: section.name.clone(),
                     message,
                 })?;
@@ -666,6 +676,7 @@ mod tests {
             &*printer.lookup_object::<String>("hotend_max_temp").unwrap(),
             "250"
         );
+        assert!(printer.unused_config_options().is_empty());
     }
 
     #[test]
