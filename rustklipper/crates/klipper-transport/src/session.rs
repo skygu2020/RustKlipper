@@ -373,7 +373,14 @@ impl ReliableSerialSession {
             ),
         });
         if let Err(error) = self.enqueue_retry_attempt(transaction_id, command) {
-            self.retry_transactions.remove(&transaction_id);
+            // The response waiter was claimed before the scheduler accepted the
+            // initial attempt. Roll that reservation back together with the
+            // transaction so a later request cannot inherit a stale FIFO waiter.
+            if let Some(pending) = self.retry_transactions.remove(&transaction_id) {
+                if let Some(waiter_id) = pending.waiter_id {
+                    self.response_router.cancel_waiter(&pending.name, pending.oid, waiter_id);
+                }
+            }
             return Err(error);
         }
         Ok(())
