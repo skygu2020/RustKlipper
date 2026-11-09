@@ -298,6 +298,15 @@ mod tests {
     }
 
     #[test]
+    fn rejects_unterminated_extended_parameter_quotes() {
+        let parsed = parse_line("RESPOND MSG=\\"unterminated").unwrap();
+        assert!(matches!(
+            parsed.extended_parameters(),
+            Err(GCodeError::MalformedCommand { .. })
+        ));
+    }
+
+    #[test]
     fn ignores_blank_and_comment_lines() {
         assert!(parse_line("  ").is_none());
         assert!(parse_line("; comment").is_none());
