@@ -62,10 +62,12 @@ impl AckTracker {
         self.acknowledge_events(receive_seq, has_payload, sent_time, receive_time)
             .into_iter().map(|(id, _)| id).collect()
     }
+    pub fn cancel_notify(&mut self, id: u64) -> bool { self.pending.remove(&id).is_some() }
     pub fn cancel_all(&mut self) -> usize {
         let count = self.pending.len(); self.pending.clear(); count
     }
     pub fn pending_count(&self) -> usize { self.pending.len() }
+    pub fn contains_notify(&self, id: u64) -> bool { self.pending.contains_key(&id) }
     pub fn extend_wire_sequence(previous: u64, wire_sequence: u8) -> u64 {
         let delta = (u64::from(wire_sequence & 0x0f) - (previous & 0x0f)) & 0x0f;
         previous + delta

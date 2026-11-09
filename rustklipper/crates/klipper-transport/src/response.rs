@@ -84,6 +84,26 @@ mod tests {
         assert_eq!(second.wait(Duration::from_millis(1)).unwrap().oid, Some(7));
         assert_eq!(other.wait(Duration::from_millis(1)).unwrap().oid, Some(8));
     }
+
+    #[test]
+    fn response_router_keeps_fifo_waiters_for_same_name_and_oid() {
+        let router = ResponseRouter::new();
+        let first = router.register("config", Some(7));
+        let second = router.register("config", Some(7));
+        let mut params = BTreeMap::new();
+        params.insert("oid".into(), Value::from(7));
+        assert!(router.dispatch(Response {
+            name: "config".into(), oid: Some(7), params: params.clone(),
+            sent_time: 1.25, receive_time: 2.0,
+        }));
+        assert!(router.dispatch(Response {
+            name: "config".into(), oid: Some(7), params,
+            sent_time: 1.75, receive_time: 2.1,
+        }));
+        assert_eq!(first.wait(std::time::Duration::from_millis(1)).unwrap().sent_time, 1.25);
+        assert_eq!(second.wait(std::time::Duration::from_millis(1)).unwrap().sent_time, 1.75);
+    }
+
     #[test]
     fn unmatched_oid_does_not_consume_waiter() {
         let router = ResponseRouter::new();

@@ -1,12 +1,12 @@
 //! Reliable USB serial session: frame I/O, scheduling, ACK/NAK and retries.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::time::Instant;
 
 use serde_json::Value;
 use klipper_protocol::{Frame, IdentifyChunk, IdentifyDictionary};
 
 use crate::{
-    AckTracker, CommandScheduler, ScheduleError, ScheduledCommand, TransportError, UsbSerialTransport,
+    AckTracker, CommandScheduler, Response, ResponseRouter, ResponseWaiter, ScheduleError, ScheduledCommand, TransportError, UsbSerialTransport,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -19,6 +19,8 @@ pub enum SessionError {
     Disconnected,
     #[error("notification ID is already registered or could not be bound to a sent frame: {0}")]
     Notification(u64),
+    #[error("response-tracked command already has a notification ID")]
+    CommandAlreadyNotified,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -28,6 +30,7 @@ pub enum SessionEvent {
         result: crate::ReceivedFrameResult,
     },
     AckedNotify { id: u64, sent_time: f64, receive_time: f64 },
+    ResponseRouted { name: String, oid: Option<u32>, matched: bool },
     Sent {
         sequence: u64,
         bytes: usize,
@@ -45,10 +48,17 @@ pub enum SessionEvent {
 ///
 /// A transport or protocol error is terminal for this session. Re-open the
 /// serial device and perform MCU identify/configuration again before reuse.
+#[derive(Debug, Clone)]
+struct PendingResponseSend { name: String, oid: Option<u32>, sent_time: f64 }
+
 pub struct ReliableSerialSession {
     transport: UsbSerialTransport,
     scheduler: CommandScheduler,
     ack_tracker: AckTracker,
+    response_router: ResponseRouter,
+    response_requests: HashMap<u64, (String, Option<u32>)>,
+    sent_response_requests: VecDeque<PendingResponseSend>,
+    next_response_notify_id: u64,
     dictionary: Option<IdentifyDictionary>,
     started: Instant,
     disconnected: bool,
@@ -64,6 +74,10 @@ impl ReliableSerialSession {
             transport,
             scheduler: CommandScheduler::new(),
             ack_tracker: AckTracker::new(),
+            response_router: ResponseRouter::new(),
+            response_requests: HashMap::new(),
+            sent_response_requests: VecDeque::new(),
+            next_response_notify_id: u64::MAX,
             dictionary: None,
             started: Instant::now(),
             disconnected: false,
@@ -89,6 +103,76 @@ impl ReliableSerialSession {
     pub fn register_notify(&mut self, id: u64) -> Result<std::sync::mpsc::Receiver<crate::AckEvent>, SessionError> {
         self.ensure_connected()?;
         self.ack_tracker.register_notify(id).ok_or(SessionError::Notification(id))
+    }
+
+    /// Register a response waiter before enqueueing the command that requests it.
+    pub fn register_response(&self, name: impl Into<String>, oid: Option<u32>) -> ResponseWaiter {
+        self.response_router.register(name, oid)
+    }
+
+    pub fn response_router(&self) -> ResponseRouter { self.response_router.clone() }
+
+    /// Enqueue a command and associate its eventual response with the command's
+    /// actual successful UART-write timestamp. The command must not already carry
+    /// a caller-managed notify ID.
+    pub fn enqueue_request(
+        &mut self,
+        queue_id: u64,
+        mut command: ScheduledCommand,
+        response_name: impl Into<String>,
+        oid: Option<u32>,
+    ) -> Result<(), SessionError> {
+        self.ensure_connected()?;
+        if command.notify_id.is_some() {
+            return Err(SessionError::CommandAlreadyNotified);
+        }
+        let name = response_name.into();
+        let mut candidate = self.next_response_notify_id;
+        loop {
+            if !self.ack_tracker.contains_notify(candidate)
+                && !self.response_requests.contains_key(&candidate)
+            {
+                break;
+            }
+            candidate = candidate.wrapping_sub(1);
+        }
+        self.next_response_notify_id = candidate.wrapping_sub(1);
+        // Reserve the ID in AckTracker too, preventing collisions with public
+        // notifications and ensuring it is bound only after a successful write.
+        let _ack_receiver = self.ack_tracker.register_notify(candidate)
+            .ok_or(SessionError::Notification(candidate))?;
+        command.notify_id = Some(candidate);
+        if let Err(error) = self.scheduler.enqueue(queue_id, command) {
+            self.ack_tracker.cancel_notify(candidate);
+            return Err(SessionError::Schedule(error));
+        }
+        self.response_requests.insert(candidate, (name, oid));
+        Ok(())
+    }
+
+    fn route_decoded_message(
+        &mut self,
+        name: String,
+        params: BTreeMap<String, Value>,
+        receive_time: f64,
+        events: &mut Vec<SessionEvent>,
+    ) {
+        let oid = params.get("oid").and_then(|value| {
+            value.as_u64().and_then(|v| u32::try_from(v).ok())
+                .or_else(|| value.as_i64().and_then(|v| u32::try_from(v).ok()))
+        });
+        let pending_index = self.sent_response_requests.iter()
+            .position(|pending| pending.name == name && pending.oid == oid);
+        let matched = if let Some(index) = pending_index {
+            let pending = self.sent_response_requests.remove(index)
+                .expect("located response request must exist");
+            self.response_router.dispatch(Response {
+                name: name.clone(), oid, params: params.clone(),
+                sent_time: pending.sent_time, receive_time,
+            })
+        } else { false };
+        events.push(SessionEvent::DecodedMessage { name: name.clone(), params, receive_time });
+        events.push(SessionEvent::ResponseRouted { name, oid, matched });
     }
 
     pub fn scheduler(&self) -> &CommandScheduler { &self.scheduler }
@@ -174,9 +258,7 @@ impl ReliableSerialSession {
                     match dictionary.decode_messages(&frame.payload) {
                         Ok(messages) => {
                             for (name, params) in messages {
-                                events.push(SessionEvent::DecodedMessage {
-                                    name, params, receive_time,
-                                });
+                                self.route_decoded_message(name, params, receive_time, &mut events);
                             }
                         }
                         Err(error) => events.push(SessionEvent::DecodeError {
@@ -229,6 +311,11 @@ impl ReliableSerialSession {
                 if !self.ack_tracker.mark_sent(*id, frame.send_sequence, sent_at) {
                     self.disconnected = true;
                     return Err(SessionError::Notification(*id));
+                }
+                if let Some((name, oid)) = self.response_requests.remove(id) {
+                    self.sent_response_requests.push_back(PendingResponseSend {
+                        name, oid, sent_time: sent_at,
+                    });
                 }
             }
             events.push(SessionEvent::Sent {
