@@ -248,8 +248,9 @@ impl ComponentRegistry {
         Ok(())
     }
 
-    /// Instantiate registered components in configuration-file order.
-    /// Unregistered sections are left for later validation/component crates.
+    /// Instantiate registered components in configuration-file order, loading
+    /// declared dependencies first. Unregistered sections are left for later
+    /// validation/component crates.
     pub fn load_registered(&self, printer: &Printer) -> Result<Vec<String>, ComponentError> {
         let config = printer.config().ok_or(ComponentError::ConfigNotLoaded)?;
         let mut loaded = Vec::new();
