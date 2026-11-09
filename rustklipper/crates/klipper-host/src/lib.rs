@@ -149,7 +149,14 @@ impl ComponentRegistry {
         for section in config.sections() {
             if let Some(factory) = self.factories.get(&section.name) {
                 let tracked = printer.config_usage.track_section(section);
-                factory(printer, &tracked).map_err(|message| ComponentError::LoadFailed {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    factory(printer, &tracked)
+                }))
+                .map_err(|_| ComponentError::LoadFailed {
+                    section: section.name.clone(),
+                    message: "component factory panicked".to_owned(),
+                })?;
+                result.map_err(|message| ComponentError::LoadFailed {
                     section: section.name.clone(),
                     message,
                 })?;
@@ -958,6 +965,25 @@ mod tests {
         );
         assert!(printer.unused_config_options().is_empty());
         assert!(printer.validate_config().is_ok());
+    }
+
+    #[test]
+    fn component_factory_panic_is_reported_as_load_failure() {
+        let printer = Printer::new();
+        printer.install_config(ConfigDocument::parse("[fan]\npin=PA0\n").unwrap());
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register("fan", |_, _| -> Result<(), String> {
+                panic!("factory panic");
+            })
+            .unwrap();
+        assert!(matches!(
+            printer.load_components(&registry),
+            Err(ComponentError::LoadFailed {
+                message,
+                ..
+            }) if message == "component factory panicked"
+        ));
     }
 
     #[test]
