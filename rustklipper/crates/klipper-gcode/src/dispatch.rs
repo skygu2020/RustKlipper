@@ -5,6 +5,7 @@
 //! implement printer objects, reactor integration, or macro evaluation.
 
 use std::collections::HashMap;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
 use crate::{is_traditional_command, parse_line, GCodeCommand, GCodeError};
@@ -253,13 +254,25 @@ impl GCodeDispatcher {
         let mut events = Vec::new();
 
         match (registration, self.mux_commands.get(command.command())) {
-            (Some(_), Some(mux)) => match dispatch_mux(mux, &command) {
-                Ok(mut responses) => events.append(&mut responses),
-                Err(error) => events.push(DispatchEvent::Error(error.to_string())),
-            },
-            (Some(registration), None) => match (registration.handler)(&command) {
-                Ok(mut responses) => events.append(&mut responses),
-                Err(error) => events.push(DispatchEvent::Error(error.to_string())),
+            (Some(_), Some(mux)) => {
+                let result = catch_unwind(AssertUnwindSafe(|| dispatch_mux(mux, &command)))
+                    .unwrap_or_else(|_| Err(GCodeError::HandlerPanicked {
+                        command: command.command().to_owned(),
+                    }));
+                match result {
+                    Ok(mut responses) => events.append(&mut responses),
+                    Err(error) => events.push(DispatchEvent::Error(error.to_string())),
+                }
+            }
+            (Some(registration), None) => {
+                let result = catch_unwind(AssertUnwindSafe(|| (registration.handler)(&command)))
+                    .unwrap_or_else(|_| Err(GCodeError::HandlerPanicked {
+                        command: command.command().to_owned(),
+                    }));
+                match result {
+                    Ok(mut responses) => events.append(&mut responses),
+                    Err(error) => events.push(DispatchEvent::Error(error.to_string())),
+                }
             },
             (None, _) => match command.command() {
                 // Klipper intentionally handles these two requests before the
@@ -513,6 +526,60 @@ mod tests {
         assert!(results.iter().all(|result| !result.acknowledged));
     }
 
+
+    #[test]
+    fn panicking_command_handler_becomes_error_event_and_dispatcher_recovers() {
+        let mut dispatcher = GCodeDispatcher::new();
+        dispatcher.set_ready();
+        dispatcher
+            .register_command("PANIC_NOW", false, None, |_| {
+                panic!("handler panic");
+            })
+            .unwrap();
+        dispatcher
+            .register_command("AFTER_PANIC", false, None, |_| {
+                Ok(vec![DispatchEvent::Info("still alive".to_owned())])
+            })
+            .unwrap();
+
+        let panicked = dispatcher.process_line("PANIC_NOW", true).unwrap();
+        assert!(matches!(
+            panicked.events.as_slice(),
+            [DispatchEvent::Error(message), DispatchEvent::Ack(None)]
+                if message.contains("handler panicked")
+        ));
+        assert!(panicked.handler_found);
+        assert!(panicked.acknowledged);
+
+        let recovered = dispatcher.process_line("AFTER_PANIC", true).unwrap();
+        assert_eq!(
+            recovered.events,
+            vec![
+                DispatchEvent::Info("still alive".to_owned()),
+                DispatchEvent::Ack(None),
+            ]
+        );
+    }
+
+    #[test]
+    fn panicking_mux_handler_becomes_error_event() {
+        let mut dispatcher = GCodeDispatcher::new();
+        dispatcher.set_ready();
+        dispatcher
+            .register_mux_command("SET_MODE", "MODE", Some("panic"), None, |_| {
+                panic!("mux handler panic");
+            })
+            .unwrap();
+
+        let result = dispatcher
+            .process_line("SET_MODE MODE=panic", true)
+            .unwrap();
+        assert!(matches!(
+            result.events.as_slice(),
+            [DispatchEvent::Error(message), DispatchEvent::Ack(None)]
+                if message.contains("handler panicked")
+        ));
+    }
 
     #[test]
     fn mux_dispatch_selects_registered_value_handlers() {
