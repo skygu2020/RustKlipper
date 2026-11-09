@@ -44,8 +44,13 @@ pub enum SessionEvent {
     },
     IdentifyChunk { chunk: IdentifyChunk, receive_time: f64 },
     DecodedMessage { name: String, params: BTreeMap<String, Value>, receive_time: f64 },
-    IdentifyComplete { version: String },
     DecodeError { error: String, receive_time: f64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IdentifyProgress {
+    More { next_offset: u32 },
+    Complete { version: String },
 }
 
 /// Owns one USB serial link and its reliable MCU command scheduler.
@@ -109,7 +114,7 @@ impl ReliableSerialSession {
 
     /// Consume one bootstrap identify_response chunk. Returns the next byte
     /// offset while more data is needed; installs the dictionary on completion.
-    pub fn accept_identify_chunk(&mut self, chunk: IdentifyChunk) -> Result<Option<u32>, SessionError> {
+    pub fn accept_identify_chunk(&mut self, chunk: IdentifyChunk) -> Result<IdentifyProgress, SessionError> {
         self.ensure_connected()?;
         let complete = self.identify_assembler.push(chunk)?;
         if complete {
@@ -117,9 +122,11 @@ impl ReliableSerialSession {
             let dictionary = assembler.into_dictionary()?;
             let version = dictionary.version().to_owned();
             self.set_dictionary(dictionary);
-            Ok(Some(u32::MAX))
+            Ok(IdentifyProgress::Complete { version })
         } else {
-            Ok(Some(self.identify_assembler.next_offset()?))
+            Ok(IdentifyProgress::More {
+                next_offset: self.identify_assembler.next_offset()?,
+            })
         }
     }
 

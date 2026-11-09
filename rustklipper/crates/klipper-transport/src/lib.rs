@@ -6,7 +6,7 @@ pub mod retransmit;
 pub mod scheduler;
 pub mod clock;
 pub mod session;
-pub use session::{ReliableSerialSession, SessionError, SessionEvent};
+pub use session::{IdentifyProgress, ReliableSerialSession, SessionError, SessionEvent};
 
 pub use ack::{AckEvent, AckTracker};
 pub use response::{Response, ResponseRouter, ResponseWaiter, WaitError};
