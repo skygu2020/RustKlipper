@@ -423,6 +423,106 @@ pub enum ConfigValueError {
     ElementCount { section: String, option: String, expected: usize, actual: usize },
 }
 
+/// Tracks which configuration options were consumed by host components.
+#[derive(Debug, Default)]
+pub struct ConfigUsageTracker {
+    used: std::sync::Mutex<std::collections::HashSet<(String, String)>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnusedConfigOption {
+    pub section: String,
+    pub option: String,
+    pub line: usize,
+}
+
+impl ConfigUsageTracker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Read an option and mark it as used when it exists.
+    pub fn get<'a>(
+        &self,
+        config: &'a ConfigDocument,
+        section: &str,
+        option: &str,
+    ) -> Option<&'a str> {
+        let value = config.get(section, option)?;
+        self.used
+            .lock()
+            .expect("config usage lock poisoned")
+            .insert((section.to_owned(), option.to_ascii_lowercase()));
+        Some(value)
+    }
+
+    pub fn get_required<'a>(
+        &self,
+        config: &'a ConfigDocument,
+        section: &str,
+        option: &str,
+    ) -> Result<&'a str, ConfigValueError> {
+        self.get(config, section, option)
+            .ok_or_else(|| ConfigValueError::Missing {
+                section: section.to_owned(),
+                option: option.to_owned(),
+            })
+    }
+
+    pub fn get_i64(
+        &self,
+        config: &ConfigDocument,
+        section: &str,
+        option: &str,
+    ) -> Result<i64, ConfigValueError> {
+        let value = self.get_required(config, section, option)?;
+        value.parse().map_err(|_| ConfigValueError::Invalid {
+            section: section.to_owned(),
+            option: option.to_owned(),
+            value: value.to_owned(),
+            expected: "integer",
+        })
+    }
+
+    pub fn get_bool(
+        &self,
+        config: &ConfigDocument,
+        section: &str,
+        option: &str,
+    ) -> Result<bool, ConfigValueError> {
+        let value = self.get_required(config, section, option)?;
+        match value.to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Ok(true),
+            "0" | "false" | "no" | "off" => Ok(false),
+            _ => Err(ConfigValueError::Invalid {
+                section: section.to_owned(),
+                option: option.to_owned(),
+                value: value.to_owned(),
+                expected: "boolean",
+            }),
+        }
+    }
+
+    /// Return every option that no component has read, preserving config order.
+    pub fn unused_options(&self, config: &ConfigDocument) -> Vec<UnusedConfigOption> {
+        let used = self.used.lock().expect("config usage lock poisoned");
+        config
+            .sections()
+            .iter()
+            .flat_map(|section| {
+                section.options().iter().filter_map(|option| {
+                    let key = (section.name.clone(), option.name.clone());
+                    (!used.contains(&key)).then(|| UnusedConfigOption {
+                        section: section.name.clone(),
+                        option: option.name.clone(),
+                        line: option.line,
+                    })
+                })
+            })
+            .collect()
+    }
+}
+
 fn strip_hash_comment(line: &str) -> &str {
     line.split_once('#').map_or(line, |(head, _)| head)
 }
@@ -483,6 +583,21 @@ mod tests {
         assert_eq!(config.get_f64("printer", "max_accel").unwrap(), 5000.0);
         assert!(config.get_bool("printer", "use_pin").unwrap());
         assert!(config.get_bool("printer", "missing").is_err());
+    }
+
+    #[test]
+    fn usage_tracker_marks_reads_and_reports_unused_options_in_order() {
+        let config = ConfigDocument::parse(
+            "[printer]\nmax_velocity=300\nmax_accel=5000\nuse_pin=yes\n",
+        )
+        .unwrap();
+        let tracker = ConfigUsageTracker::new();
+        assert_eq!(tracker.get_i64(&config, "printer", "MAX_VELOCITY").unwrap(), 300);
+        assert!(tracker.get_bool(&config, "printer", "use_pin").unwrap());
+        let unused = tracker.unused_options(&config);
+        assert_eq!(unused.len(), 1);
+        assert_eq!(unused[0].section, "printer");
+        assert_eq!(unused[0].option, "max_accel");
     }
 
     #[test]
