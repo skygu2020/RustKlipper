@@ -81,7 +81,7 @@ impl PinResolver {
         }
         self.aliases.insert(alias.clone(), pin.clone());
         for target in self.aliases.values_mut() {
-            if target == &alias { *target = pin.clone(); }
+            if target.as_str() == alias.as_str() { *target = pin.clone(); }
         }
         Ok(())
     }
