@@ -495,6 +495,54 @@ impl<'a> TrackedConfigSection<'a> {
         })
     }
 
+    pub fn get_list(
+        &self,
+        option: &str,
+        separator: char,
+        count: Option<usize>,
+    ) -> Result<Vec<String>, ConfigValueError> {
+        let value = self.get_required(option)?;
+        let values: Vec<String> = if value.trim().is_empty() {
+            Vec::new()
+        } else {
+            value
+                .split(separator)
+                .map(str::trim)
+                .map(str::to_owned)
+                .collect()
+        };
+        if let Some(expected) = count {
+            if values.len() != expected {
+                return Err(ConfigValueError::ElementCount {
+                    section: self.section.name.clone(),
+                    option: option.to_owned(),
+                    expected,
+                    actual: values.len(),
+                });
+            }
+        }
+        Ok(values)
+    }
+
+    pub fn get_i64_list(
+        &self,
+        option: &str,
+        separator: char,
+        count: Option<usize>,
+    ) -> Result<Vec<i64>, ConfigValueError> {
+        self.get_list(option, separator, count)?
+            .into_iter()
+            .map(|value| {
+                value.parse().map_err(|_| ConfigValueError::Invalid {
+                    section: self.section.name.clone(),
+                    option: option.to_owned(),
+                    value,
+                    expected: "integer list",
+                })
+            })
+            .collect()
+    }
+
     pub fn get_i64(&self, option: &str) -> Result<i64, ConfigValueError> {
         let value = self.get_required(option)?;
         value.parse().map_err(|_| ConfigValueError::Invalid {
@@ -864,6 +912,25 @@ mod tests {
         let unused = tracker.unused_options(&config);
         assert_eq!(unused.len(), 1);
         assert_eq!(unused[0].option, "control");
+    }
+
+    #[test]
+    fn tracked_section_parses_lists_and_checks_element_count() {
+        let config = ConfigDocument::parse("[stepper_x]\nposition=10, 20,30\n").unwrap();
+        let tracker = ConfigUsageTracker::new();
+        let section = tracker.track_section(config.section("stepper_x").unwrap());
+        assert_eq!(
+            section.get_i64_list("position", ',', Some(3)).unwrap(),
+            vec![10, 20, 30]
+        );
+        assert!(matches!(
+            section.get_list("position", ',', Some(2)),
+            Err(ConfigValueError::ElementCount {
+                expected: 2,
+                actual: 3,
+                ..
+            })
+        ));
     }
 
     #[test]
