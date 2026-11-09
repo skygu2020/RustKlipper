@@ -369,6 +369,12 @@ impl ReliableSerialSession {
         earliest_deadline(self.next_send_at, self.scheduler.next_retransmit_at())
     }
 
+    fn kick_scheduler(&mut self) {
+        // A new queue insertion invalidates any later cached send deadline.
+        // The next poll should inspect it promptly, like serialqueue's kick pipe.
+        self.next_send_at = Some(self.now());
+    }
+
     fn now(&self) -> f64 {
         self.monotonic_time()
     }
@@ -418,6 +424,7 @@ impl ReliableSerialSession {
                 self.scheduler.enqueue(queue_id, ScheduledCommand::new(
                     bytes, 0, crate::BACKGROUND_PRIORITY_CLOCK,
                 ))?;
+                self.kick_scheduler();
                 self.scheduler.promote_ready(self.last_ack_clock);
             }
             Ok(IdentifyProgress::More { next_offset })
@@ -945,6 +952,7 @@ impl ReliableSerialSession {
                 ),
             )?;
         }
+        self.kick_scheduler();
         self.scheduler.promote_ready(self.last_ack_clock);
         Ok(())
     }
@@ -974,6 +982,7 @@ impl ReliableSerialSession {
         self.scheduler.enqueue(queue_id, ScheduledCommand::new(
             bytes, 0, crate::BACKGROUND_PRIORITY_CLOCK,
         ))?;
+        self.kick_scheduler();
         self.scheduler.promote_ready(self.last_ack_clock);
         Ok(())
     }
@@ -1081,6 +1090,7 @@ impl ReliableSerialSession {
         }
         self.response_requests.insert(candidate, transaction_id);
         self.retry_attempts.insert(candidate, transaction_id);
+        self.kick_scheduler();
         Ok(())
     }
 
@@ -1199,6 +1209,7 @@ impl ReliableSerialSession {
             }
         }
         self.scheduler.enqueue(queue_id, command)?;
+        self.kick_scheduler();
         Ok(())
     }
 
