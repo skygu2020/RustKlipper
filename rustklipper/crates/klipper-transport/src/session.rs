@@ -415,12 +415,15 @@ impl ReliableSerialSession {
         retries: Vec<crate::Retransmission>,
         events: &mut Vec<SessionEvent>,
     ) -> Result<(), SessionError> {
+        if retries.is_empty() {
+            return Ok(());
+        }
+        if let Err(error) = self.transport.write_retransmission_batch(&retries) {
+            self.disconnected = true;
+            return Err(SessionError::Transport(error));
+        }
+        let sent_at = self.now();
         for retry in retries {
-            if let Err(error) = self.transport.write_retransmission(&retry) {
-                self.disconnected = true;
-                return Err(SessionError::Transport(error));
-            }
-            let sent_at = self.now();
             if let Err(error) = self.scheduler.retransmit_state_mut()
                 .mark_retransmission_sent(retry.sequence, sent_at)
             {

@@ -23,7 +23,7 @@ pub use pin::{PinResolver, PinResolverError};
 use std::io::{Read, Write};
 use std::time::Duration;
 
-use klipper_protocol::{encode_frame, Frame, FrameDecoder, ProtocolError};
+use klipper_protocol::{encode_frame, Frame, FrameDecoder, ProtocolError, MESSAGE_SYNC};
 use serialport::{ClearBuffer, SerialPort};
 use thiserror::Error;
 
@@ -57,6 +57,25 @@ impl SerialSettings {
 }
 
 /// A single USB serial connection to one MCU.
+#[cfg(test)]
+mod retransmission_batch_tests {
+    use super::*;
+
+    #[test]
+    fn retransmission_batch_has_one_leading_sync_and_preserves_frames() {
+        let retries = [
+            Retransmission { sequence: 3, bytes: vec![0x08, 0x13, 0x7e], transmissions: 2, timeout_seconds: 0.5 },
+            Retransmission { sequence: 4, bytes: vec![0x09, 0x14, 0x7e], transmissions: 2, timeout_seconds: 0.5 },
+        ];
+        let mut batch = Vec::new();
+        batch.push(MESSAGE_SYNC);
+        for retry in &retries {
+            batch.extend_from_slice(&retry.bytes);
+        }
+        assert_eq!(batch, vec![MESSAGE_SYNC, 0x08, 0x13, 0x7e, 0x09, 0x14, 0x7e]);
+    }
+}
+
 pub struct UsbSerialTransport {
     port: Box<dyn SerialPort>,
     decoder: FrameDecoder,
@@ -104,12 +123,31 @@ impl UsbSerialTransport {
         self.write_encoded_frame(&frame.bytes)
     }
 
-    /// Retransmit the original encoded frame; never rebuild its header or checksum.
+    /// Retransmit a complete outstanding window. Klipper prefixes the
+    /// concatenated cached frames with one sync byte so the MCU can recover
+    /// framing after a partial/corrupt prior transmission.
+    pub fn write_retransmission_batch(
+        &mut self,
+        retries: &[Retransmission],
+    ) -> Result<(), TransportError> {
+        if retries.is_empty() {
+            return Ok(());
+        }
+        let capacity = 1 + retries.iter().map(|retry| retry.bytes.len()).sum::<usize>();
+        let mut batch = Vec::with_capacity(capacity);
+        batch.push(MESSAGE_SYNC);
+        for retry in retries {
+            batch.extend_from_slice(&retry.bytes);
+        }
+        self.write_encoded_frame(&batch)
+    }
+
+    /// Retransmit one cached frame with the same leading sync used by Klipper.
     pub fn write_retransmission(
         &mut self,
         retry: &Retransmission,
     ) -> Result<(), TransportError> {
-        self.write_encoded_frame(&retry.bytes)
+        self.write_retransmission_batch(std::slice::from_ref(retry))
     }
 
     /// Encode and write one MCU frame. Scheduling and ACK tracking are higher layers.
