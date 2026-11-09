@@ -1533,8 +1533,15 @@ impl ReliableSerialSession {
         let now = self.now();
         // Application-level retries are distinct from frame retransmissions:
         // after an ACK, wait 10/20/40/80/160ms, then enqueue a fresh frame.
-        let due: Vec<u64> = self.retry_transactions.iter_mut()
-            .filter_map(|(id, pending)| pending.transaction.take_due_retry(now).then_some(*id))
+        // Inspect due deadlines without consuming them. If scheduler enqueue
+        // fails, the deadline must remain armed so the next poll can retry the
+        // operation instead of leaving a live transaction permanently idle.
+        let due: Vec<u64> = self.retry_transactions.iter()
+            .filter_map(|(id, pending)| {
+                pending.transaction.retry_deadline()
+                    .filter(|deadline| now >= *deadline)
+                    .map(|_| *id)
+            })
             .collect();
         for transaction_id in due {
             let command = match self.retry_transactions.get(&transaction_id) {
@@ -1544,6 +1551,12 @@ impl ReliableSerialSession {
             // Preserve the original min_clock and req_clock on every retry,
             // matching SerialRetryCommand's repeated raw_send arguments.
             self.enqueue_retry_attempt(transaction_id, command)?;
+            // Consume the deadline only after the fresh attempt has been
+            // accepted by the scheduler.
+            if let Some(pending) = self.retry_transactions.get_mut(&transaction_id) {
+                let consumed = pending.transaction.take_due_retry(now);
+                debug_assert!(consumed, "retry deadline changed during enqueue");
+            }
             self.scheduler.promote_ready(self.last_ack_clock);
         }
 
