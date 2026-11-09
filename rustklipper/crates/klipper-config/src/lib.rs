@@ -1615,6 +1615,42 @@ mod tests {
     }
 
     #[test]
+    fn usage_transactions_support_nested_commit_and_outer_rollback() {
+        let config = ConfigDocument::parse(
+            "[fan]\npin=PA0\nspeed=100\n",
+        ).unwrap();
+        let tracker = ConfigUsageTracker::new();
+
+        {
+            let outer = tracker.begin_transaction();
+            assert_eq!(tracker.get(&config, "fan", "pin"), Some("PA0"));
+            {
+                let inner = tracker.begin_transaction();
+                assert_eq!(tracker.get(&config, "fan", "speed"), Some("100"));
+                inner.commit();
+            }
+            // Dropping the outer transaction rolls back both its own reads
+            // and the nested transaction that committed into it.
+            drop(outer);
+        }
+        assert_eq!(tracker.unused_options(&config).len(), 2);
+
+        {
+            let outer = tracker.begin_transaction();
+            assert_eq!(tracker.get(&config, "fan", "pin"), Some("PA0"));
+            {
+                let inner = tracker.begin_transaction();
+                assert_eq!(tracker.get(&config, "fan", "speed"), Some("100"));
+                // Inner drop rolls back only the inner transaction.
+            }
+            outer.commit();
+        }
+        let unused = tracker.unused_options(&config);
+        assert_eq!(unused.len(), 1);
+        assert_eq!(unused[0].option, "speed");
+    }
+
+    #[test]
     fn usage_tracker_marks_reads_and_reports_unused_options_in_order() {
         let config = ConfigDocument::parse(
             "[printer]\nmax_velocity=300\nmax_accel=5000\nuse_pin=yes\n",
