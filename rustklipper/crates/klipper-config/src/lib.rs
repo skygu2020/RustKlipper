@@ -708,6 +708,31 @@ impl<'a> TrackedConfigSection<'a> {
         Ok(parsed)
     }
 
+    /// Read a string option and map it through an explicit set of choices.
+    pub fn get_choice<T: Clone>(
+        &self,
+        option: &str,
+        choices: &[(String, T)],
+        default: Option<&'a str>,
+    ) -> Result<T, ConfigValueError> {
+        let value = self
+            .get_with_default(option, default, true)
+            .ok_or_else(|| ConfigValueError::Missing {
+                section: self.section.name.clone(),
+                option: option.to_owned(),
+            })?;
+        choices
+            .iter()
+            .find(|(choice, _)| choice == value)
+            .map(|(_, result)| result.clone())
+            .ok_or_else(|| ConfigValueError::Invalid {
+                section: self.section.name.clone(),
+                option: option.to_owned(),
+                value: value.to_owned(),
+                expected: "valid choice",
+            })
+    }
+
     pub fn get_bool(&self, option: &str) -> Result<bool, ConfigValueError> {
         let value = self.get_required(option)?;
         match value.to_ascii_lowercase().as_str() {
@@ -1162,6 +1187,23 @@ mod tests {
             section.get_f64_list("mesh_min", ',', Some(2)).unwrap(),
             vec![0.5, 1.25]
         );
+    }
+
+    #[test]
+    fn tracked_section_maps_choice_values() {
+        let config = ConfigDocument::parse("[heater]\ncontrol=pid\n").unwrap();
+        let tracker = ConfigUsageTracker::new();
+        let section = tracker.track_section(config.section("heater").unwrap());
+        let choices = vec![
+            ("pid".to_owned(), 1u8),
+            ("watermark".to_owned(), 2u8),
+        ];
+        assert_eq!(section.get_choice("control", &choices, None).unwrap(), 1);
+        assert!(tracker.unused_options(&config).is_empty());
+        assert!(matches!(
+            section.get_choice("control", &choices[..1], None),
+            Err(ConfigValueError::Invalid { .. })
+        ));
     }
 
     #[test]
