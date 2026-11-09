@@ -471,8 +471,22 @@ impl ReliableSerialSession {
         for id in abandoned {
             self.retry_transactions.remove(&id);
             self.sent_response_requests.retain(|pending| pending.transaction_id != id);
-            self.response_requests.retain(|_, transaction_id| *transaction_id != id);
-            self.retry_attempts.retain(|_, transaction_id| *transaction_id != id);
+
+            // Cancel every attempt still waiting in a scheduler queue or for
+            // an ACK. A command already packed into a frame cannot be unsent,
+            // but its ACK bookkeeping can still be safely retired.
+            let notify_ids: Vec<u64> = self.response_requests.iter()
+                .filter_map(|(notify_id, transaction_id)| (*transaction_id == id).then_some(*notify_id))
+                .chain(self.retry_attempts.iter()
+                    .filter_map(|(notify_id, transaction_id)| (*transaction_id == id).then_some(*notify_id)))
+                .collect();
+            for notify_id in notify_ids {
+                self.scheduler.cancel_notify(notify_id);
+                self.ack_tracker.cancel_notify(notify_id);
+                self.response_ack_receivers.remove(&notify_id);
+                self.response_requests.remove(&notify_id);
+                self.retry_attempts.remove(&notify_id);
+            }
         }
         self.sent_response_requests.retain(|pending| {
             router.pending_count(&pending.name, pending.oid) > 0

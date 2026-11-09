@@ -106,6 +106,22 @@ impl CommandScheduler {
         Ok(())
     }
 
+    /// Remove a command carrying this notification ID if it has not yet
+    /// been packed into a frame. Returns true when a queued command was removed.
+    pub fn cancel_notify(&mut self, notify_id: u64) -> bool {
+        let mut removed = false;
+        for queue in self.queues.values_mut() {
+            let before = queue.upcoming.len();
+            queue.upcoming.retain(|command| command.notify_id != Some(notify_id));
+            removed |= queue.upcoming.len() != before;
+
+            let before = queue.ready.len();
+            queue.ready.retain(|command| command.notify_id != Some(notify_id));
+            removed |= queue.ready.len() != before;
+        }
+        removed
+    }
+
     /// Release commands whose min_clock is no later than ack_clock.
     /// Returns the earliest clock at which a queued command remains stalled.
     pub fn promote_ready(&mut self, ack_clock: u64) -> Option<u64> {
@@ -292,6 +308,21 @@ mod tests {
         // Queue 1 retains FIFO (30 before 10); queue 2's 20-clock command wins first.
         assert_eq!(parsed[0].payload, vec![3, 1, 2]);
     }
+    #[test]
+    fn cancelling_notify_removes_upcoming_and_ready_commands_only() {
+        let mut scheduler = CommandScheduler::new();
+        scheduler.enqueue(1, ScheduledCommand::new(vec![1], 0, 1).with_notify(10)).unwrap();
+        scheduler.enqueue(1, ScheduledCommand::new(vec![2], 0, 2).with_notify(11)).unwrap();
+        scheduler.promote_ready(0);
+
+        assert!(scheduler.cancel_notify(10));
+        assert!(!scheduler.cancel_notify(10));
+        assert_eq!(scheduler.queued_counts(), (0, 1));
+        let frame = scheduler.build_frame().unwrap().unwrap();
+        assert_eq!(frame.notify_ids, vec![11]);
+        assert_eq!(frame.bytes.len() > 0, true);
+    }
+
     #[test]
     fn frame_contains_notifications_for_commands_packed_into_it() {
         let mut s = CommandScheduler::new();
