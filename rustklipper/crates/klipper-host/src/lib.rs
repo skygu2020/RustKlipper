@@ -9,7 +9,7 @@ pub mod reactor;
 pub use reactor::{Completion, CompletionCancelled, Reactor, ReactorError, TaskId};
 
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use klipper_config::{
@@ -99,8 +99,13 @@ type ComponentFactory = Arc<
 
 /// Registry of Rust host components keyed by their Klipper config section.
 #[derive(Default)]
+struct ComponentFactoryEntry {
+    dependencies: Vec<String>,
+    factory: ComponentFactory,
+}
+
 pub struct ComponentRegistry {
-    factories: HashMap<String, ComponentFactory>,
+    factories: HashMap<String, ComponentFactoryEntry>,
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -109,6 +114,10 @@ pub enum ComponentError {
     ConfigNotLoaded,
     #[error("component factory for section '{section}' is already registered")]
     DuplicateFactory { section: String },
+    #[error("component section '{section}' requires missing dependency '{dependency}'")]
+    MissingDependency { section: String, dependency: String },
+    #[error("component dependency cycle detected at section '{section}'")]
+    DependencyCycle { section: String },
     #[error("failed to load component section '{section}': {message}")]
     LoadFailed { section: String, message: String },
     #[error(transparent)]
@@ -139,6 +148,24 @@ impl ComponentRegistry {
             + Sync
             + 'static,
     {
+        self.register_with_dependencies(section, Vec::new(), factory)
+    }
+
+    pub fn register_with_dependencies<F>(
+        &mut self,
+        section: impl Into<String>,
+        dependencies: Vec<String>,
+        factory: F,
+    ) -> Result<(), ComponentError>
+    where
+        F: for<'a> Fn(
+                &Printer,
+                &klipper_config::TrackedConfigSection<'a>,
+            ) -> Result<(), String>
+            + Send
+            + Sync
+            + 'static,
+    {
         let section = section.into();
         if section.trim().is_empty() {
             return Err(ComponentError::LoadFailed {
@@ -149,7 +176,76 @@ impl ComponentRegistry {
         if self.factories.contains_key(&section) {
             return Err(ComponentError::DuplicateFactory { section });
         }
-        self.factories.insert(section, Arc::new(factory));
+        self.factories.insert(
+            section,
+            ComponentFactoryEntry {
+                dependencies,
+                factory: Arc::new(factory),
+            },
+        );
+        Ok(())
+    }
+
+    fn load_section(
+        &self,
+        name: &str,
+        config: &ConfigDocument,
+        printer: &Printer,
+        loaded: &mut Vec<String>,
+        loaded_set: &mut HashSet<String>,
+        loading: &mut HashSet<String>,
+    ) -> Result<(), ComponentError> {
+        if loaded_set.contains(name) {
+            return Ok(());
+        }
+        let Some(entry) = self.factories.get(name) else {
+            if printer.has_object(name) {
+                return Ok(());
+            }
+            return Err(ComponentError::MissingDependency {
+                section: loaded.last().cloned().unwrap_or_else(|| name.to_owned()),
+                dependency: name.to_owned(),
+            });
+        };
+        if !loading.insert(name.to_owned()) {
+            return Err(ComponentError::DependencyCycle {
+                section: name.to_owned(),
+            });
+        }
+        let Some(section) = config.section(name) else {
+            loading.remove(name);
+            return Err(ComponentError::MissingDependency {
+                section: name.to_owned(),
+                dependency: name.to_owned(),
+            });
+        };
+
+        for dependency in &entry.dependencies {
+            self.load_section(
+                dependency,
+                config,
+                printer,
+                loaded,
+                loaded_set,
+                loading,
+            )?;
+        }
+
+        let tracked = printer.config_usage.track_section(section);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            (entry.factory)(printer, &tracked)
+        }))
+        .map_err(|_| ComponentError::LoadFailed {
+            section: section.name.clone(),
+            message: "component factory panicked".to_owned(),
+        })?;
+        result.map_err(|message| ComponentError::LoadFailed {
+            section: section.name.clone(),
+            message,
+        })?;
+        loading.remove(name);
+        loaded_set.insert(name.to_owned());
+        loaded.push(name.to_owned());
         Ok(())
     }
 
@@ -158,21 +254,18 @@ impl ComponentRegistry {
     pub fn load_registered(&self, printer: &Printer) -> Result<Vec<String>, ComponentError> {
         let config = printer.config().ok_or(ComponentError::ConfigNotLoaded)?;
         let mut loaded = Vec::new();
+        let mut loaded_set = HashSet::new();
+        let mut loading = HashSet::new();
         for section in config.sections() {
-            if let Some(factory) = self.factories.get(&section.name) {
-                let tracked = printer.config_usage.track_section(section);
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    factory(printer, &tracked)
-                }))
-                .map_err(|_| ComponentError::LoadFailed {
-                    section: section.name.clone(),
-                    message: "component factory panicked".to_owned(),
-                })?;
-                result.map_err(|message| ComponentError::LoadFailed {
-                    section: section.name.clone(),
-                    message,
-                })?;
-                loaded.push(section.name.clone());
+            if self.factories.contains_key(&section.name) {
+                self.load_section(
+                    &section.name,
+                    &config,
+                    printer,
+                    &mut loaded,
+                    &mut loaded_set,
+                    &mut loading,
+                )?;
             }
         }
         Ok(loaded)
@@ -707,6 +800,13 @@ impl Printer {
             right_exact.cmp(&left_exact).then_with(|| left.0.cmp(&right.0))
         });
         matches
+    }
+
+    pub fn has_object(&self, name: &str) -> bool {
+        self.objects
+            .read()
+            .expect("printer object lock poisoned")
+            .contains_key(name)
     }
 
     pub fn remove_object(&self, name: &str) -> bool {
@@ -1354,6 +1454,78 @@ mod tests {
             ))
         ));
         assert_eq!(events.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn component_dependencies_load_before_config_ordered_consumers() {
+        let printer = Printer::new();
+        printer.install_config(
+            ConfigDocument::parse(
+                "[consumer]\nsource=provider\n[provider]\nvalue=ready\n",
+            )
+            .unwrap(),
+        );
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register_with_dependencies(
+                "consumer",
+                vec!["provider".to_owned()],
+                |printer, section| {
+                    let provider = printer
+                        .lookup_object::<String>("provider")
+                        .map_err(|error| error.to_string())?;
+                    printer
+                        .register_object(
+                            "consumer",
+                            format!("{}:{}", provider.as_str(), section.get("source").unwrap()),
+                        )
+                        .map_err(|error| error.to_string())
+                },
+            )
+            .unwrap();
+        registry
+            .register("provider", |printer, section| {
+                printer
+                    .register_object("provider", section.get("value").unwrap().to_owned())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        assert_eq!(
+            printer.load_components(&registry).unwrap(),
+            vec!["provider".to_owned(), "consumer".to_owned()]
+        );
+        assert_eq!(
+            &*printer.lookup_object::<String>("consumer").unwrap(),
+            "ready:provider"
+        );
+    }
+
+    #[test]
+    fn component_dependency_cycles_are_rejected() {
+        let printer = Printer::new();
+        printer.install_config(
+            ConfigDocument::parse("[first]\nvalue=1\n[second]\nvalue=2\n").unwrap(),
+        );
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register_with_dependencies(
+                "first",
+                vec!["second".to_owned()],
+                |_, _| Ok(()),
+            )
+            .unwrap();
+        registry
+            .register_with_dependencies(
+                "second",
+                vec!["first".to_owned()],
+                |_, _| Ok(()),
+            )
+            .unwrap();
+        assert!(matches!(
+            printer.load_components(&registry),
+            Err(ComponentError::DependencyCycle { .. })
+        ));
     }
 
     #[test]
