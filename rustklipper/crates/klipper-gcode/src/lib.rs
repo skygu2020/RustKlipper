@@ -76,6 +76,8 @@ pub enum GCodeError {
     InvalidParameter { line: String, parameter: String, value: String },
     #[error("Error on '{line}': {parameter} must be {constraint}")]
     OutOfRange { line: String, parameter: String, constraint: String },
+    #[error("The value '{value}' is not valid for {key}{hint}")]
+    InvalidMuxValue { key: String, value: String, hint: String },
     #[error("Malformed command '{line}'")]
     MalformedCommand { line: String },
 }
