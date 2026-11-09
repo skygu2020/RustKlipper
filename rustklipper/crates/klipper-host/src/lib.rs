@@ -216,6 +216,9 @@ impl Printer {
     }
 
     pub fn state_message(&self) -> String {
+        // Acquire locks in the same order as lifecycle transitions so callers
+        // never observe a new state with the previous state's message.
+        let _state = self.state.read().expect("printer state lock poisoned");
         self.state_message
             .read()
             .expect("printer state message lock poisoned")
