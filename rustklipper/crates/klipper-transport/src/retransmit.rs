@@ -212,6 +212,20 @@ impl RetransmitState {
         retries
     }
 
+    /// Record completion of a retransmission write using the actual UART
+    /// completion timestamp, so the next RTO starts after successful I/O.
+    pub fn mark_retransmission_sent(
+        &mut self, sequence: u64, sent_at: f64,
+    ) -> Result<(), RetransmitError> {
+        self.validate_time(sent_at)?;
+        let entry = self.outstanding.iter_mut()
+            .find(|entry| entry.frame.sequence == sequence)
+            .ok_or(RetransmitError::UnknownSequence(sequence))?;
+        entry.last_sent_at = sent_at;
+        self.retransmit_deadline = Some(sent_at + self.rto);
+        Ok(())
+    }
+
     /// Poll the oldest outstanding deadline and retransmit the full window on timeout.
     pub fn poll_timeout_all(
         &mut self,
