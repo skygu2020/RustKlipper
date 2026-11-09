@@ -283,7 +283,7 @@ mod tests {
         let parsed = parse_line("N123 G1 X10*45").unwrap();
         assert_eq!(parsed.line_number, Some(123));
         assert_eq!(parsed.command, "G1");
-        assert_eq!(parsed.get("X"), Some("10*45"));
+        assert_eq!(parsed.get("X"), Some("10"));
     }
 
     #[test]
