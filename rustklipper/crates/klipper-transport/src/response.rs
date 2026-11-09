@@ -15,7 +15,7 @@ pub struct Response {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ResponseKey { name: String, oid: Option<u32> }
 #[derive(Debug)]
-struct PendingResponse { id: u64, sender: mpsc::Sender<Response> }
+struct PendingResponse { id: u64, claimed: bool, sender: mpsc::Sender<Response> }
 #[derive(Debug, Default)]
 struct RouterState {
     next_waiter_id: u64,
@@ -43,7 +43,7 @@ impl ResponseRouter {
         let mut state = self.state.lock().expect("response router poisoned");
         state.next_waiter_id = state.next_waiter_id.wrapping_add(1).max(1);
         let id = state.next_waiter_id;
-        state.pending.entry(key.clone()).or_default().push_back(PendingResponse { id, sender: tx });
+        state.pending.entry(key.clone()).or_default().push_back(PendingResponse { id, claimed: false, sender: tx });
         ResponseWaiter { receiver: rx, state: self.state.clone(), key, id }
     }
     /// Dispatch to the oldest waiter matching the exact name and oid.
@@ -65,15 +65,26 @@ impl ResponseRouter {
         }
         delivered
     }
-    /// Remove the oldest waiter for an exact response key.
-    ///
-    /// Used when a response-tracked request exhausts its retry budget, so the
-    /// failed waiter cannot consume a later request's FIFO response.
-    pub fn cancel_oldest(&self, name: &str, oid: Option<u32>) -> bool {
+    /// Associate the oldest unclaimed waiter with a queued request.
+    /// The returned ID lets timeout cleanup target this exact waiter even when
+    /// other requests with the same response name and OID remain active.
+    pub fn claim_oldest(&self, name: &str, oid: Option<u32>) -> Option<u64> {
+        let key = ResponseKey { name: name.to_owned(), oid };
+        let mut state = self.state.lock().expect("response router poisoned");
+        let queue = state.pending.get_mut(&key)?;
+        let waiter = queue.iter_mut().find(|waiter| !waiter.claimed)?;
+        waiter.claimed = true;
+        Some(waiter.id)
+    }
+
+    /// Remove one exact waiter by its stable registration ID.
+    pub fn cancel_waiter(&self, name: &str, oid: Option<u32>, id: u64) -> bool {
         let key = ResponseKey { name: name.to_owned(), oid };
         let mut state = self.state.lock().expect("response router poisoned");
         let Some(queue) = state.pending.get_mut(&key) else { return false; };
-        let removed = queue.pop_front().is_some();
+        let before = queue.len();
+        queue.retain(|waiter| waiter.id != id);
+        let removed = queue.len() != before;
         if queue.is_empty() {
             state.pending.remove(&key);
         }
@@ -175,11 +186,14 @@ mod tests {
     }
 
     #[test]
-    fn cancelling_oldest_waiter_preserves_later_fifo_waiter() {
+    fn cancelling_specific_claimed_waiter_preserves_other_fifo_waiter() {
         let router = ResponseRouter::new();
         let failed = router.register("status", Some(4));
         let next = router.register("status", Some(4));
-        assert!(router.cancel_oldest("status", Some(4)));
+        let failed_id = router.claim_oldest("status", Some(4)).unwrap();
+        let next_id = router.claim_oldest("status", Some(4)).unwrap();
+        assert!(router.cancel_waiter("status", Some(4), failed_id));
+        assert!(!router.cancel_waiter("status", Some(4), next_id));
         assert_eq!(failed.wait(Duration::from_millis(1)), Err(WaitError::Disconnected));
         assert_eq!(router.pending_count("status", Some(4)), 1);
         assert!(router.dispatch(response("status", Some(4))));

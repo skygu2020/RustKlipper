@@ -76,6 +76,7 @@ struct PendingRetryRequest {
     command: ScheduledCommand,
     name: String,
     oid: Option<u32>,
+    waiter_id: Option<u64>,
     transaction: RetryTransaction,
 }
 
@@ -359,11 +360,13 @@ impl ReliableSerialSession {
         let name = response_name.into();
         let template = command.clone();
         command.notify_id = None;
+        let waiter_id = self.response_router.claim_oldest(&name, oid);
         self.retry_transactions.insert(transaction_id, PendingRetryRequest {
             queue_id,
             command: template,
             name,
             oid,
+            waiter_id,
             transaction: RetryTransaction::new(
                 if retry { 5 } else { 0 },
                 std::time::Duration::from_millis(10),
@@ -568,7 +571,11 @@ impl ReliableSerialSession {
                         // Remove the corresponding FIFO waiter as well; otherwise
                         // its abandoned registration could consume the next request's
                         // response with the same name and OID.
-                        self.response_router.cancel_oldest(&name, oid);
+                        if let Some(pending) = self.retry_transactions.get(&transaction_id) {
+                            if let Some(waiter_id) = pending.waiter_id {
+                                self.response_router.cancel_waiter(&name, oid, waiter_id);
+                            }
+                        }
                         events.push(SessionEvent::RetryExhausted { name, oid });
                     }
                 }
