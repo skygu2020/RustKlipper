@@ -65,6 +65,24 @@ impl ResponseRouter {
         }
         delivered
     }
+
+    /// Dispatch a response to the exact waiter reserved for the request that
+    /// was actually sent. This matters when scheduler queue order differs from
+    /// waiter registration order for requests sharing the same response key.
+    pub fn dispatch_to_waiter(&self, response: Response, waiter_id: u64) -> bool {
+        let key = ResponseKey { name: response.name.clone(), oid: response.oid };
+        let mut state = self.state.lock().expect("response router poisoned");
+        let Some(queue) = state.pending.get_mut(&key) else { return false; };
+        let Some(index) = queue.iter().position(|waiter| waiter.id == waiter_id) else {
+            return false;
+        };
+        let waiter = queue.remove(index).expect("located response waiter must exist");
+        let delivered = waiter.sender.send(response).is_ok();
+        if queue.is_empty() {
+            state.pending.remove(&key);
+        }
+        delivered
+    }
     /// Associate the oldest unclaimed waiter with a queued request.
     /// The returned ID lets timeout cleanup target this exact waiter even when
     /// other requests with the same response name and OID remain active.
@@ -152,6 +170,30 @@ mod tests {
         assert_eq!(first.wait(Duration::from_millis(1)).unwrap().oid, Some(7));
         assert_eq!(second.wait(Duration::from_millis(1)).unwrap().oid, Some(7));
         assert_eq!(other.wait(Duration::from_millis(1)).unwrap().oid, Some(8));
+    }
+
+    #[test]
+    fn dispatch_to_waiter_preserves_request_identity_when_send_order_differs() {
+        let router = ResponseRouter::new();
+        let registered_first = router.register("status", Some(5));
+        let sent_first = router.register("status", Some(5));
+        let sent_first_id = router.claim_oldest("status", Some(5)).unwrap();
+        let registered_first_id = router.claim_oldest("status", Some(5)).unwrap();
+
+        let mut params = BTreeMap::new();
+        params.insert("sequence".into(), Value::from(1));
+        assert!(router.dispatch_to_waiter(Response {
+            name: "status".into(), oid: Some(5), params,
+            sent_time: 1.0, receive_time: 2.0,
+        }, sent_first_id));
+
+        assert_eq!(
+            sent_first.wait(Duration::from_millis(1)).unwrap().params["sequence"],
+            Value::from(1),
+        );
+        assert_eq!(router.pending_count("status", Some(5)), 1);
+        assert!(router.contains_waiter("status", Some(5), registered_first_id));
+        drop(registered_first);
     }
 
     #[test]
