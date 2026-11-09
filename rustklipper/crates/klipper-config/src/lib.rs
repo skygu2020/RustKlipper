@@ -1251,6 +1251,19 @@ mod tests {
     }
 
     #[test]
+    fn regular_config_values_are_not_marked_as_autosave() {
+        use std::fs;
+        let path = std::env::temp_dir().join(format!(
+            "rustklipper-config-no-autosave-{}.cfg",
+            std::process::id()
+        ));
+        fs::write(&path, "[printer]\nkinematics=cartesian\n").unwrap();
+        let config = ConfigFileLoader::load(&path).unwrap();
+        assert!(!config.is_autosave_option("printer", "kinematics"));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn loads_autosave_values_without_overriding_main_config() {
         use std::fs;
         let path = std::env::temp_dir().join(format!(
