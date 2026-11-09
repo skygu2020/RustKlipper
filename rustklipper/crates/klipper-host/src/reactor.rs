@@ -513,15 +513,13 @@ mod tests {
     #[test]
     fn callback_completion_publishes_result() {
         let reactor = Reactor::new();
-        let (id, completion) = reactor.register_callback_with_completion(|eventtime| {
-            eventtime.elapsed().as_nanos() == 0
-        });
+        let (id, completion) = reactor.register_callback_with_completion(|_| 42usize);
         assert!(!completion.is_complete());
         assert_eq!(completion.result(), None);
         assert_eq!(reactor.run_due(Instant::now() + Duration::from_secs(1)), 1);
         assert!(completion.is_complete());
-        assert_eq!(completion.result(), Some(false));
-        assert_eq!(completion.wait_timeout(Duration::from_millis(1)), Some(false));
+        assert_eq!(completion.result(), Some(42));
+        assert_eq!(completion.wait_timeout(Duration::from_millis(1)), Some(42));
         assert!(!reactor.unregister(id));
     }
 
