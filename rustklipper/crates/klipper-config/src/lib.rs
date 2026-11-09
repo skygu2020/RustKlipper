@@ -1100,6 +1100,15 @@ mod tests {
     }
 
     #[test]
+    fn missing_deprecated_options_do_not_emit_warnings() {
+        let config = ConfigDocument::parse("[printer]\nkinematics=cartesian\n").unwrap();
+        let tracker = ConfigUsageTracker::new();
+        let section = tracker.track_section(config.section("printer").unwrap());
+        section.deprecate("missing_option", None, None);
+        assert!(tracker.warnings().is_empty());
+    }
+
+    #[test]
     fn config_reads_can_skip_access_tracking() {
         let config = ConfigDocument::parse("[printer]\nkinematics=cartesian\n").unwrap();
         let tracker = ConfigUsageTracker::new();
