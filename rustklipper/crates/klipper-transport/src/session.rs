@@ -193,8 +193,7 @@ pub struct ReliableSerialSession {
     identify_chunk_count: Option<u8>,
     started: Instant,
     wire_time_per_byte: f64,
-    last_ack_clock: u64,
-    disconnected: bool,
+    last_ack_clock: u64,\n    queue_clock_update: Option<ClockUpdate>,\n    disconnected: bool,
 }
 
 impl ReliableSerialSession {
@@ -1110,6 +1109,7 @@ impl ReliableSerialSession {
             return Ok(None);
         }
         let queue_clock = update.queue_clock_at(host_time)?;
+        self.queue_clock_update = Some(update);
         self.promote_ready(queue_clock)
     }
 
@@ -1317,6 +1317,16 @@ impl ReliableSerialSession {
                     self.periodic_clock_waiter = Some(waiter);
                 }
             }
+        }
+
+        // Klipper converts BACKGROUND_PRIORITY_CLOCK into a moving request
+        // clock (clock at now + MIN_REQTIME_DELTA + MIN_BACKGROUND_DELTA).
+        // Treating it as u64::MAX would permanently rank background queries
+        // behind every finite future command and can starve periodic get_clock.
+        if let Some(update) = self.queue_clock_update {
+            let background_time = self.now() + 0.105;
+            let background_clock = update.queue_clock_at(background_time)?;
+            self.scheduler.set_background_priority_clock(background_clock);
         }
 
         loop {
