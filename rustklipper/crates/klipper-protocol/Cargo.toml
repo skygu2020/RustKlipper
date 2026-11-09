@@ -1,0 +1,10 @@
+[package]
+name = "klipper-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Klipper host-to-MCU wire protocol primitives"
+
+[dependencies]
+thiserror.workspace = true
