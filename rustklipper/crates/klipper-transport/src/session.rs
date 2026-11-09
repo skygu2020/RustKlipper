@@ -485,6 +485,11 @@ impl ReliableSerialSession {
         self.clock_calibration_remaining
     }
 
+    /// Whether uptime initialization and all eight startup clock samples completed.
+    pub fn is_clock_calibrated(&self) -> bool {
+        self.clock_sync.is_some() && self.clock_calibration_remaining == 0
+    }
+
     /// Process a periodic get_clock response after startup calibration.
     pub fn handle_periodic_clock_response(
         &mut self,
