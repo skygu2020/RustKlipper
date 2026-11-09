@@ -116,7 +116,7 @@ impl CommandScheduler {
             return Err(ScheduleError::CommandTooLarge(command.bytes.len()));
         }
         if command.req_clock != BACKGROUND_PRIORITY_CLOCK
-            && command.min_clock.wrapping_add(3u64 << 29) < command.req_clock
+            && command.min_clock.wrapping_add(1u64 << 31) < command.req_clock
         {
             command.min_clock = command.req_clock - (3u64 << 29);
         }
@@ -308,6 +308,18 @@ impl CommandScheduler {
 mod tests {
     use super::*;
     use klipper_protocol::FrameDecoder;
+
+    #[test]
+    fn request_clock_normalization_uses_klippers_half_range() {
+        let mut scheduler = CommandScheduler::new();
+        let req_clock = 10_000_000_000;
+        let min_clock = req_clock - (1u64 << 31) - 1;
+        scheduler.enqueue(1, ScheduledCommand::new(vec![0x11], min_clock, req_clock)).unwrap();
+        assert_eq!(scheduler.promote_ready(min_clock), None);
+        assert_eq!(scheduler.queued_counts(), (1, 0));
+        assert_eq!(scheduler.promote_ready(min_clock + 1), None);
+        assert_eq!(scheduler.queued_counts(), (0, 1));
+    }
 
     #[test]
     fn commands_wait_for_min_clock_then_become_ready() {
