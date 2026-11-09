@@ -270,8 +270,8 @@ impl RetransmitState {
             .ok_or(RetransmitError::UnknownSequence(sequence))?;
         entry.last_sent_at = sent_at;
         // Only the oldest outstanding entry controls the window deadline.
-        // The session records the shared completion time after the whole batch
-        // has drained, so later entries must not move that deadline.
+        // Every frame in the retry batch shares one write-start timestamp, so
+        // later entries must not move that deadline.
         if is_oldest {
             let first_frame_wire_time =
                 self.wire_time_per_byte * (entry.frame.bytes.len() + 1) as f64;
