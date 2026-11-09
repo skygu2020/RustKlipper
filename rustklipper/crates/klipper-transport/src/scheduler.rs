@@ -394,6 +394,30 @@ mod tests {
     }
 
     #[test]
+    fn background_priority_advances_with_bytes_already_packed_in_frame() {
+        let mut scheduler = CommandScheduler::new();
+        scheduler.set_background_priority_clock_model(100, 10.0, 2);
+        scheduler.enqueue(1, ScheduledCommand::new(
+            vec![0xA1], 0, BACKGROUND_PRIORITY_CLOCK,
+        )).unwrap();
+        scheduler.enqueue(2, ScheduledCommand::new(
+            vec![0xB2], 0, 110,
+        )).unwrap();
+        scheduler.enqueue(3, ScheduledCommand::new(
+            vec![0xC3], 0, BACKGROUND_PRIORITY_CLOCK,
+        )).unwrap();
+        scheduler.promote_ready(0);
+
+        let frame = scheduler.build_frame().unwrap().unwrap();
+        let mut decoder = FrameDecoder::new();
+        let parsed = decoder.push(&frame.bytes);
+        assert_eq!(parsed.len(), 1);
+        // The first background command is selected at clock 100. Once bytes
+        // are packed, the second background command moves past clock 110.
+        assert_eq!(parsed[0].payload, vec![0xA1, 0xB2, 0xC3]);
+    }
+
+    #[test]
     fn frame_contains_notifications_for_commands_packed_into_it() {
         let mut s = CommandScheduler::new();
         s.enqueue(4, ScheduledCommand::new(vec![0x22], 0, 1).with_notify(99)).unwrap();
