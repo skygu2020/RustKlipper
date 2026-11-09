@@ -88,14 +88,7 @@ pub struct ReliableSerialSession {
 
 impl ReliableSerialSession {
     pub fn open(settings: &crate::SerialSettings) -> Result<Self, SessionError> {
-        let mut session = Self::new(UsbSerialTransport::open(settings)?);
-        if settings.baud_rate == 0 {
-            return Err(SessionError::Schedule(ScheduleError::Retransmit(
-                crate::RetransmitError::InvalidTime,
-            )));
-        }
-        session.scheduler.set_wire_time_per_byte(10.0 / settings.baud_rate as f64)?;
-        Ok(session)
+        Ok(Self::new(UsbSerialTransport::open(settings)?))
     }
 
     pub fn new(transport: UsbSerialTransport) -> Self {

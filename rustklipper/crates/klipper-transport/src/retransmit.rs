@@ -69,7 +69,6 @@ pub struct RetransmitState {
     last_now: Option<f64>,
     rtt_sample_seq: Option<u64>,
     retransmit_deadline: Option<f64>,
-    wire_time_per_byte: f64,
 }
 
 impl Default for RetransmitState {
@@ -85,7 +84,6 @@ impl Default for RetransmitState {
             last_now: None,
             rtt_sample_seq: None,
             retransmit_deadline: None,
-            wire_time_per_byte: 0.0,
         }
     }
 }
@@ -97,16 +95,6 @@ impl RetransmitState {
     pub fn rto(&self) -> f64 { self.rto }
     pub fn outstanding_len(&self) -> usize { self.outstanding.len() }
     pub fn is_empty(&self) -> bool { self.outstanding.is_empty() }
-
-    /// Configure UART 8N1 transmission time per byte. A zero value keeps
-    /// deterministic transports/tests that do not model wire time unchanged.
-    pub fn set_wire_time_per_byte(&mut self, seconds: f64) -> Result<(), RetransmitError> {
-        if !seconds.is_finite() || seconds < 0.0 {
-            return Err(RetransmitError::InvalidTime);
-        }
-        self.wire_time_per_byte = seconds;
-        Ok(())
-    }
 
     /// Validate a monotonic timestamp without changing the retry clock.
     pub fn check_time(&self, now: f64) -> Result<(), RetransmitError> {
@@ -130,11 +118,10 @@ impl RetransmitState {
             return Err(RetransmitError::SequenceNotIncreasing);
         }
         if self.outstanding.is_empty() {
-            // write() completion does not mean the UART has shifted every byte
-            // onto the wire. Match serialqueue.c's idletime calculation by
-            // reserving the first frame's remaining 8N1 wire time before RTO.
-            let wire_time = self.wire_time_per_byte * bytes.len() as f64;
-            self.retransmit_deadline = Some(now + wire_time + self.rto);
+            // The transport's write_encoded_frame() calls serialport flush(),
+            // which waits for the UART output to drain. This timestamp is
+            // therefore the frame's transmission-completion time.
+            self.retransmit_deadline = Some(now + self.rto);
         }
         if self.rtt_sample_seq.is_none() {
             self.rtt_sample_seq = Some(sequence);
@@ -186,9 +173,7 @@ impl RetransmitState {
         if self.outstanding.is_empty() {
             self.retransmit_deadline = None;
         } else if !acknowledged.is_empty() {
-            self.retransmit_deadline = self.outstanding.front().map(|entry| {
-                now + self.rto + self.wire_time_per_byte * entry.frame.bytes.len() as f64
-            });
+            self.retransmit_deadline = Some(now + self.rto);
         }
 
         Ok(AckResult { acknowledged, fast_retransmit: None, rtt_sample_seconds })
@@ -250,7 +235,7 @@ impl RetransmitState {
         // serialqueue.c schedules the next timeout from the first block in
         // the retransmitted window, not from the final block's write completion.
         if is_oldest {
-            self.retransmit_deadline = Some(sent_at + self.rto + self.wire_time_per_byte * (entry.frame.bytes.len() + 1) as f64);
+            self.retransmit_deadline = Some(sent_at + self.rto);
         }
         Ok(())
     }
@@ -355,12 +340,11 @@ mod tests {
     }
 
     #[test]
-    fn initial_deadline_includes_first_frame_uart_wire_time() {
+    fn initial_deadline_starts_at_completed_write_timestamp() {
         let mut state = RetransmitState::new();
-        state.set_wire_time_per_byte(0.001).unwrap();
         state.track_sent(1, vec![0; 20], 1.0).unwrap();
 
-        let deadline = 1.0 + state.rto() + 0.020;
+        let deadline = 1.0 + state.rto();
         assert!(state.poll_timeout_all(deadline - 0.000_001).unwrap().is_empty());
         assert_eq!(state.poll_timeout_all(deadline).unwrap().len(), 1);
     }

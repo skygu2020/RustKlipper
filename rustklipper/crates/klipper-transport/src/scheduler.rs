@@ -77,11 +77,6 @@ impl CommandScheduler {
     pub fn set_receive_window(&mut self, bytes: usize) { self.receive_window = bytes; }
     pub fn send_sequence(&self) -> u64 { self.send_sequence }
 
-    /// Configure UART 8N1 wire time for retransmission deadline accounting.
-    pub fn set_wire_time_per_byte(&mut self, seconds: f64) -> Result<(), ScheduleError> {
-        self.retransmit.set_wire_time_per_byte(seconds)?;
-        Ok(())
-    }
     pub fn receive_sequence(&self) -> u64 { self.receive_sequence }
 
     /// Commands within one command queue retain FIFO order.
