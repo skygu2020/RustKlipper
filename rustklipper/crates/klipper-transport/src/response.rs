@@ -324,7 +324,7 @@ mod tests {
         assert!(router.contains_waiter("status", Some(4), next_id));
         assert_eq!(failed.wait(Duration::from_millis(1)), Err(WaitError::Disconnected));
         assert_eq!(router.pending_count("status", Some(4)), 1);
-        assert!(router.dispatch(response("status", Some(4))));
+        assert!(router.dispatch_to_waiter(response("status", Some(4)), next_id));
         assert_eq!(next.wait(Duration::from_millis(1)).unwrap().oid, Some(4));
     }
 
