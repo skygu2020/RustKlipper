@@ -166,6 +166,7 @@ impl<T> Completion<T> {
 #[derive(Default)]
 pub struct Reactor {
     state: Mutex<ReactorState>,
+    wake: Condvar,
 }
 
 impl Reactor {
@@ -286,6 +287,7 @@ impl Reactor {
         };
         task.deadline = deadline;
         state.queue.push(Reverse(Scheduled { deadline, id }));
+        self.wake.notify_one();
         true
     }
 
@@ -318,6 +320,7 @@ impl Reactor {
         );
         state.queue.push(Reverse(Scheduled { deadline, id }));
         state.cancel_hooks.insert(id, Box::new(on_cancel));
+        self.wake.notify_one();
         id
     }
 
@@ -338,6 +341,57 @@ impl Reactor {
             on_cancel();
         }
         true
+    }
+
+    /// Queue a callback from any thread and wake a thread blocked in run_once().
+    pub fn register_async_callback<F>(&self, callback: F) -> TaskId
+    where
+        F: FnOnce(Instant) + Send + 'static,
+    {
+        self.register_callback_at(Instant::now(), callback)
+    }
+
+    /// Wait for work or the next timer deadline, then dispatch due callbacks.
+    ///
+    /// Returns immediately when work is already due. The timeout bounds idle
+    /// waiting; registering or updating a task from another thread wakes this
+    /// method so the new deadline can be observed.
+    pub fn run_once(&self, max_wait: Duration) -> usize {
+        let timeout_deadline = Instant::now() + max_wait;
+        loop {
+            let mut state = self.state.lock().expect("reactor lock poisoned");
+            let next_deadline = loop {
+                let Some(Reverse(entry)) = state.queue.peek().copied() else {
+                    break None;
+                };
+                if state
+                    .tasks
+                    .get(&entry.id)
+                    .is_some_and(|task| task.deadline == entry.deadline)
+                {
+                    break Some(entry.deadline);
+                }
+                state.queue.pop();
+            };
+
+            let now = Instant::now();
+            if next_deadline.is_some_and(|deadline| deadline <= now)
+                || now >= timeout_deadline
+            {
+                drop(state);
+                return self.run_due(Instant::now());
+            }
+
+            let wake_deadline = next_deadline
+                .map(|deadline| deadline.min(timeout_deadline))
+                .unwrap_or(timeout_deadline);
+            let wait = wake_deadline.saturating_duration_since(now);
+            let (guard, _) = self
+                .wake
+                .wait_timeout(state, wait)
+                .expect("reactor lock poisoned");
+            drop(guard);
+        }
     }
 
     /// Execute all tasks due at the supplied monotonic time.
@@ -618,6 +672,23 @@ mod tests {
     }
 
 
+
+    #[test]
+    fn async_callback_wakes_blocked_reactor() {
+        let reactor = Arc::new(Reactor::new());
+        let dispatch_reactor = reactor.clone();
+        let dispatcher = std::thread::spawn(move || {
+            dispatch_reactor.run_once(Duration::from_secs(2))
+        });
+        std::thread::sleep(Duration::from_millis(10));
+        let completed = Arc::new(AtomicUsize::new(0));
+        let observed = completed.clone();
+        reactor.register_async_callback(move |_| {
+            observed.fetch_add(1, Ordering::SeqCst);
+        });
+        assert_eq!(dispatcher.join().unwrap(), 1);
+        assert_eq!(completed.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn callback_at_waits_for_its_requested_deadline() {
