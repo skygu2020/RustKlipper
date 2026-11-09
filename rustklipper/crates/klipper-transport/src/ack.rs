@@ -22,7 +22,7 @@ impl AckTracker {
     /// Klipper wake_seq is receive_seq - 1 for an empty ACK, - 2 for data.
     pub fn acknowledge(&mut self, receive_seq: u64, has_payload: bool,
                        sent_time: f64, receive_time: f64) -> Vec<u64> {
-        let wake_seq = receive_seq.saturating_sub(1 + u64::from(has_payload));
+        let wake_seq = receive_seq.saturating_sub(if has_payload { 2 } else { 1 });
         let completed: Vec<u64> = self.pending.iter()
             .filter_map(|(id, p)| (p.required_send_seq <= wake_seq).then_some(*id)).collect();
         for id in &completed {
