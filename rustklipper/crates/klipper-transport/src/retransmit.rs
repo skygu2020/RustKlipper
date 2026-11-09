@@ -58,7 +58,7 @@ pub struct RetransmitState {
     srtt: Option<f64>,
     rttvar: Option<f64>,
     rto: f64,
-    last_ack: u64,
+    last_ack_seq: u64,
     ignore_nak_sequence: u64,
     retransmit_sequence: u64,
     last_now: Option<f64>,
@@ -71,7 +71,7 @@ impl Default for RetransmitState {
             srtt: None,
             rttvar: None,
             rto: DEFAULT_RTO_SECONDS,
-            last_ack: 0,
+            last_ack_seq: 0,
             ignore_nak_sequence: 0,
             retransmit_sequence: 0,
             last_now: None,
@@ -123,7 +123,7 @@ impl RetransmitState {
         -> Result<AckResult, RetransmitError>
     {
         self.validate_time(now)?;
-        if ack_sequence < self.last_ack {
+        if ack_sequence < self.last_ack_seq {
             return Ok(AckResult { acknowledged: Vec::new(), fast_retransmit: None, rtt_sample_seconds: None });
         }
 
@@ -144,31 +144,28 @@ impl RetransmitState {
         let rtt_sample_seconds = if acknowledged.len() == 1 { rtt_candidate } else { None };
         if let Some(sample) = rtt_sample_seconds { self.update_rtt(sample); }
 
-        if ack_sequence > self.last_ack {
-            self.last_ack = ack_sequence;
-        }
-
-        // Duplicate ACK handling is deliberately separate: only an empty MCU
-        // message block is a NAK. A data frame with the same sequence is not.
+        // serialqueue.c advances last_ack_seq only for empty ACK messages.
         Ok(AckResult { acknowledged, fast_retransmit: None, rtt_sample_seconds })
     }
 
-    /// Process an empty duplicate ACK (MCU NAK). Klipper retransmits every
-    /// outstanding host frame immediately, while suppressing repeated NAKs
-    /// for the same receive sequence until sequence progress is observed.
-    pub fn nak(&mut self, now: f64) -> Result<Vec<Retransmission>, RetransmitError> {
+    /// Process an empty MCU message block using serialqueue.c's NAK rules.
+    pub fn handle_empty_ack(
+        &mut self, receive_seq: u64, send_seq: u64, now: f64,
+    ) -> Result<Vec<Retransmission>, RetransmitError> {
         self.validate_time(now)?;
-        if self.last_ack <= self.ignore_nak_sequence || self.outstanding.is_empty() {
+        if self.last_ack_seq < receive_seq {
+            self.last_ack_seq = receive_seq;
             return Ok(Vec::new());
         }
-        self.ignore_nak_sequence = self.last_ack;
-        let next_send_sequence = self.outstanding.back()
-            .map(|entry| entry.frame.sequence.saturating_add(1))
-            .unwrap_or(self.last_ack);
-        if self.last_ack < self.retransmit_sequence {
-            self.ignore_nak_sequence = self.retransmit_sequence;
+        if receive_seq <= self.ignore_nak_seq || self.outstanding.is_empty() {
+            return Ok(Vec::new());
         }
-        self.retransmit_sequence = next_send_sequence;
+        // State update performed by the retransmit timer after a NAK.
+        self.ignore_nak_seq = receive_seq;
+        if receive_seq < self.retransmit_seq {
+            self.ignore_nak_seq = self.retransmit_seq;
+        }
+        self.retransmit_seq = send_seq;
         Ok(self.retransmit_all(now))
     }
 
@@ -199,6 +196,9 @@ impl RetransmitState {
         let Some(front) = self.outstanding.front() else { return Ok(Vec::new()); };
         if now - front.last_sent_at < self.rto { return Ok(Vec::new()); }
         self.rto = (self.rto * 2.0).min(MAX_RTO_SECONDS);
+        self.ignore_nak_seq = self.outstanding.back()
+            .map_or(self.ignore_nak_seq, |entry| entry.frame.sequence.saturating_add(1));
+        self.retransmit_seq = self.ignore_nak_seq;
         Ok(self.retransmit_all(now))
     }
 
@@ -322,18 +322,18 @@ mod tests {
         state.track_sent(10, vec![0x10], 0.0).unwrap();
         state.track_sent(11, vec![0x11], 0.001).unwrap();
         state.acknowledge(10, 0.010).unwrap();
-        let retries = state.nak(0.011).unwrap();
+        let retries = state.handle_empty_ack(10, 12, 0.011).unwrap();
         assert_eq!(retries.len(), 2);
         assert_eq!(retries[0].bytes, vec![0x10]);
         assert_eq!(retries[1].bytes, vec![0x11]);
-        assert!(state.nak(0.012).unwrap().is_empty());
+        assert!(state.handle_empty_ack(10, 12, 0.012).unwrap().is_empty());
         state.acknowledge(11, 0.013).unwrap();
-        assert!(state.nak(0.014).unwrap().is_empty());
+        assert!(state.handle_empty_ack(11, 12, 0.014).unwrap().is_empty());
         state.track_sent(12, vec![0x12], 0.015).unwrap();
         state.acknowledge(12, 0.016).unwrap();
         state.track_sent(13, vec![0x13], 0.017).unwrap();
         state.acknowledge(13, 0.018).unwrap();
-        let next_nak = state.nak(0.019).unwrap();
+        let next_nak = state.handle_empty_ack(13, 14, 0.019).unwrap();
         assert_eq!(next_nak.len(), 1);
         assert_eq!(next_nak[0].sequence, 13);
     }

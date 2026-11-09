@@ -2,7 +2,7 @@
 //! This layer decides command eligibility and packs commands into MCU frames;
 //! UART I/O, ACK/retransmit state, and clock estimation remain separate.
 use std::collections::{BTreeMap, VecDeque};
-use klipper_protocol::{encode_frame, ProtocolError, MESSAGE_MAX, MESSAGE_MIN};
+use klipper_protocol::{encode_frame, Frame, ProtocolError, MESSAGE_MAX, MESSAGE_MIN};
 use crate::retransmit::{AckResult, Retransmission, RetransmitError, RetransmitState};
 
 pub const MAX_PENDING_BLOCKS: u64 = 12;
@@ -31,13 +31,27 @@ pub struct ScheduledFrame {
     pub notify_ids: Vec<u64>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScheduleError { EmptyCommand, CommandTooLarge(usize), Frame(ProtocolError), Retransmit(RetransmitError) }
+pub enum ScheduleError {
+    EmptyCommand,
+    CommandTooLarge(usize),
+    Frame(ProtocolError),
+    Retransmit(RetransmitError),
+    InvalidAckSequence { received: u64, sent: u64 },
+}
 impl From<RetransmitError> for ScheduleError {
     fn from(value: RetransmitError) -> Self { Self::Retransmit(value) }
 }
 impl From<ProtocolError> for ScheduleError {
     fn from(value: ProtocolError) -> Self { Self::Frame(value) }
 }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReceivedFrameResult {
+    pub receive_sequence: u64,
+    pub has_payload: bool,
+    pub acknowledged: Vec<crate::retransmit::TrackedFrame>,
+    pub retransmissions: Vec<Retransmission>,
+}
+
 #[derive(Debug, Default)]
 struct QueueState { upcoming: VecDeque<ScheduledCommand>, ready: VecDeque<ScheduledCommand> }
 
@@ -178,7 +192,34 @@ impl CommandScheduler {
     /// Process an empty duplicate MCU frame (NAK) and return all cached
     /// outstanding frames that must be retransmitted immediately.
     pub fn handle_nak_at(&mut self, now: f64) -> Result<Vec<Retransmission>, ScheduleError> {
-        Ok(self.retransmit.nak(now)?)
+        Ok(self.retransmit.handle_empty_ack(self.receive_sequence, self.send_sequence, now)?)
+    }
+
+    /// Process a decoded MCU frame, extending its four-bit sequence and
+    /// distinguishing data from empty ACK/NAK blocks.
+    pub fn handle_received_frame(
+        &mut self, frame: &Frame, now: f64,
+    ) -> Result<ReceivedFrameResult, ScheduleError> {
+        let receive_sequence = crate::ack::AckTracker::extend_wire_sequence(
+            self.receive_sequence, frame.sequence
+        );
+        if receive_sequence > self.send_sequence && self.receive_sequence != 1 {
+            return Err(ScheduleError::InvalidAckSequence {
+                received: receive_sequence, sent: self.send_sequence,
+            });
+        }
+        let mut acknowledged = Vec::new();
+        if receive_sequence > self.receive_sequence {
+            acknowledged = self.retransmit.acknowledge(receive_sequence, now)?.acknowledged;
+            self.acknowledge(receive_sequence, 0);
+        }
+        let retransmissions = if frame.payload.is_empty() {
+            self.retransmit.handle_empty_ack(receive_sequence, self.send_sequence, now)?
+        } else { Vec::new() };
+        Ok(ReceivedFrameResult {
+            receive_sequence, has_payload: !frame.payload.is_empty(),
+            acknowledged, retransmissions,
+        })
     }
 
     /// Poll timeout and return the complete outstanding window for retransmission.
@@ -287,17 +328,19 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_ack_can_request_fast_retransmit_through_scheduler() {
+    fn incoming_empty_frame_triggers_nak_after_first_ack() {
         let mut s = CommandScheduler::new();
         s.enqueue(1, ScheduledCommand::new(vec![0x41], 0, 1)).unwrap();
         s.promote_ready(0);
-        let frame = s.build_frame_at(1.0).unwrap().unwrap();
-        for t in [1.01, 1.02] {
-            let ack = s.acknowledge_at(frame.send_sequence, 0, t).unwrap();
-            assert!(ack.fast_retransmit.is_none());
-        }
-        let ack = s.acknowledge_at(frame.send_sequence, 0, 1.03).unwrap();
-        assert_eq!(ack.fast_retransmit.unwrap().bytes, frame.bytes);
+        let sent = s.build_frame_at(1.0).unwrap().unwrap();
+        let ack = Frame { sequence: 2, payload: vec![] };
+        let first = s.handle_received_frame(&ack, 1.01).unwrap();
+        assert!(first.retransmissions.is_empty());
+        let duplicate = s.handle_received_frame(&ack, 1.02).unwrap();
+        assert_eq!(duplicate.retransmissions.len(), 1);
+        assert_eq!(duplicate.retransmissions[0].bytes, sent.bytes);
+        let repeated = s.handle_received_frame(&ack, 1.03).unwrap();
+        assert!(repeated.retransmissions.is_empty());
     }
 
     #[test]
