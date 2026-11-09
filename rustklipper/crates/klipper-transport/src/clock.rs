@@ -224,8 +224,15 @@ impl ClockSync {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ClockSyncError { InvalidFrequency, InvalidTimestamp, InvalidRegression }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ClockSyncError {
+    #[error("invalid MCU clock frequency")]
+    InvalidFrequency,
+    #[error("invalid host timestamp for MCU clock conversion")]
+    InvalidTimestamp,
+    #[error("MCU clock regression produced an invalid frequency")]
+    InvalidRegression,
+}
 
 /// UART 8N1 wire-time model (one start, eight data, one stop bit).
 #[derive(Debug, Clone, Copy, PartialEq)]
