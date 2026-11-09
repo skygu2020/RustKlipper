@@ -30,6 +30,7 @@ struct Registration {
     help: Option<String>,
 }
 
+#[derive(Clone)]
 struct MuxRegistration {
     key: String,
     values: HashMap<Option<String>, Handler>,
@@ -49,7 +50,7 @@ pub struct DispatchOutcome {
 /// Commands are registered in the ready table. A command marked
 /// `available_before_ready` is also copied into the base table, which remains
 /// active while the printer is not ready or has shut down.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct GCodeDispatcher {
     ready_handlers: HashMap<String, Registration>,
     base_handlers: HashMap<String, Registration>,
