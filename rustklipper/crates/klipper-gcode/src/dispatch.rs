@@ -383,6 +383,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn dispatcher_snapshot_keeps_handlers_alive_after_live_unregister() {
+        let mut dispatcher = GCodeDispatcher::new();
+        dispatcher
+            .register_command("M999", true, None, |_| Ok(Vec::new()))
+            .unwrap();
+        let snapshot = dispatcher.clone();
+        assert!(dispatcher.unregister_command("M999"));
+
+        assert!(snapshot.process_line("M999", true).unwrap().handler_found);
+        assert!(!dispatcher.process_line("M999", true).unwrap().handler_found);
+    }
+
+    #[test]
     fn reset_clears_handlers_muxes_and_ready_state() {
         let mut dispatcher = GCodeDispatcher::new();
         dispatcher
