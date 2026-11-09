@@ -1343,6 +1343,30 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_shutdown_requests_emit_one_event() {
+        let printer = Arc::new(Printer::new());
+        printer.set_ready();
+        let events = Arc::new(AtomicUsize::new(0));
+        let observed = events.clone();
+        printer.register_event_handler(PrinterEventKind::Shutdown, move |_| {
+            observed.fetch_add(1, Ordering::SeqCst);
+        });
+        let workers: Vec<_> = (0..8)
+            .map(|index| {
+                let printer = printer.clone();
+                std::thread::spawn(move || {
+                    printer.invoke_shutdown(format!("failure {index}"));
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert_eq!(events.load(Ordering::SeqCst), 1);
+        assert_eq!(printer.state(), PrinterState::Shutdown);
+    }
+
+    #[test]
     fn repeated_shutdown_preserves_the_first_reason() {
         let printer = Printer::new();
         printer.invoke_shutdown("initial failure");
