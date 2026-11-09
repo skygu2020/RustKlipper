@@ -69,11 +69,13 @@ pub struct CommandScheduler {
     last_ack_sequence: u64,
     sent_blocks: VecDeque<(u64, usize)>,
     retransmit: RetransmitState,
+    background_priority_clock: u64,
 }
 impl Default for CommandScheduler {
     fn default() -> Self {
         Self { queues: BTreeMap::new(), send_sequence: 1, receive_sequence: 1,
-            receive_window: 0, need_ack_bytes: 0, last_ack_bytes: 0, last_ack_sequence: 0, sent_blocks: VecDeque::new(), retransmit: RetransmitState::new() }
+            receive_window: 0, need_ack_bytes: 0, last_ack_bytes: 0, last_ack_sequence: 0, sent_blocks: VecDeque::new(), retransmit: RetransmitState::new(),
+            background_priority_clock: BACKGROUND_PRIORITY_CLOCK }
     }
 }
 impl CommandScheduler {
@@ -86,6 +88,12 @@ impl CommandScheduler {
         Ok(())
     }
     pub fn send_sequence(&self) -> u64 { self.send_sequence }
+
+    /// Set the current effective request clock for background-priority messages.
+    /// Klipper recomputes this from its clock estimate before each send decision.
+    pub fn set_background_priority_clock(&mut self, clock: u64) {
+        self.background_priority_clock = clock;
+    }
 
     pub fn receive_sequence(&self) -> u64 { self.receive_sequence }
 
@@ -160,7 +168,7 @@ impl CommandScheduler {
                 .filter_map(|(id, q)| q.ready.front().map(|cmd| {
                     (*id, cmd.req_clock, cmd.bytes.len())
                 }))
-                .min_by_key(|(_, priority, _)| *priority);
+                .min_by_key(|(_, priority, _)| if *priority == BACKGROUND_PRIORITY_CLOCK {\n                    self.background_priority_clock\n                } else { *priority });
             let Some((queue_id, _, size)) = selected else { break; };
             if payload.len() + size > MESSAGE_PAYLOAD_MAX { break; }
             let command = self.queues.get_mut(&queue_id)
