@@ -444,16 +444,10 @@ impl ReliableSerialSession {
         let matched = if let Some(index) = pending_index {
             let pending = self.sent_response_requests.remove(index)
                 .expect("located response request must exist");
-            let response = Response {
+            let delivered = self.response_router.dispatch(Response {
                 name: name.clone(), oid, params: params.clone(),
                 sent_time, receive_time,
-            };
-            let waiter_id = self.retry_transactions.get(&pending.transaction_id)
-                .and_then(|transaction| transaction.waiter_id);
-            let delivered = waiter_id.map_or_else(
-                || self.response_router.dispatch(response.clone()),
-                |waiter_id| self.response_router.dispatch_to_waiter(response, waiter_id),
-            );
+            });
             if delivered {
                 if let Some(mut transaction) = self.retry_transactions.remove(&pending.transaction_id) {
                     transaction.transaction.response_received();

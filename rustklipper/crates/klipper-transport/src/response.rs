@@ -177,8 +177,8 @@ mod tests {
         let router = ResponseRouter::new();
         let registered_first = router.register("status", Some(5));
         let sent_first = router.register("status", Some(5));
-        let sent_first_id = router.claim_oldest("status", Some(5)).unwrap();
         let registered_first_id = router.claim_oldest("status", Some(5)).unwrap();
+        let sent_first_id = router.claim_oldest("status", Some(5)).unwrap();
 
         let mut params = BTreeMap::new();
         params.insert("sequence".into(), Value::from(1));
