@@ -164,6 +164,24 @@ impl Reactor {
         executed
     }
 
+    /// Return the earliest pending deadline, discarding cancelled queue entries.
+    pub fn next_deadline(&self) -> Option<Instant> {
+        let mut state = self.state.lock().expect("reactor lock poisoned");
+        loop {
+            let Reverse(entry) = state.queue.peek().copied()?;
+            if state.tasks.contains_key(&entry.id) {
+                return Some(entry.deadline);
+            }
+            state.queue.pop();
+        }
+    }
+
+    /// Return the duration until the next task is due, if any.
+    pub fn time_until_next(&self, now: Instant) -> Option<Duration> {
+        self.next_deadline()
+            .map(|deadline| deadline.saturating_duration_since(now))
+    }
+
     pub fn pending_tasks(&self) -> usize {
         self.state
             .lock()
@@ -280,6 +298,37 @@ mod tests {
         );
         assert_eq!(count.load(Ordering::SeqCst), 1);
         assert_eq!(reactor.pending_tasks(), 0);
+    }
+
+
+    #[test]
+    fn next_deadline_tracks_pending_tasks_and_ignores_cancelled_entries() {
+        let reactor = Reactor::new();
+        let id = reactor
+            .register_timer(Duration::from_secs(30), None, || {})
+            .unwrap();
+        assert!(reactor.next_deadline().is_some());
+        assert!(reactor.unregister(id));
+        assert_eq!(reactor.next_deadline(), None);
+        assert_eq!(reactor.time_until_next(Instant::now()), None);
+    }
+
+    #[test]
+    fn callback_can_schedule_another_callback_without_locking_the_reactor() {
+        let reactor = std::sync::Arc::new(Reactor::new());
+        let nested = reactor.clone();
+        let count = std::sync::Arc::new(AtomicUsize::new(0));
+        let observed = count.clone();
+        reactor.register_callback(move || {
+            let observed = observed.clone();
+            nested.register_callback(move || {
+                observed.fetch_add(1, Ordering::SeqCst);
+            });
+        });
+
+        assert_eq!(reactor.run_due(Instant::now() + Duration::from_secs(1)), 1);
+        assert_eq!(reactor.run_due(Instant::now() + Duration::from_secs(1)), 1);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 
     #[test]
