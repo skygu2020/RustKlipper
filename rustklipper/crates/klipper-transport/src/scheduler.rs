@@ -75,6 +75,12 @@ impl Default for CommandScheduler {
 impl CommandScheduler {
     pub fn new() -> Self { Self::default() }
     pub fn set_receive_window(&mut self, bytes: usize) { self.receive_window = bytes; }
+
+    /// Configure UART 8N1 timing used for the post-ACK retransmit margin.
+    pub fn set_wire_time_per_byte(&mut self, seconds: f64) -> Result<(), ScheduleError> {
+        self.retransmit.set_wire_time_per_byte(seconds)?;
+        Ok(())
+    }
     pub fn send_sequence(&self) -> u64 { self.send_sequence }
 
     pub fn receive_sequence(&self) -> u64 { self.receive_sequence }

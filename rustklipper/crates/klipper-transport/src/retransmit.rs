@@ -69,6 +69,7 @@ pub struct RetransmitState {
     last_now: Option<f64>,
     rtt_sample_seq: Option<u64>,
     retransmit_deadline: Option<f64>,
+    wire_time_per_byte: f64,
 }
 
 impl Default for RetransmitState {
@@ -84,6 +85,7 @@ impl Default for RetransmitState {
             last_now: None,
             rtt_sample_seq: None,
             retransmit_deadline: None,
+            wire_time_per_byte: 0.0,
         }
     }
 }
@@ -95,6 +97,15 @@ impl RetransmitState {
     pub fn rto(&self) -> f64 { self.rto }
     pub fn outstanding_len(&self) -> usize { self.outstanding.len() }
     pub fn is_empty(&self) -> bool { self.outstanding.is_empty() }
+
+    /// Configure UART 8N1 transmission time per byte for ACK deadline margin.
+    pub fn set_wire_time_per_byte(&mut self, seconds: f64) -> Result<(), RetransmitError> {
+        if !seconds.is_finite() || seconds < 0.0 {
+            return Err(RetransmitError::InvalidTime);
+        }
+        self.wire_time_per_byte = seconds;
+        Ok(())
+    }
 
     /// Validate a monotonic timestamp without changing the retry clock.
     pub fn check_time(&self, now: f64) -> Result<(), RetransmitError> {
@@ -173,7 +184,10 @@ impl RetransmitState {
         if self.outstanding.is_empty() {
             self.retransmit_deadline = None;
         } else if !acknowledged.is_empty() {
-            self.retransmit_deadline = Some(now + self.rto);
+            let oldest_wire_time = self.outstanding.front().map_or(0.0, |entry| {
+                self.wire_time_per_byte * entry.frame.bytes.len() as f64
+            });
+            self.retransmit_deadline = Some(now + self.rto + oldest_wire_time);
         }
 
         Ok(AckResult { acknowledged, fast_retransmit: None, rtt_sample_seconds })
@@ -339,6 +353,19 @@ mod tests {
         assert!(state.poll_timeout_all(0.749).unwrap().is_empty());
         assert_eq!(state.poll_timeout_all(0.750).unwrap().len(), 1);
         assert_eq!(state.rto(), 1.0);
+    }
+
+    #[test]
+    fn ack_deadline_includes_oldest_remaining_frame_wire_time() {
+        let mut state = RetransmitState::new();
+        state.set_wire_time_per_byte(0.001).unwrap();
+        state.track_sent(1, vec![0; 4], 0.0).unwrap();
+        state.track_sent(2, vec![0; 20], 0.001).unwrap();
+        state.acknowledge(2, 0.010).unwrap();
+
+        let deadline = 0.010 + state.rto() + 0.020;
+        assert!(state.poll_timeout_all(deadline - 0.000_001).unwrap().is_empty());
+        assert_eq!(state.poll_timeout_all(deadline).unwrap().len(), 1);
     }
 
     #[test]
