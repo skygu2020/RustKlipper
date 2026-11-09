@@ -373,6 +373,40 @@ impl Printer {
             .get_choice(config, section, option, choices, default)
     }
 
+    pub fn config_i64_range(
+        &self,
+        section: &str,
+        option: &str,
+        min: Option<i64>,
+        max: Option<i64>,
+    ) -> Result<i64, ConfigValueError> {
+        let config = self.config();
+        let config = config.as_deref().ok_or_else(|| ConfigValueError::Missing {
+            section: section.to_owned(),
+            option: option.to_owned(),
+        })?;
+        self.config_usage
+            .get_i64_range(config, section, option, min, max)
+    }
+
+    pub fn config_f64_range(
+        &self,
+        section: &str,
+        option: &str,
+        min: Option<f64>,
+        max: Option<f64>,
+        above: Option<f64>,
+        below: Option<f64>,
+    ) -> Result<f64, ConfigValueError> {
+        let config = self.config();
+        let config = config.as_deref().ok_or_else(|| ConfigValueError::Missing {
+            section: section.to_owned(),
+            option: option.to_owned(),
+        })?;
+        self.config_usage
+            .get_f64_range(config, section, option, min, max, above, below)
+    }
+
     pub fn config_bool(
         &self,
         section: &str,
@@ -1016,6 +1050,30 @@ mod tests {
         assert_eq!(printer.config_i64("printer", "max_velocity").unwrap(), 300);
         assert_eq!(printer.config_f64("printer", "max_accel").unwrap(), 5000.5);
         assert!(printer.config_bool("printer", "use_pin").unwrap());
+        assert!(printer.unused_config_options().is_empty());
+    }
+
+    #[test]
+    fn printer_bounded_config_getters_record_access() {
+        let printer = Printer::new();
+        printer.install_config(
+            ConfigDocument::parse(
+                "[printer]\nmax_velocity=300\nmax_accel=5000.5\n",
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            printer
+                .config_i64_range("printer", "max_velocity", Some(100), Some(300))
+                .unwrap(),
+            300
+        );
+        assert_eq!(
+            printer
+                .config_f64_range("printer", "max_accel", Some(1000.0), None, Some(5000.0), None)
+                .unwrap(),
+            5000.5
+        );
         assert!(printer.unused_config_options().is_empty());
     }
 
