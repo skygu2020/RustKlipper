@@ -436,6 +436,18 @@ mod tests {
     }
 
     #[test]
+    fn cumulative_ack_uses_the_last_frame_completion_time_in_batch() {
+        let mut state = RetransmitState::new();
+        state.track_sent_with_receive_time(1, vec![1; 5], 1.0, 1.005).unwrap();
+        state.track_sent_with_receive_time(2, vec![2; 5], 1.0, 1.010).unwrap();
+
+        let ack = state.acknowledge(3, 1.2).unwrap();
+        assert_eq!(ack.acknowledged.len(), 2);
+        assert!((ack.last_receive_sent_time - 1.010).abs() < 1e-12);
+        assert!((ack.rtt_sample_seconds.unwrap() - 0.190).abs() < 1e-9);
+    }
+
+    #[test]
     fn explicit_receive_timestamp_includes_prior_batch_bytes() {
         let mut state = RetransmitState::new();
         state.track_sent_with_receive_time(1, vec![0; 10], 1.0, 1.025).unwrap();
