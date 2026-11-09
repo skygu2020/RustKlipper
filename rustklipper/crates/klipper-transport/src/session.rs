@@ -190,6 +190,15 @@ fn should_send_command(
     )?.is_some_and(|deadline| eventtime >= deadline))
 }
 
+fn earliest_deadline(send: Option<f64>, retry: Option<f64>) -> Option<f64> {
+    match (send, retry) {
+        (Some(send), Some(retry)) => Some(send.min(retry)),
+        (Some(send), None) => Some(send),
+        (None, Some(retry)) => Some(retry),
+        (None, None) => None,
+    }
+}
+
 fn read_timeout_until(base: Duration, now: f64, deadline: Option<f64>) -> Duration {
     let Some(deadline) = deadline else { return base; };
     let base_seconds = base.as_secs_f64();
@@ -334,12 +343,7 @@ impl ReliableSerialSession {
 
     /// Earliest known host deadline for either a scheduled command or a retry.
     pub fn next_poll_deadline(&self) -> Option<f64> {
-        match (self.next_send_at, self.scheduler.next_retransmit_at()) {
-            (Some(send), Some(retry)) => Some(send.min(retry)),
-            (Some(send), None) => Some(send),
-            (None, Some(retry)) => Some(retry),
-            (None, None) => None,
-        }
+        earliest_deadline(self.next_send_at, self.scheduler.next_retransmit_at())
     }
 
     fn now(&self) -> f64 {
@@ -1699,6 +1703,20 @@ mod config_handshake_session_tests {
     }
 }
 
+
+#[cfg(test)]
+mod earliest_deadline_tests {
+    use super::earliest_deadline;
+
+    #[test]
+    fn earliest_deadline_combines_command_and_retry_timers() {
+        assert_eq!(earliest_deadline(Some(2.0), Some(1.0)), Some(1.0));
+        assert_eq!(earliest_deadline(Some(1.0), Some(2.0)), Some(1.0));
+        assert_eq!(earliest_deadline(Some(1.0), None), Some(1.0));
+        assert_eq!(earliest_deadline(None, Some(2.0)), Some(2.0));
+        assert_eq!(earliest_deadline(None, None), None);
+    }
+}
 
 #[cfg(test)]
 mod read_timeout_deadline_tests {
