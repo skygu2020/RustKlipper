@@ -332,6 +332,16 @@ impl ReliableSerialSession {
         self.next_send_at
     }
 
+    /// Earliest known host deadline for either a scheduled command or a retry.
+    pub fn next_poll_deadline(&self) -> Option<f64> {
+        match (self.next_send_at, self.scheduler.next_retransmit_at()) {
+            (Some(send), Some(retry)) => Some(send.min(retry)),
+            (Some(send), None) => Some(send),
+            (None, Some(retry)) => Some(retry),
+            (None, None) => None,
+        }
+    }
+
     fn now(&self) -> f64 {
         self.monotonic_time()
     }
@@ -1280,7 +1290,7 @@ impl ReliableSerialSession {
         // Drop response metadata when its waiter timed out or was cancelled.
         self.prune_abandoned_response_requests();
         let read_timeout =
-            read_timeout_until(self.read_timeout, self.now(), self.next_send_at);
+            read_timeout_until(self.read_timeout, self.now(), self.next_poll_deadline());
         if let Err(error) = self.transport.set_timeout(read_timeout) {
             self.disconnected = true;
             return Err(SessionError::Transport(error));
