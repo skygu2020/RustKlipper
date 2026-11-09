@@ -341,9 +341,14 @@ impl Printer {
         &self.reactor
     }
 
-    /// Run callbacks and timers whose deadlines have elapsed.
+    /// Run callbacks and timers whose deadlines have elapsed without waiting.
     pub fn run_reactor_once(&self) -> usize {
         self.reactor.run_due(std::time::Instant::now())
+    }
+
+    /// Wait for the next host callback or timer, bounded by max_wait.
+    pub fn run_reactor(&self, max_wait: std::time::Duration) -> usize {
+        self.reactor.run_once(max_wait)
     }
 
     pub fn process_gcode_line(
