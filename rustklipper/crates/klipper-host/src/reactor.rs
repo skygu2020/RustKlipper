@@ -174,10 +174,23 @@ impl Reactor {
         F: FnOnce(Instant) -> T + Send + 'static,
         T: Send + 'static,
     {
+        self.register_callback_with_completion_at(Instant::now(), callback)
+    }
+
+    /// Queue a one-shot callback at a specific deadline and observe its result.
+    pub fn register_callback_with_completion_at<F, T>(
+        &self,
+        deadline: Instant,
+        callback: F,
+    ) -> (TaskId, Completion<T>)
+    where
+        F: FnOnce(Instant) -> T + Send + 'static,
+        T: Send + 'static,
+    {
         let completion = Completion::new();
         let callback_completion = completion.clone();
         let mut callback = Some(callback);
-        let id = self.insert_task(Instant::now(), move |eventtime| {
+        let id = self.insert_task(deadline, move |eventtime| {
             let callback = callback.take().expect("one-shot callback invoked once");
             let result = callback(eventtime);
             let _ = callback_completion.complete(result);
@@ -567,6 +580,22 @@ mod tests {
         assert!(completion.is_complete());
         assert_eq!(completion.result(), Some(42));
         assert_eq!(completion.wait_timeout(Duration::from_millis(1)), Some(42));
+        assert!(!reactor.unregister(id));
+    }
+
+
+    #[test]
+    fn callback_completion_at_respects_requested_deadline() {
+        let reactor = Reactor::new();
+        let start = Instant::now();
+        let (id, completion) = reactor.register_callback_with_completion_at(
+            start + Duration::from_secs(4),
+            |_| String::from("finished"),
+        );
+        assert_eq!(reactor.run_due(start + Duration::from_secs(3)), 0);
+        assert!(!completion.is_complete());
+        assert_eq!(reactor.run_due(start + Duration::from_secs(5)), 1);
+        assert_eq!(completion.result().as_deref(), Some("finished"));
         assert!(!reactor.unregister(id));
     }
 
