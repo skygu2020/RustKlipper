@@ -2146,20 +2146,34 @@ mod tests {
                         None,
                         |_| Ok(Vec::new()),
                     )
+                    .map_err(|error| error.to_string())?;
+                printer
+                    .register_component_mux_gcode_command(
+                        "heater",
+                        "SET_HEATER",
+                        "HEATER",
+                        Some("bed"),
+                        None,
+                        |_| Ok(Vec::new()),
+                    )
                     .map_err(|error| error.to_string())
             })
             .unwrap();
         printer.load_components(&registry).unwrap();
         printer.set_ready();
-        assert!(printer
-            .process_gcode_line("SET_HEATER HEATER=hotend", true)
-            .unwrap()
-            .handler_found);
+        for value in ["hotend", "bed"] {
+            assert!(printer
+                .process_gcode_line(&format!("SET_HEATER HEATER={value}"), true)
+                .unwrap()
+                .handler_found);
+        }
         assert!(printer.unload_component("heater"));
-        assert!(!printer
-            .process_gcode_line("SET_HEATER HEATER=hotend", true)
-            .unwrap()
-            .handler_found);
+        for value in ["hotend", "bed"] {
+            assert!(!printer
+                .process_gcode_line(&format!("SET_HEATER HEATER={value}"), true)
+                .unwrap()
+                .handler_found);
+        }
     }
 
     #[test]
