@@ -183,6 +183,10 @@ impl UsbSerialTransport {
         Ok(())
     }
 
+    pub fn timeout(&self) -> Duration {
+        self.port.timeout()
+    }
+
     pub fn set_timeout(&mut self, timeout: Duration) -> Result<(), TransportError> {
         self.port.set_timeout(timeout)?;
         Ok(())
