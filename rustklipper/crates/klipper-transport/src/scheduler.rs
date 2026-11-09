@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use klipper_protocol::{encode_frame, ProtocolError, MESSAGE_MAX, MESSAGE_MIN};
 use crate::retransmit::{AckResult, Retransmission, RetransmitError, RetransmitState};
+use crate::retransmit::{AckResult, Retransmission, RetransmitError, RetransmitState};
 
 pub const MAX_PENDING_BLOCKS: u64 = 12;
 pub const BACKGROUND_PRIORITY_CLOCK: u64 = u64::MAX;
@@ -216,7 +217,8 @@ mod tests {
         let mut decoder = FrameDecoder::new();
         let parsed = decoder.push(&frame.bytes);
         assert_eq!(parsed.len(), 1);
-        // Queue 1 retains FIFO (30 before 10); queue 2's 20-clock command wins first.\n        assert_eq!(parsed[0].payload, vec![3, 1, 2]);
+        // Queue 1 retains FIFO (30 before 10); queue 2's 20-clock command wins first.
+        assert_eq!(parsed[0].payload, vec![3, 1, 2]);
     }
     #[test]
     fn frame_contains_notifications_for_commands_packed_into_it() {
