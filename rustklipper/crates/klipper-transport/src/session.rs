@@ -1285,7 +1285,15 @@ impl ReliableSerialSession {
             self.disconnected = true;
             return Err(SessionError::Transport(error));
         }
-        let incoming = match self.transport.read_frames() {
+        let incoming_result = self.transport.read_frames();
+        // serialport-rs shares one timeout between read and write readiness.
+        // Restore the configured timeout immediately after the bounded read so
+        // a near send deadline does not shorten subsequent UART write timeouts.
+        if let Err(error) = self.transport.set_timeout(self.read_timeout) {
+            self.disconnected = true;
+            return Err(SessionError::Transport(error));
+        }
+        let incoming = match incoming_result {
             Ok(frames) => frames,
             Err(error) => {
                 self.disconnected = true;
