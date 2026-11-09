@@ -5,11 +5,11 @@ use std::sync::mpsc::{self, Receiver, Sender};
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AckEvent { pub sent_time: f64, pub receive_time: f64 }
 #[derive(Debug)]
-struct PendingAck { required_send_seq: Option<u64>, sent_time: Option<f64>, sender: Sender<AckEvent> }
+struct PendingAck { required_send_seq: Option<u64>, sent_time: Option<f64>, send_order: u64, sender: Sender<AckEvent> }
 
 /// Tracks notify IDs against extended (not four-bit wire) send sequence numbers.
 #[derive(Debug, Default)]
-pub struct AckTracker { next_id: u64, pending: BTreeMap<u64, PendingAck> }
+pub struct AckTracker { next_id: u64, next_send_order: u64, pending: BTreeMap<u64, PendingAck> }
 impl AckTracker {
     pub fn new() -> Self { Self::default() }
     pub fn register(&mut self, required_send_seq: u64) -> (u64, Receiver<AckEvent>) {
@@ -19,7 +19,9 @@ impl AckTracker {
         }
         let id = self.next_id;
         let (tx, rx) = mpsc::channel();
-        self.pending.insert(id, PendingAck { required_send_seq: Some(required_send_seq), sent_time: None, sender: tx });
+        let send_order = self.next_send_order;
+        self.next_send_order = self.next_send_order.wrapping_add(1);
+        self.pending.insert(id, PendingAck { required_send_seq: Some(required_send_seq), sent_time: None, send_order, sender: tx });
         (id, rx)
     }
     /// Reserve a caller-selected notify ID before enqueueing its command.
@@ -27,7 +29,7 @@ impl AckTracker {
     pub fn register_notify(&mut self, id: u64) -> Option<Receiver<AckEvent>> {
         if self.pending.contains_key(&id) { return None; }
         let (tx, rx) = mpsc::channel();
-        self.pending.insert(id, PendingAck { required_send_seq: None, sent_time: None, sender: tx });
+        self.pending.insert(id, PendingAck { required_send_seq: None, sent_time: None, send_order: u64::MAX, sender: tx });
         Some(rx)
     }
 
@@ -36,6 +38,8 @@ impl AckTracker {
         if pending.required_send_seq.is_some() { return false; }
         pending.required_send_seq = Some(required_send_seq);
         pending.sent_time = Some(sent_time);
+        pending.send_order = self.next_send_order;
+        self.next_send_order = self.next_send_order.wrapping_add(1);
         true
     }
 
@@ -43,11 +47,13 @@ impl AckTracker {
     pub fn acknowledge_events(&mut self, receive_seq: u64, has_payload: bool,
                               fallback_sent_time: f64, receive_time: f64) -> Vec<(u64, AckEvent)> {
         let wake_seq = receive_seq.saturating_sub(if has_payload { 2 } else { 1 });
-        let completed: Vec<u64> = self.pending.iter()
+        let mut completed: Vec<(u64, u64)> = self.pending.iter()
             .filter_map(|(id, p)| p.required_send_seq
-                .is_some_and(|seq| seq <= wake_seq).then_some(*id)).collect();
+                .is_some_and(|seq| seq <= wake_seq).then_some((p.send_order, *id))).collect();
+        // Klipper's notify_queue is FIFO by actual send order, not by notify ID.
+        completed.sort_unstable_by_key(|(order, _)| *order);
         let mut events = Vec::with_capacity(completed.len());
-        for id in completed {
+        for (_, id) in completed {
             if let Some(p) = self.pending.remove(&id) {
                 let event = AckEvent {
                     sent_time: p.sent_time.unwrap_or(fallback_sent_time),
@@ -102,6 +108,22 @@ mod tests {
         ]);
         assert_eq!(first.recv().unwrap().sent_time, 1.25);
         assert_eq!(second.recv().unwrap().sent_time, 1.75);
+    }
+
+
+    #[test]
+    fn cumulative_ack_emits_notifications_in_actual_send_order_not_id_order() {
+        let mut tracker = AckTracker::new();
+        let later_id = tracker.register_notify(2).unwrap();
+        let earlier_id = tracker.register_notify(900).unwrap();
+        // The higher ID is sent first; the lower ID is sent in the next frame.
+        assert!(tracker.mark_sent(900, 10, 1.0));
+        assert!(tracker.mark_sent(2, 11, 1.1));
+
+        let completed = tracker.acknowledge_events(12, false, 99.0, 2.0);
+        assert_eq!(completed.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![900, 2]);
+        assert_eq!(earlier_id.recv().unwrap().sent_time, 1.0);
+        assert_eq!(later_id.recv().unwrap().sent_time, 1.1);
     }
 
     #[test]
