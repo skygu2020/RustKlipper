@@ -1492,7 +1492,7 @@ mod tests {
             .iter()
             .find(|option| option.name == "max_velocity")
             .unwrap();
-        assert_eq!(option.line, 5);
+        assert_eq!(option.line, 6);
         fs::remove_file(path).unwrap();
     }
 
