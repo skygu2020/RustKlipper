@@ -202,7 +202,7 @@ impl CommandScheduler {
         let receive_sequence = crate::ack::AckTracker::extend_wire_sequence(
             self.receive_sequence, frame.sequence
         );
-        if receive_sequence > self.send_sequence && self.receive_sequence != 1 {
+        if receive_sequence > self.send_sequence {
             return Err(ScheduleError::InvalidAckSequence {
                 received: receive_sequence, sent: self.send_sequence,
             });
@@ -229,6 +229,7 @@ impl CommandScheduler {
     }
 
     pub fn retransmit_state(&self) -> &RetransmitState { &self.retransmit }
+    pub(crate) fn retransmit_state_mut(&mut self) -> &mut RetransmitState { &mut self.retransmit }
 
     pub fn queued_counts(&self) -> (usize, usize) {
         self.queues.values().fold((0, 0), |(up, ready), q| {
