@@ -53,6 +53,50 @@ pub fn decode_identify_response(body: &[u8]) -> Result<IdentifyChunk, Dictionary
     Ok(IdentifyChunk { offset, data })
 }
 
+/// Collects offset-addressed identify_response chunks until the MCU
+/// sends an empty chunk.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IdentifyAssembler {
+    compressed: Vec<u8>,
+    complete: bool,
+}
+
+impl IdentifyAssembler {
+    pub fn new() -> Self { Self::default() }
+
+    /// Append one chunk. Returns true when the terminating empty chunk arrives.
+    pub fn push(&mut self, chunk: IdentifyChunk) -> Result<bool, DictionaryError> {
+        if self.complete {
+            return Err(invalid_field("identify_response", "data received after completion"));
+        }
+        let expected = self.next_offset()?;
+        if chunk.offset != expected {
+            return Err(invalid_field("identify_response",
+                &format!("unexpected offset {}, expected {expected}", chunk.offset)));
+        }
+        if chunk.data.is_empty() {
+            self.complete = true;
+            return Ok(true);
+        }
+        self.compressed.extend_from_slice(&chunk.data);
+        Ok(false)
+    }
+
+    pub fn next_offset(&self) -> Result<u32, DictionaryError> {
+        u32::try_from(self.compressed.len())
+            .map_err(|_| invalid_field("identify_response", "identify data exceeds u32 offset"))
+    }
+
+    pub fn is_complete(&self) -> bool { self.complete }
+
+    pub fn into_dictionary(self) -> Result<IdentifyDictionary, DictionaryError> {
+        if !self.complete {
+            return Err(invalid_field("identify_response", "identify stream is not complete"));
+        }
+        IdentifyDictionary::from_compressed(&self.compressed)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageKind { Command, Response, Output }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -329,6 +373,36 @@ fn decode_hex(s:&str)->Result<Vec<u8>,String>{
 mod tests{
     use super::*;
     const JSON:&str=r#"{"version":"test-fw","build_versions":"build","enumerations":{"pin":{"PA0":1,"PA1":2},"mode":{"MODE_A":0,"MODE_B":1}},"commands":{"set_pin oid=%c pin=%u value=%c mode=%c":17,"send_data data=%*s":18},"responses":{"uptime high=%u clock=%u":19},"config":{"CLOCK_FREQ":"16000000"}}"#;
+    #[test]
+    fn identify_assembler_checks_offsets_and_terminator() {
+        let mut assembler = IdentifyAssembler::new();
+        assert!(!assembler.push(IdentifyChunk { offset: 0, data: vec![1, 2, 3] }).unwrap());
+        assert_eq!(assembler.next_offset().unwrap(), 3);
+        assert!(assembler.push(IdentifyChunk { offset: 2, data: vec![4] }).is_err());
+        assert!(assembler.push(IdentifyChunk { offset: 3, data: Vec::new() }).unwrap());
+        assert!(assembler.is_complete());
+        assert!(assembler.push(IdentifyChunk { offset: 3, data: vec![5] }).is_err());
+    }
+
+    #[test]
+    fn identify_assembler_decompresses_after_empty_terminator() {
+        use flate2::{write::ZlibEncoder, Compression};
+        use std::io::Write;
+        let json = br#"{"commands":{},"responses":{},"config":{"CLOCK_FREQ":"16000000"}}"#;
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(json).unwrap();
+        let compressed = encoder.finish().unwrap();
+        let mut assembler = IdentifyAssembler::new();
+        assert!(assembler.into_dictionary().is_err());
+        let mut offset = 0u32;
+        for part in compressed.chunks(7) {
+            assert!(!assembler.push(IdentifyChunk { offset, data: part.to_vec() }).unwrap());
+            offset += part.len() as u32;
+        }
+        assert!(assembler.push(IdentifyChunk { offset, data: Vec::new() }).unwrap());
+        assert_eq!(assembler.into_dictionary().unwrap().constant("CLOCK_FREQ"), Some("16000000"));
+    }
+
     #[test] fn output_format_parses_literals_escapes_and_typed_values(){
         let json=r#"{"commands":{},"responses":{},"output":{"mcu: clock=%u signed=%i text=%.*s percent=%%":5}}"#;
         let d=IdentifyDictionary::from_json(json.as_bytes()).unwrap();

@@ -4,7 +4,7 @@
 //! firmware-provided identify dictionary codec.
 
 pub mod dictionary;
-pub use dictionary::{decode_identify_response, encode_identify_request, DictionaryError, IdentifyChunk, IdentifyDictionary, MessageKind};
+pub use dictionary::{decode_identify_response, encode_identify_request, DictionaryError, IdentifyAssembler, IdentifyChunk, IdentifyDictionary, MessageKind};
 
 use thiserror::Error;
 
