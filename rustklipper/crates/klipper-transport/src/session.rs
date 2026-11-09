@@ -185,6 +185,16 @@ impl ReliableSerialSession {
         events.push(SessionEvent::ResponseRouted { name, oid, matched });
     }
 
+    fn prune_abandoned_response_requests(&mut self) {
+        let router = self.response_router.clone();
+        self.response_requests.retain(|_, (name, oid)| {
+            router.pending_count(name, *oid) > 0
+        });
+        self.sent_response_requests.retain(|pending| {
+            router.pending_count(&pending.name, pending.oid) > 0
+        });
+    }
+
     pub fn scheduler(&self) -> &CommandScheduler { &self.scheduler }
     pub fn scheduler_mut(&mut self) -> &mut CommandScheduler { &mut self.scheduler }
 
@@ -238,6 +248,8 @@ impl ReliableSerialSession {
     /// then writes newly eligible scheduled frames. Serial read timeout is idle.
     pub fn poll(&mut self) -> Result<Vec<SessionEvent>, SessionError> {
         self.ensure_connected()?;
+        // Drop response metadata when its waiter timed out or was cancelled.
+        self.prune_abandoned_response_requests();
         let incoming = match self.transport.read_frames() {
             Ok(frames) => frames,
             Err(error) => {
