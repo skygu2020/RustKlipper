@@ -3,10 +3,10 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::time::Instant;
 
 use serde_json::Value;
-use klipper_protocol::{encode_identify_request, DictionaryError, Frame, IdentifyAssembler, IdentifyChunk, IdentifyDictionary, IDENTIFY_CHUNK_SIZE};
+use klipper_protocol::{encode_identify_request, DictionaryError, Frame, IdentifyAssembler, IdentifyChunk, IdentifyDictionary, IDENTIFY_CHUNK_SIZE, MESSAGE_MAX};
 
 use crate::{
-    AckEvent, AckTracker, CommandScheduler, Response, ResponseRouter, ResponseWaiter, ScheduleError, ScheduledCommand, TransportError, UsbSerialTransport,
+    AckEvent, AckTracker, CommandScheduler, ConfigAction, Response, ResponseRouter, ResponseWaiter, ScheduleError, ScheduledCommand, TransportError, UsbSerialTransport,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -166,6 +166,59 @@ impl ReliableSerialSession {
     }
 
     pub fn response_router(&self) -> ResponseRouter { self.response_router.clone() }
+
+    /// Queue a dictionary-encoded get_config query and return its response waiter.
+    /// The caller must continue polling the session while waiting for the response.
+    pub fn request_get_config(&mut self, queue_id: u64) -> Result<ResponseWaiter, SessionError> {
+        self.ensure_connected()?;
+        let dictionary = self.dictionary.as_ref().ok_or_else(|| {
+            SessionError::Dictionary(DictionaryError::UnknownMessage("get_config".into()))
+        })?;
+        let command = dictionary.encode_command("get_config", &BTreeMap::new())?;
+        let waiter = self.response_router.register("config", None);
+        self.enqueue_request(
+            queue_id,
+            ScheduledCommand::new(command, 0, crate::BACKGROUND_PRIORITY_CLOCK),
+            "config",
+            None,
+        )?;
+        self.scheduler.promote_ready(0);
+        Ok(waiter)
+    }
+
+    /// Queue the command sequence selected by McuConfigPlan. Commands are
+    /// validated before any are added, preserving queue atomicity for malformed
+    /// or oversized config messages.
+    pub fn enqueue_config_action(
+        &mut self,
+        queue_id: u64,
+        action: &ConfigAction,
+    ) -> Result<(), SessionError> {
+        self.ensure_connected()?;
+        let commands = match action {
+            ConfigAction::SendFullConfig { commands, .. }
+            | ConfigAction::SendRestartAndInit { commands, .. } => commands,
+        };
+        let max_payload = MESSAGE_MAX - 5;
+        for command in commands {
+            if command.is_empty() {
+                return Err(SessionError::Schedule(ScheduleError::EmptyCommand));
+            }
+            if command.len() > max_payload {
+                return Err(SessionError::Schedule(ScheduleError::CommandTooLarge(command.len())));
+            }
+        }
+        for command in commands {
+            self.scheduler.enqueue(
+                queue_id,
+                ScheduledCommand::new(
+                    command.clone(), 0, crate::BACKGROUND_PRIORITY_CLOCK,
+                ),
+            )?;
+        }
+        self.scheduler.promote_ready(0);
+        Ok(())
+    }
 
     /// Queue a bootstrap identify request. The protocol's built-in message ID
     /// is available before the dynamic dictionary has been downloaded.
