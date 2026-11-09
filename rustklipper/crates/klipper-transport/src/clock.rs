@@ -386,6 +386,15 @@ mod tests {
     }
 
     #[test]
+    fn uart_reservation_starts_at_now_after_previous_idle_deadline() {
+        let mut uart = UartTiming::new(100_000).unwrap();
+        let first = uart.reserve_transmission(1.0, 0, 10);
+        let second = uart.reserve_transmission(2.0, 0, 10);
+        assert!((first - 1.001).abs() < 1e-12);
+        assert!((second - 2.001).abs() < 1e-12);
+    }
+
+    #[test]
     fn clock_sync_converges_on_constant_frequency() {
         let mut sync = ClockSync::new(1_000_000.0, 1.0, 1_000_000).unwrap();
         for i in 1..=12 {
