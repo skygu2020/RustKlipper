@@ -17,3 +17,6 @@ communication remains the responsibility of the host protocol and transport
 crates. The Reactor is a cooperative scheduler; the outer application remains
 responsible for polling it. Full asynchronous I/O integration and the complete
 printer object graph are subsequent host-runtime work.
+
+The Rust workspace CI validates this host crate on Linux and Windows with
+`cargo test --workspace --all-targets`; it does not build MCU firmware.
