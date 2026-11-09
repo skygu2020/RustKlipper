@@ -185,9 +185,14 @@ impl GCodeCommand {
 /// Klipper treats a command as traditional when its first character is a
 /// letter and its second character is a digit (for example G1 or M105).
 pub fn is_traditional_command(command: &str) -> bool {
-    let mut chars = command.trim().chars();
-    matches!((chars.next(), chars.next()), (Some(first), Some(second))
-        if first.is_ascii_alphabetic() && second.is_ascii_digit())
+    let command = command.trim();
+    let mut chars = command.chars();
+    let (Some(first), Some(second)) = (chars.next(), chars.next()) else {
+        return false;
+    };
+    first.is_ascii_alphabetic()
+        && second.is_ascii_digit()
+        && command.get(1..).is_some_and(|suffix| suffix.parse::<f64>().is_ok())
 }
 \n/// Parse one input line. Empty lines and comment-only lines return `None`.
 pub fn parse_line(input: &str) -> Option<ParsedLine> {
@@ -288,6 +293,17 @@ fn shell_tokens(input: &str) -> Result<Vec<String>, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn traditional_command_detection_matches_klipper_name_rules() {
+        assert!(is_traditional_command("G1"));
+        assert!(is_traditional_command("M105"));
+        assert!(is_traditional_command("G1.1"));
+        assert!(!is_traditional_command("G"));
+        assert!(!is_traditional_command("G1X"));
+        assert!(!is_traditional_command("SET_HEATER_TEMPERATURE"));
+        assert!(!is_traditional_command("1G"));
+    }
 
     #[test]
     fn parses_traditional_commands_and_parameters() {
