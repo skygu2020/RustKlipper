@@ -4,7 +4,7 @@ use std::io::Read;
 use flate2::read::ZlibDecoder;
 use serde_json::Value;
 use thiserror::Error;
-use crate::{decode_i32, encode_i32, encode_u32, ProtocolError};
+use crate::{decode_i32, decode_u32, encode_i32, encode_u32, ProtocolError};
 
 #[derive(Debug, Error)]
 pub enum DictionaryError {
@@ -18,6 +18,41 @@ pub enum DictionaryError {
     #[error("command format mismatch: {0}")] FormatMismatch(String),
     #[error(transparent)] Protocol(#[from] ProtocolError),
 }
+/// Bootstrap response used before the MCU's dynamic dictionary is available.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdentifyChunk {
+    pub offset: u32,
+    pub data: Vec<u8>,
+}
+
+/// Encode the built-in Klipper `identify offset=%u count=%c` request (message id 1).
+pub fn encode_identify_request(offset: u32, count: u8) -> Vec<u8> {
+    let mut out = Vec::with_capacity(7);
+    encode_i32(1, &mut out);
+    encode_u32(offset, &mut out);
+    encode_i32(i32::from(count), &mut out);
+    out
+}
+
+/// Decode built-in `identify_response offset=%u data=%.*s` (message id 0).
+pub fn decode_identify_response(body: &[u8]) -> Result<IdentifyChunk, DictionaryError> {
+    let (id, mut pos) = decode_i32(body)?;
+    if id != 0 {
+        return Err(DictionaryError::UnknownMessage(format!("bootstrap response id {id}, expected 0")));
+    }
+    let (offset, used) = decode_u32(body.get(pos..).ok_or(ProtocolError::TruncatedInteger)?)?;
+    pos += used;
+    let len = *body.get(pos).ok_or(ProtocolError::TruncatedInteger)? as usize;
+    pos += 1;
+    let end = pos.checked_add(len).ok_or(ProtocolError::TruncatedInteger)?;
+    let data = body.get(pos..end).ok_or(ProtocolError::TruncatedInteger)?.to_vec();
+    pos = end;
+    if pos != body.len() {
+        return Err(invalid_field("identify_response", "trailing bytes"));
+    }
+    Ok(IdentifyChunk { offset, data })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageKind { Command, Response }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -192,6 +227,18 @@ fn decode_hex(s:&str)->Result<Vec<u8>,String>{
 mod tests{
     use super::*;
     const JSON:&str=r#"{"version":"test-fw","build_versions":"build","enumerations":{"pin":{"PA0":1,"PA1":2},"mode":{"MODE_A":0,"MODE_B":1}},"commands":{"set_pin oid=%c pin=%u value=%c mode=%c":17,"send_data data=%*s":18},"responses":{"uptime high=%u clock=%u":19},"config":{"CLOCK_FREQ":"16000000"}}"#;
+    #[test] fn bootstrap_identify_request_and_response() {
+        let request = encode_identify_request(300, 40);
+        assert_eq!(decode_i32(&request).unwrap().0, 1);
+        let mut response = Vec::new();
+        encode_i32(0, &mut response);
+        encode_u32(300, &mut response);
+        response.push(3);
+        response.extend_from_slice(&[0xaa, 0xbb, 0xcc]);
+        let chunk = decode_identify_response(&response).unwrap();
+        assert_eq!(chunk, IdentifyChunk { offset: 300, data: vec![0xaa, 0xbb, 0xcc] });
+    }
+
     #[test] fn identify_and_enum_codec(){
         let d=IdentifyDictionary::from_json(JSON.as_bytes()).unwrap();assert_eq!(d.version(),"test-fw");assert_eq!(d.constant_i64("CLOCK_FREQ"),Some(16_000_000));
         let mut p=BTreeMap::new();p.insert("oid".into(),Value::from(3));p.insert("pin".into(),Value::from(42));p.insert("value".into(),Value::from(1));p.insert("mode".into(),Value::from("MODE_B"));
