@@ -135,7 +135,7 @@ fn next_periodic_clock_deadline(due_at: f64, now: f64) -> f64 {
 
 /// Pure form of serialqueue.c's request-clock send decision.
 fn should_send_command(
-    scheduler: &CommandScheduler,
+    scheduler: &mut CommandScheduler,
     update: ClockUpdate,
     timing: UartTiming,
     eventtime: f64,
@@ -145,6 +145,9 @@ fn should_send_command(
     let idletime = eventtime.max(idle_time)
         + timing.seconds_for_bytes(pending_bytes.saturating_add(MESSAGE_MIN));
     let ack_clock = update.queue_clock_at(idletime)?;
+    // serialqueue.c promotes upcoming messages against the estimated clock
+    // at the UART's next idle point, not only against the last received ACK.
+    scheduler.promote_ready(ack_clock);
 
     if scheduler.ready_bytes() >= MESSAGE_MAX - MESSAGE_MIN {
         return Ok(true);
@@ -1679,6 +1682,21 @@ mod command_send_timing_tests {
         let timing = UartTiming::new(115_200).unwrap();
 
         assert!(should_send_command(&scheduler, update(), timing, 10.0, 10.0, 0).unwrap());
+    }
+
+    #[test]
+    fn upcoming_min_clock_is_promoted_using_predicted_uart_clock() {
+        let mut scheduler = CommandScheduler::new();
+        scheduler.enqueue(1, ScheduledCommand::new(
+            vec![0x44], 10_200, 10_500,
+        )).unwrap();
+        let timing = UartTiming::new(115_200).unwrap();
+
+        assert!(!should_send_command(&mut scheduler, update(), timing, 10.0, 10.0, 0).unwrap());
+        assert_eq!(scheduler.queued_counts(), (1, 0));
+        assert!(!should_send_command(&mut scheduler, update(), timing, 10.2, 10.0, 0).unwrap());
+        assert_eq!(scheduler.queued_counts(), (0, 1));
+        assert!(should_send_command(&mut scheduler, update(), timing, 10.25, 10.0, 0).unwrap());
     }
 
     #[test]
