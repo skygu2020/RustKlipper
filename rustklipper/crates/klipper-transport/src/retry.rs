@@ -187,4 +187,46 @@ mod tests {
         assert_eq!(transaction.attempt_acked(5.010), AckRetryDecision::Complete);
     }
 
+    #[test]
+    fn consuming_a_due_retry_clears_its_deadline_exactly_once() {
+        let mut transaction = RetryTransaction::default();
+        assert_eq!(
+            transaction.attempt_acked(10.0),
+            AckRetryDecision::RetryAfter(Duration::from_millis(10)),
+        );
+        assert_eq!(transaction.retry_deadline(), Some(10.010));
+
+        assert!(!transaction.take_due_retry(10.009));
+        assert_eq!(transaction.retry_deadline(), Some(10.010));
+
+        assert!(transaction.take_due_retry(10.010));
+        assert_eq!(transaction.retry_deadline(), None);
+        assert!(!transaction.take_due_retry(10.010));
+    }
+
+    #[test]
+    fn each_ack_arms_only_the_next_exponential_retry_deadline() {
+        let mut transaction = RetryTransaction::default();
+
+        for (ack_time, delay_ms) in [
+            (1.0, 10),
+            (2.0, 20),
+            (3.0, 40),
+            (4.0, 80),
+            (5.0, 160),
+        ] {
+            assert_eq!(
+                transaction.attempt_acked(ack_time),
+                AckRetryDecision::RetryAfter(Duration::from_millis(delay_ms)),
+            );
+            let deadline = ack_time + Duration::from_millis(delay_ms).as_secs_f64();
+            assert_eq!(transaction.retry_deadline(), Some(deadline));
+            assert!(transaction.take_due_retry(deadline));
+            assert_eq!(transaction.retry_deadline(), None);
+        }
+
+        assert_eq!(transaction.attempt_acked(6.0), AckRetryDecision::Exhausted);
+        assert_eq!(transaction.retry_deadline(), None);
+    }
+
 }
