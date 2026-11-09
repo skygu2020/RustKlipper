@@ -296,7 +296,7 @@ impl IdentifyDictionary {
     ///
     /// Numeric parameters accept decimal or 0x-prefixed hexadecimal values.
     /// Enumeration parameters are kept as symbolic names. String parameters
-    /// are encoded as UTF-8 bytes; progmem/buffer parameters accept hex.
+    /// are parsed as hex-encoded byte buffers, matching Klipper msgproto.py.
     pub fn encode_command_line(&self, line: &str) -> Result<Vec<u8>, DictionaryError> {
         let mut words = line.split_whitespace();
         let name = words.next().ok_or_else(|| invalid_field("command", "empty command line"))?;
@@ -330,8 +330,7 @@ impl IdentifyDictionary {
                 Value::String(raw.clone())
             } else {
                 match param.kind {
-                    ParamKind::String => Value::Array(raw.as_bytes().iter().map(|b| Value::from(*b)).collect()),
-                    ParamKind::Progmem | ParamKind::Buffer => Value::String(raw.clone()),
+                    ParamKind::String | ParamKind::Progmem | ParamKind::Buffer => Value::String(raw.clone()),
                     _ => {
                         let parsed = if let Some(hex) = raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X")) {
                             i64::from_str_radix(hex, 16)
@@ -449,7 +448,7 @@ mod tests{
         encode_u32(2, &mut expected);
         encode_u32(16, &mut expected);
         assert_eq!(encoded, expected);
-        let text = d.encode_command_line("write_text data=hello").unwrap();
+        let text = d.encode_command_line("write_text data=68656c6c6f").unwrap();
         assert_eq!(text, vec![8, 5, b'h', b'e', b'l', b'l', b'o']);
         assert!(d.encode_command_line("set_pin oid=2 pin=NOPE value=1").is_err());
         assert!(d.encode_command_line("set_pin oid=2 pin=PA0 value=1 extra=2").is_err());
