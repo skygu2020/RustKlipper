@@ -214,6 +214,14 @@ fn estimate_frame_receive_time(
     batch_receive.max(observed_receive)
 }
 
+fn earliest_retry_deadline(
+    deadlines: impl IntoIterator<Item = f64>,
+) -> Option<f64> {
+    deadlines.into_iter().fold(None, |earliest, deadline| {
+        Some(earliest.map_or(deadline, |current: f64| current.min(deadline)))
+    })
+}
+
 fn periodic_clock_deadline(
     queue_configured: bool,
     request_in_flight: bool,
@@ -386,7 +394,14 @@ impl ReliableSerialSession {
             self.periodic_clock_in_flight,
             self.next_periodic_clock_at,
         );
-        earliest_deadline(command_or_retry, periodic)
+        let application_retry = earliest_retry_deadline(
+            self.retry_transactions.values()
+                .filter_map(|pending| pending.transaction.retry_deadline()),
+        );
+        earliest_deadline(
+            earliest_deadline(command_or_retry, periodic),
+            application_retry,
+        )
     }
 
     fn kick_scheduler(&mut self) {
@@ -1790,6 +1805,17 @@ mod frame_receive_time_tests {
 
         let receive = estimate_frame_receive_time(1.0, 0.0, timing, 10, 10);
         assert!((receive - 1.016).abs() < 1e-12);
+    }
+}
+
+#[cfg(test)]
+mod application_retry_deadline_tests {
+    use super::earliest_retry_deadline;
+
+    #[test]
+    fn earliest_application_retry_deadline_is_selected() {
+        assert_eq!(earliest_retry_deadline([3.0, 1.0, 2.0]), Some(1.0));
+        assert_eq!(earliest_retry_deadline([]), None);
     }
 }
 
