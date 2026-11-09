@@ -1,6 +1,6 @@
 //! Reliable USB serial session: frame I/O, scheduling, ACK/NAK and retries.
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -249,6 +249,7 @@ pub struct ReliableSerialSession {
     identify_queue_id: Option<u64>,
     identify_chunk_count: Option<u8>,
     started: Instant,
+    read_timeout: Duration,
     wire_time_per_byte: f64,
     uart_timing: Option<UartTiming>,
     last_ack_clock: u64,
@@ -272,8 +273,10 @@ impl ReliableSerialSession {
     }
 
     pub fn new(transport: UsbSerialTransport) -> Self {
+        let read_timeout = transport.timeout();
         Self {
             transport,
+            read_timeout,
             scheduler: CommandScheduler::new(),
             ack_tracker: AckTracker::new(),
             response_router: ResponseRouter::new(),
@@ -311,14 +314,14 @@ impl ReliableSerialSession {
     /// `ClockSync::update`, and `ReliableSerialSession::apply_clock_update`.
     /// Its origin is the construction of this session (not the system boot
     /// time), matching the timestamps emitted in `SessionEvent`.
+    pub fn monotonic_time(&self) -> f64 {
+        self.started.elapsed().as_secs_f64()
+    }
+
     /// Next host-monotonic deadline at which scheduled command state should
     /// be polled again. None means there is no clock-gated pending command.
     pub fn next_send_at(&self) -> Option<f64> {
         self.next_send_at
-    }
-
-    pub fn monotonic_time(&self) -> f64 {
-        self.started.elapsed().as_secs_f64()
     }
 
     fn now(&self) -> f64 {
@@ -1268,6 +1271,18 @@ impl ReliableSerialSession {
         self.ensure_connected()?;
         // Drop response metadata when its waiter timed out or was cancelled.
         self.prune_abandoned_response_requests();
+        let read_timeout = if let Some(deadline) = self.next_send_at {
+            let base = self.read_timeout.as_secs_f64();
+            let remaining = (deadline - self.now()).max(0.0);
+            let minimum = base.min(0.001);
+            Duration::from_secs_f64(remaining.min(base).max(minimum))
+        } else {
+            self.read_timeout
+        };
+        if let Err(error) = self.transport.set_timeout(read_timeout) {
+            self.disconnected = true;
+            return Err(SessionError::Transport(error));
+        }
         let incoming = match self.transport.read_frames() {
             Ok(frames) => frames,
             Err(error) => {
