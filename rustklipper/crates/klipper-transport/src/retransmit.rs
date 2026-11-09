@@ -30,7 +30,7 @@ pub struct Retransmission {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AckResult {
     pub acknowledged: Vec<TrackedFrame>,
-    /// Timestamp of the most recently acknowledged host frame, retained across duplicate ACKs.
+    /// Estimated UART-completion timestamp of the most recently acknowledged frame, retained across duplicate ACKs.
     pub last_receive_sent_time: f64,
     /// Set when duplicate ACKs trigger fast retransmission.
     pub fast_retransmit: Option<Retransmission>,
@@ -55,8 +55,7 @@ pub enum RetransmitError {
 #[derive(Debug, Clone)]
 struct OutstandingFrame {
     frame: TrackedFrame,
-    first_sent_at: f64,
-    last_sent_at: f64,
+    first_receive_at: f64,
     retransmitted: bool,
 }
 
@@ -126,12 +125,29 @@ impl RetransmitState {
         Ok(())
     }
 
-    /// Record a frame immediately after its first successful transmission.
+    /// Record a frame after its initial write. The default receive timestamp
+    /// is the estimated end of this frame's UART transmission.
     pub fn track_sent(&mut self, sequence: u64, bytes: Vec<u8>, now: f64)
         -> Result<(), RetransmitError>
     {
-        self.check_time(now)?;
-        self.last_now = Some(now);
+        let receive_time = now + self.wire_time_per_byte * bytes.len() as f64;
+        self.track_sent_with_receive_time(sequence, bytes, now, receive_time)
+    }
+
+    /// Record a frame with the session's estimated UART-completion timestamp.
+    /// This allows later frames in one command batch to include preceding bytes.
+    pub fn track_sent_with_receive_time(
+        &mut self,
+        sequence: u64,
+        bytes: Vec<u8>,
+        sent_at: f64,
+        receive_time: f64,
+    ) -> Result<(), RetransmitError> {
+        self.check_time(sent_at)?;
+        if !receive_time.is_finite() || receive_time < sent_at {
+            return Err(RetransmitError::InvalidTime);
+        }
+        self.last_now = Some(sent_at);
         if bytes.is_empty() { return Err(RetransmitError::EmptyFrame); }
         if self.outstanding.back().is_some_and(|entry| sequence <= entry.frame.sequence) {
             return Err(RetransmitError::SequenceNotIncreasing);
@@ -139,16 +155,14 @@ impl RetransmitState {
         if self.outstanding.is_empty() {
             // serialqueue.c starts the initial retry timer after the first
             // frame's estimated UART wire time, not at write() completion.
-            let wire_time = self.wire_time_per_byte * bytes.len() as f64;
-            self.retransmit_deadline = Some(now + wire_time + self.rto);
+            self.retransmit_deadline = Some(receive_time + self.rto);
         }
         if self.rtt_sample_seq.is_none() {
             self.rtt_sample_seq = Some(sequence);
         }
         self.outstanding.push_back(OutstandingFrame {
             frame: TrackedFrame { sequence, bytes, transmissions: 1 },
-            first_sent_at: now,
-            last_sent_at: now,
+            first_receive_at: receive_time,
             retransmitted: false,
         });
         Ok(())
@@ -171,7 +185,7 @@ impl RetransmitState {
         while self.outstanding.front().is_some_and(|entry| entry.frame.sequence < ack_sequence) {
             let entry = self.outstanding.pop_front().expect("front checked");
             // serialqueue retains the original queue_message.receive_time across retries.
-            last_receive_sent_time = Some(entry.first_sent_at);
+            last_receive_sent_time = Some(entry.first_receive_at);
             last_frame_retransmitted = entry.retransmitted;
             acknowledged.push(entry.frame);
         }
@@ -245,7 +259,6 @@ impl RetransmitState {
         for entry in &mut self.outstanding {
             entry.frame.transmissions = entry.frame.transmissions.saturating_add(1);
             entry.retransmitted = true;
-            entry.last_sent_at = now;
             retries.push(Retransmission {
                 sequence: entry.frame.sequence,
                 bytes: entry.frame.bytes.clone(),
@@ -268,7 +281,6 @@ impl RetransmitState {
         let entry = self.outstanding.iter_mut()
             .find(|entry| entry.frame.sequence == sequence)
             .ok_or(RetransmitError::UnknownSequence(sequence))?;
-        entry.last_sent_at = sent_at;
         // Only the oldest outstanding entry controls the window deadline.
         // Every frame in the retry batch shares one write-start timestamp, so
         // later entries must not move that deadline.
@@ -391,6 +403,26 @@ mod tests {
         // A new advancing sequence with no host frames is the connection
         // initialization/resynchronization case in serialqueue.c.
         assert_eq!(state.acknowledge(3, 1.2).unwrap().last_receive_sent_time, 0.0);
+    }
+
+    #[test]
+    fn rtt_sample_uses_uart_completion_timestamp_not_write_start() {
+        let mut state = RetransmitState::new();
+        state.set_wire_time_per_byte(0.001).unwrap();
+        state.track_sent(1, vec![0; 10], 1.0).unwrap();
+
+        let ack = state.acknowledge(2, 1.2).unwrap();
+        assert!((ack.last_receive_sent_time - 1.01).abs() < 1e-12);
+        assert!((ack.rtt_sample_seconds.unwrap() - 0.19).abs() < 1e-9);
+    }
+
+    #[test]
+    fn explicit_receive_timestamp_includes_prior_batch_bytes() {
+        let mut state = RetransmitState::new();
+        state.track_sent_with_receive_time(1, vec![0; 10], 1.0, 1.025).unwrap();
+        let ack = state.acknowledge(2, 1.2).unwrap();
+        assert_eq!(ack.last_receive_sent_time, 1.025);
+        assert!((ack.rtt_sample_seconds.unwrap() - 0.175).abs() < 1e-9);
     }
 
     #[test]
