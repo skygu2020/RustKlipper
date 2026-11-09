@@ -292,6 +292,61 @@ impl IdentifyDictionary {
             encode_i32(raw,&mut out);
         } Ok(out)
     }
+    /// Encode a Klipper textual command line using this firmware's identify schema.
+    ///
+    /// Numeric parameters accept decimal or 0x-prefixed hexadecimal values.
+    /// Enumeration parameters are kept as symbolic names. String parameters
+    /// are encoded as UTF-8 bytes; progmem/buffer parameters accept hex.
+    pub fn encode_command_line(&self, line: &str) -> Result<Vec<u8>, DictionaryError> {
+        let mut words = line.split_whitespace();
+        let name = words.next().ok_or_else(|| invalid_field("command", "empty command line"))?;
+        let message = self.by_name.get(name)
+            .ok_or_else(|| DictionaryError::UnknownMessage(name.to_owned()))?;
+        if message.kind != MessageKind::Command {
+            return Err(invalid_param(name, "not a command"));
+        }
+
+        let mut raw_values = BTreeMap::<String, String>::new();
+        for word in words {
+            let (key, value) = word.split_once('=')
+                .ok_or_else(|| invalid_field(name, "expected key=value parameter"))?;
+            if raw_values.insert(key.to_owned(), value.to_owned()).is_some() {
+                return Err(invalid_param(key, "duplicate parameter"));
+            }
+        }
+
+        let expected = message.params.iter().map(|p| p.name.as_str()).collect::<std::collections::BTreeSet<_>>();
+        for key in raw_values.keys() {
+            if !expected.contains(key.as_str()) {
+                return Err(invalid_param(key, "unknown parameter"));
+            }
+        }
+
+        let mut values = BTreeMap::new();
+        for param in &message.params {
+            let raw = raw_values.get(&param.name)
+                .ok_or_else(|| DictionaryError::MissingParameter(param.name.clone()))?;
+            let value = if param.enumeration.is_some() {
+                Value::String(raw.clone())
+            } else {
+                match param.kind {
+                    ParamKind::String => Value::Array(raw.as_bytes().iter().map(|b| Value::from(*b)).collect()),
+                    ParamKind::Progmem | ParamKind::Buffer => Value::String(raw.clone()),
+                    _ => {
+                        let parsed = if let Some(hex) = raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X")) {
+                            i64::from_str_radix(hex, 16)
+                        } else {
+                            raw.parse::<i64>()
+                        }.map_err(|_| invalid_param(&param.name, "expected decimal or 0x-prefixed integer"))?;
+                        Value::from(parsed)
+                    }
+                }
+            };
+            values.insert(param.name.clone(), value);
+        }
+        self.encode_command(name, &values)
+    }
+
     /// Decode one message and reject trailing bytes.
     pub fn decode_message(&self, body: &[u8]) -> Result<(String, BTreeMap<String, Value>), DictionaryError> {
         let (name, params, used) = self.decode_message_prefix(body)?;
@@ -376,6 +431,30 @@ fn decode_hex(s:&str)->Result<Vec<u8>,String>{
 mod tests{
     use super::*;
     const JSON:&str=r#"{"version":"test-fw","build_versions":"build","enumerations":{"pin":{"PA0":1,"PA1":2},"mode":{"MODE_A":0,"MODE_B":1}},"commands":{"set_pin oid=%c pin=%u value=%c mode=%c":17,"send_data data=%*s":18},"responses":{"uptime high=%u clock=%u":19},"config":{"CLOCK_FREQ":"16000000"}}"#;
+
+    #[test]
+    fn textual_command_encoder_handles_enums_hex_and_strings() {
+        let d = IdentifyDictionary::from_json(br#"{
+            "enumerations":{"pin":{"PA0":1,"PA1":2}},
+            "commands":{
+                "set_pin oid=%c pin=%u value=%u":7,
+                "write_text data=%s":8
+            },
+            "responses":{}
+        }"#).unwrap();
+        let encoded = d.encode_command_line("set_pin oid=2 pin=PA1 value=0x10").unwrap();
+        let mut expected = Vec::new();
+        encode_i32(7, &mut expected);
+        encode_i32(2, &mut expected);
+        encode_u32(2, &mut expected);
+        encode_u32(16, &mut expected);
+        assert_eq!(encoded, expected);
+        let text = d.encode_command_line("write_text data=hello").unwrap();
+        assert_eq!(text, vec![8, 5, b'h', b'e', b'l', b'l', b'o']);
+        assert!(d.encode_command_line("set_pin oid=2 pin=NOPE value=1").is_err());
+        assert!(d.encode_command_line("set_pin oid=2 pin=PA0 value=1 extra=2").is_err());
+    }
+
     #[test]
     fn identify_assembler_checks_offsets_and_terminator() {
         let mut assembler = IdentifyAssembler::new();

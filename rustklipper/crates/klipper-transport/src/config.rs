@@ -110,6 +110,31 @@ impl McuConfigPlan {
         })
     }
 
+
+    /// Build a complete plan directly from Klipper-style textual command lines.
+    /// The config lines must already be pin-resolved and in firmware send order.
+    pub fn from_command_lines(
+        dictionary: &IdentifyDictionary,
+        oid_count: u8,
+        config_lines: &[String],
+        restart_lines: &[String],
+        init_lines: &[String],
+    ) -> Result<Self, ConfigError> {
+        let encode_all = |lines: &[String]| -> Result<Vec<Vec<u8>>, ConfigError> {
+            lines.iter()
+                .map(|line| dictionary.encode_command_line(line).map_err(ConfigError::from))
+                .collect()
+        };
+        Self::new(
+            dictionary,
+            oid_count,
+            config_lines,
+            encode_all(config_lines)?,
+            encode_all(restart_lines)?,
+            encode_all(init_lines)?,
+        )
+    }
+
     pub fn crc(&self) -> u32 { self.crc }
 
     /// Decide what to send after the initial get_config response.
