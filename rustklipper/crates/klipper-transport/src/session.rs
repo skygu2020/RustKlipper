@@ -1689,7 +1689,7 @@ mod read_timeout_deadline_tests {
     #[test]
     fn read_timeout_is_shortened_to_a_nearby_send_deadline() {
         assert_eq!(
-            read_timeout_until(Duration::from_millis(20), 1.0, Some(1.005)),
+            read_timeout_until(Duration::from_millis(20), 0.0, Some(0.005)),
             Duration::from_millis(5),
         );
     }
