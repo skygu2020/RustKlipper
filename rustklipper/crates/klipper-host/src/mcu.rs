@@ -54,12 +54,13 @@ impl McuRegistry {
     ) -> Result<(), McuRegistryError> {
         let name = name.into();
         self.validate_name(&name)?;
-        if self
+        // Keep the write lock through opening so two concurrent callers
+        // cannot both open the same named MCU before one loses registration.
+        let mut sessions = self
             .sessions
-            .read()
-            .expect("MCU registry lock poisoned")
-            .contains_key(&name)
-        {
+            .write()
+            .expect("MCU registry lock poisoned");
+        if sessions.contains_key(&name) {
             return Err(McuRegistryError::DuplicateName { name });
         }
 
@@ -69,7 +70,8 @@ impl McuRegistry {
                 message: error.to_string(),
             }
         })?;
-        self.register_session(name, session)
+        sessions.insert(name, Arc::new(Mutex::new(session)));
+        Ok(())
     }
 
     pub fn register_session(
