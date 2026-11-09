@@ -1559,6 +1559,30 @@ mod tests {
     }
 
     #[test]
+    fn full_load_skips_components_already_loaded_lazily() {
+        let printer = Printer::new();
+        printer.install_config(ConfigDocument::parse("[fan]\npin=PA0\n").unwrap());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register("fan", move |printer, section| {
+                observed.fetch_add(1, Ordering::SeqCst);
+                printer
+                    .register_object("fan", section.get("pin").unwrap().to_owned())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        assert_eq!(
+            registry.load_component(&printer, "fan").unwrap(),
+            vec!["fan".to_owned()]
+        );
+        assert!(registry.load_registered(&printer).unwrap().is_empty());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn concurrent_lazy_component_loads_run_factory_once() {
         let printer = Arc::new(Printer::new());
         printer.install_config(ConfigDocument::parse("[fan]\npin=PA0\n").unwrap());
