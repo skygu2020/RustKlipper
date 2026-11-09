@@ -676,6 +676,26 @@ mod tests {
 
 
     #[test]
+    fn run_once_returns_after_idle_timeout() {
+        let reactor = Reactor::new();
+        let start = Instant::now();
+        assert_eq!(reactor.run_once(Duration::from_millis(5)), 0);
+        assert!(start.elapsed() >= Duration::from_millis(4));
+    }
+
+    #[test]
+    fn run_once_waits_for_timer_deadline() {
+        let reactor = Reactor::new();
+        let count = Arc::new(AtomicUsize::new(0));
+        let observed = count.clone();
+        reactor.register_timer(Duration::from_millis(5), None, move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+        }).unwrap();
+        assert_eq!(reactor.run_once(Duration::from_secs(1)), 1);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn async_callback_wakes_blocked_reactor() {
         let reactor = Arc::new(Reactor::new());
         let dispatch_reactor = reactor.clone();
