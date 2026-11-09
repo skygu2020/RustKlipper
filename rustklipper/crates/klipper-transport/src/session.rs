@@ -591,9 +591,11 @@ impl ReliableSerialSession {
 
     /// Queue a periodic query when Klipper's 0.9839-second cadence expires.
     ///
-    /// Call this from the application's normal event loop after each poll.
-    /// It returns None until the deadline, and never queues a second query
-    /// while the previous request is still awaiting its response.
+    /// The normal startup flow configures this timer automatically and
+    /// poll() owns and consumes its response waiter. This method remains
+    /// public for advanced/manual integrations; callers using it directly
+    /// must retain and consume the returned waiter themselves. It returns
+    /// None until the deadline and never overlaps an outstanding query.
     pub fn poll_periodic_clock(
         &mut self,
         queue_id: u64,
