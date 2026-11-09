@@ -85,11 +85,23 @@ impl RetransmitState {
     pub fn outstanding_len(&self) -> usize { self.outstanding.len() }
     pub fn is_empty(&self) -> bool { self.outstanding.is_empty() }
 
+    /// Validate a monotonic timestamp without changing the retry clock.
+    pub fn check_time(&self, now: f64) -> Result<(), RetransmitError> {
+        if !now.is_finite() || now < 0.0 {
+            return Err(RetransmitError::InvalidTime);
+        }
+        if self.last_now.is_some_and(|last| now < last) {
+            return Err(RetransmitError::NonMonotonicTime);
+        }
+        Ok(())
+    }
+
     /// Record a frame immediately after its first successful transmission.
     pub fn track_sent(&mut self, sequence: u64, bytes: Vec<u8>, now: f64)
         -> Result<(), RetransmitError>
     {
-        self.validate_time(now)?;
+        self.check_time(now)?;
+        self.last_now = Some(now);
         if bytes.is_empty() { return Err(RetransmitError::EmptyFrame); }
         if self.outstanding.back().is_some_and(|entry| sequence <= entry.frame.sequence) {
             return Err(RetransmitError::SequenceNotIncreasing);

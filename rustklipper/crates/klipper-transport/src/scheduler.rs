@@ -4,7 +4,6 @@
 use std::collections::{BTreeMap, VecDeque};
 use klipper_protocol::{encode_frame, ProtocolError, MESSAGE_MAX, MESSAGE_MIN};
 use crate::retransmit::{AckResult, Retransmission, RetransmitError, RetransmitState};
-use crate::retransmit::{AckResult, Retransmission, RetransmitError, RetransmitState};
 
 pub const MAX_PENDING_BLOCKS: u64 = 12;
 pub const BACKGROUND_PRIORITY_CLOCK: u64 = u64::MAX;
