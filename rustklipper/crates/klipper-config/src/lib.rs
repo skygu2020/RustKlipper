@@ -1308,8 +1308,9 @@ mod tests {
         ];
         assert_eq!(section.get_choice("control", &choices, None).unwrap(), 1);
         assert!(tracker.unused_options(&config).is_empty());
+        let invalid_choices = vec![("watermark".to_owned(), 2u8)];
         assert!(matches!(
-            section.get_choice("control", &choices[..1], None),
+            section.get_choice("control", &invalid_choices, None),
             Err(ConfigValueError::Invalid { .. })
         ));
     }
