@@ -2130,6 +2130,39 @@ mod tests {
     }
 
     #[test]
+    fn unloading_component_removes_its_mux_gcode_command() {
+        let printer = Printer::new();
+        printer.install_config(ConfigDocument::parse("[heater]\nname=hotend\n").unwrap());
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register("heater", |printer, section| {
+                let value = section.get("name").unwrap().to_owned();
+                printer
+                    .register_component_mux_gcode_command(
+                        "heater",
+                        "SET_HEATER",
+                        "HEATER",
+                        Some(&value),
+                        None,
+                        |_| Ok(Vec::new()),
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        printer.load_components(&registry).unwrap();
+        printer.set_ready();
+        assert!(printer
+            .process_gcode_line("SET_HEATER HEATER=hotend", true)
+            .unwrap()
+            .handler_found);
+        assert!(printer.unload_component("heater"));
+        assert!(!printer
+            .process_gcode_line("SET_HEATER HEATER=hotend", true)
+            .unwrap()
+            .handler_found);
+    }
+
+    #[test]
     fn component_gcode_name_conflicts_are_reported_to_the_second_factory() {
         let printer = Printer::new();
         printer.install_config(
