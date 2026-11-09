@@ -207,6 +207,10 @@ impl Printer {
         *self.state.read().expect("printer state lock poisoned")
     }
 
+    pub fn is_shutdown(&self) -> bool {
+        self.state() == PrinterState::Shutdown
+    }
+
     pub fn state_message(&self) -> String {
         self.state_message
             .read()
@@ -1293,6 +1297,16 @@ mod tests {
         printer.disconnect();
         assert_eq!(printer.state(), PrinterState::Disconnected);
         assert_eq!(events.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn shutdown_query_reflects_terminal_shutdown_state() {
+        let printer = Printer::new();
+        assert!(!printer.is_shutdown());
+        printer.invoke_shutdown("failure");
+        assert!(printer.is_shutdown());
+        printer.disconnect();
+        assert!(!printer.is_shutdown());
     }
 
     #[test]
