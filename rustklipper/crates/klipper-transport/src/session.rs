@@ -609,6 +609,10 @@ impl ReliableSerialSession {
             let receive_time = adjusted_receive_time(
                 self.now(), self.wire_time_per_byte, frame.payload.len() + MESSAGE_MIN,
             );
+            // Defer retry exhaustion until this frame's payload has been
+            // routed. An MCU may acknowledge the final attempt and return its
+            // response in the same frame; the response must win that race.
+            let mut exhausted_transactions = Vec::new();
             for (id, ack) in self.ack_tracker.acknowledge_events(
                 result.receive_sequence, result.has_payload, result.last_receive_sent_time, eventtime,
             ) {
@@ -622,12 +626,7 @@ impl ReliableSerialSession {
                             AckRetryDecision::RetryAfter(_) | AckRetryDecision::Complete => None,
                         });
                     if let Some((name, oid, waiter_id)) = exhausted {
-                        self.retry_transactions.remove(&transaction_id);
-                        self.sent_response_requests.retain(|entry| entry.transaction_id != transaction_id);
-                        // Remove this transaction's exact waiter; other requests
-                        // with the same name and OID must retain their FIFO positions.
-                        self.response_router.cancel_waiter(&name, oid, waiter_id);
-                        events.push(SessionEvent::RetryExhausted { name, oid });
+                        exhausted_transactions.push((transaction_id, name, oid, waiter_id));
                     }
                 }
                 events.push(SessionEvent::AckedNotify {
@@ -666,6 +665,20 @@ impl ReliableSerialSession {
                             error: error.to_string(), receive_time,
                         }),
                     }
+                }
+            }
+
+            // Only report exhaustion if routing this frame did not complete
+            // the transaction. In particular, a response carried alongside
+            // the final ACK removes the transaction in route_decoded_message().
+            for (transaction_id, name, oid, waiter_id) in exhausted_transactions {
+                if self.retry_transactions.remove(&transaction_id).is_some() {
+                    self.sent_response_requests.retain(|entry| entry.transaction_id != transaction_id);
+                    self.cancel_retry_attempts(transaction_id);
+                    // Remove this transaction's exact waiter; other requests
+                    // with the same name and OID must retain their FIFO positions.
+                    self.response_router.cancel_waiter(&name, oid, waiter_id);
+                    events.push(SessionEvent::RetryExhausted { name, oid });
                 }
             }
             events.push(SessionEvent::Received { frame, result });
