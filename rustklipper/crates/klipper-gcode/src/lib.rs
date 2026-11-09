@@ -196,7 +196,8 @@ pub fn is_traditional_command(command: &str) -> bool {
         && second.is_ascii_digit()
         && command.get(1..).is_some_and(|suffix| suffix.parse::<f64>().is_ok())
 }
-\n/// Parse one input line. Empty lines and comment-only lines return `None`.
+
+/// Parse one input line. Empty lines and comment-only lines return `None`.
 pub fn parse_line(input: &str) -> Option<ParsedLine> {
     let original = input.trim();
     let command_text = original.split_once(';').map_or(original, |(head, _)| head).trim();
