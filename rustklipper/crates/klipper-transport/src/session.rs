@@ -1189,11 +1189,12 @@ impl ReliableSerialSession {
                     self.periodic_clock_waiter = Some(waiter);
                 }
                 Err(_) => {
+                    // A disconnected waiter normally means the response
+                    // transaction exhausted its retries and was retired.
+                    // poll() already emitted RetryExhausted for that request;
+                    // allow the next scheduled clock tick to recover instead
+                    // of turning a missed sample into a terminal session error.
                     self.periodic_clock_in_flight = false;
-                    return Err(SessionError::Dictionary(DictionaryError::InvalidField {
-                        field: "clock_sync".into(),
-                        reason: "internally-owned periodic clock waiter disconnected".into(),
-                    }));
                 }
             }
         }
