@@ -330,9 +330,22 @@ impl ReliableSerialSession {
     pub fn enqueue_request(
         &mut self,
         queue_id: u64,
+        command: ScheduledCommand,
+        response_name: impl Into<String>,
+        oid: Option<u32>,
+    ) -> Result<(), SessionError> {
+        self.enqueue_request_with_retry(queue_id, command, response_name, oid, true)
+    }
+
+    /// Queue a response-tracked request with Klipper's optional application retry.
+    /// When retry is false, the initial ACK is still awaited but no resend occurs.
+    pub fn enqueue_request_with_retry(
+        &mut self,
+        queue_id: u64,
         mut command: ScheduledCommand,
         response_name: impl Into<String>,
         oid: Option<u32>,
+        retry: bool,
     ) -> Result<(), SessionError> {
         self.ensure_connected()?;
         if command.notify_id.is_some() {
@@ -351,7 +364,10 @@ impl ReliableSerialSession {
             command: template,
             name,
             oid,
-            transaction: RetryTransaction::default(),
+            transaction: RetryTransaction::new(
+                if retry { 5 } else { 0 },
+                std::time::Duration::from_millis(10),
+            ),
         });
         if let Err(error) = self.enqueue_retry_attempt(transaction_id, command) {
             self.retry_transactions.remove(&transaction_id);
