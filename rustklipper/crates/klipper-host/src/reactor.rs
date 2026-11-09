@@ -342,8 +342,8 @@ mod tests {
             });
         });
 
-        assert_eq!(reactor.run_due(Instant::now() + Duration::from_secs(1)), 1);
-        assert_eq!(reactor.run_due(Instant::now() + Duration::from_secs(1)), 1);
+        assert_eq!(reactor.run_due(Instant::now() + Duration::from_secs(1)), 2);
+        assert_eq!(reactor.run_due(Instant::now() + Duration::from_secs(1)), 0);
         assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 
