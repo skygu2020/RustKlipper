@@ -2441,6 +2441,38 @@ mod tests {
     }
 
     #[test]
+    fn component_factory_panic_rolls_back_owned_mux_gcode_commands() {
+        let printer = Printer::new();
+        printer.install_config(ConfigDocument::parse("[heater]\nname=hotend\n").unwrap());
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register("heater", |printer, section| {
+                printer
+                    .register_component_mux_gcode_command(
+                        "heater",
+                        "SET_HEATER",
+                        "HEATER",
+                        section.get("name"),
+                        None,
+                        |_| Ok(Vec::new()),
+                    )
+                    .map_err(|error| error.to_string())?;
+                panic!("factory panic after mux registration");
+            })
+            .unwrap();
+
+        assert!(matches!(
+            printer.load_components(&registry),
+            Err(ComponentError::LoadFailed { .. })
+        ));
+        printer.set_ready();
+        assert!(!printer
+            .process_gcode_line("SET_HEATER HEATER=hotend", true)
+            .unwrap()
+            .handler_found);
+    }
+
+    #[test]
     fn component_factory_panic_rolls_back_owned_gcode_commands() {
         let printer = Printer::new();
         printer.install_config(ConfigDocument::parse("[component]\nvalue=1\n").unwrap());
