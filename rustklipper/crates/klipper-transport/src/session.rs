@@ -190,6 +190,14 @@ fn should_send_command(
     )?.is_some_and(|deadline| eventtime >= deadline))
 }
 
+fn read_timeout_until(base: Duration, now: f64, deadline: Option<f64>) -> Duration {
+    let Some(deadline) = deadline else { return base; };
+    let base_seconds = base.as_secs_f64();
+    let remaining = (deadline - now).max(0.0);
+    let minimum = base_seconds.min(0.001);
+    Duration::from_secs_f64(remaining.min(base_seconds).max(minimum))
+}
+
 fn allocate_retry_transaction_id(
     next_id: &mut u64,
     in_flight: &HashMap<u64, PendingRetryRequest>,
@@ -1271,14 +1279,8 @@ impl ReliableSerialSession {
         self.ensure_connected()?;
         // Drop response metadata when its waiter timed out or was cancelled.
         self.prune_abandoned_response_requests();
-        let read_timeout = if let Some(deadline) = self.next_send_at {
-            let base = self.read_timeout.as_secs_f64();
-            let remaining = (deadline - self.now()).max(0.0);
-            let minimum = base.min(0.001);
-            Duration::from_secs_f64(remaining.min(base).max(minimum))
-        } else {
-            self.read_timeout
-        };
+        let read_timeout =
+            read_timeout_until(self.read_timeout, self.now(), self.next_send_at);
         if let Err(error) = self.transport.set_timeout(read_timeout) {
             self.disconnected = true;
             return Err(SessionError::Transport(error));
@@ -1678,6 +1680,44 @@ mod config_handshake_session_tests {
     }
 }
 
+
+#[cfg(test)]
+mod read_timeout_deadline_tests {
+    use super::read_timeout_until;
+    use std::time::Duration;
+
+    #[test]
+    fn read_timeout_is_shortened_to_a_nearby_send_deadline() {
+        assert_eq!(
+            read_timeout_until(Duration::from_millis(20), 1.0, Some(1.005)),
+            Duration::from_millis(5),
+        );
+    }
+
+    #[test]
+    fn read_timeout_never_exceeds_the_configured_poll_interval() {
+        assert_eq!(
+            read_timeout_until(Duration::from_millis(20), 1.0, Some(2.0)),
+            Duration::from_millis(20),
+        );
+    }
+
+    #[test]
+    fn expired_deadline_uses_a_small_nonzero_timeout() {
+        assert_eq!(
+            read_timeout_until(Duration::from_millis(20), 2.0, Some(1.0)),
+            Duration::from_millis(1),
+        );
+    }
+
+    #[test]
+    fn sub_millisecond_base_timeout_is_preserved() {
+        assert_eq!(
+            read_timeout_until(Duration::from_micros(500), 2.0, Some(1.0)),
+            Duration::from_micros(500),
+        );
+    }
+}
 
 #[cfg(test)]
 mod command_send_timing_tests {
