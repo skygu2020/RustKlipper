@@ -261,6 +261,28 @@ impl ComponentRegistry {
         Ok(())
     }
 
+    /// Lazily load one component and its dependencies.
+    pub fn load_component(
+        &self,
+        printer: &Printer,
+        section: &str,
+    ) -> Result<Vec<String>, ComponentError> {
+        let config = printer.config().ok_or(ComponentError::ConfigNotLoaded)?;
+        let mut loaded = Vec::new();
+        let mut loaded_set = HashSet::new();
+        let mut loading = HashSet::new();
+        self.load_section(
+            section,
+            &config,
+            printer,
+            &mut loaded,
+            &mut loaded_set,
+            &mut loading,
+            None,
+        )?;
+        Ok(loaded)
+    }
+
     /// Instantiate registered components in configuration-file order, loading
     /// declared dependencies first. Unregistered sections are left for later
     /// validation/component crates.
@@ -1524,6 +1546,51 @@ mod tests {
             ))
         ));
         assert_eq!(events.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn lazy_component_load_skips_unrelated_sections() {
+        let printer = Printer::new();
+        printer.install_config(
+            ConfigDocument::parse(
+                "[unused]\nvalue=ignored\n[heater]\nsource=fan\n[fan]\npin=PA0\n",
+            )
+            .unwrap(),
+        );
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register("unused", |_, _| panic!("unrelated component should not load"))
+            .unwrap();
+        registry
+            .register_with_dependencies(
+                "heater",
+                vec!["fan".to_owned()],
+                |printer, section| {
+                    let fan = printer
+                        .lookup_object::<String>("fan")
+                        .map_err(|error| error.to_string())?;
+                    printer
+                        .register_object(
+                            "heater",
+                            format!("{}:{}", fan.as_str(), section.get("source").unwrap()),
+                        )
+                        .map_err(|error| error.to_string())
+                },
+            )
+            .unwrap();
+        registry
+            .register("fan", |printer, section| {
+                printer
+                    .register_object("fan", section.get("pin").unwrap().to_owned())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        assert_eq!(
+            registry.load_component(&printer, "heater").unwrap(),
+            vec!["fan".to_owned(), "heater".to_owned()]
+        );
+        assert!(!printer.has_object("unused"));
     }
 
     #[test]
