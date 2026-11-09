@@ -1936,6 +1936,34 @@ mod tests {
     }
 
     #[test]
+    fn lazy_component_reload_reinstalls_owned_gcode_commands() {
+        let printer = Printer::new();
+        printer.install_config(ConfigDocument::parse("[macro]\n").unwrap());
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register("macro", |printer, _| {
+                printer
+                    .register_component_gcode_command("macro", "M999", true, None, |_| {
+                        Ok(vec![DispatchEvent::Info("loaded".to_owned())])
+                    })
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        assert_eq!(registry.load_component(&printer, "macro").unwrap(), vec!["macro"]);
+        printer.set_ready();
+        assert!(printer.process_gcode_line("M999", true).unwrap().handler_found);
+
+        assert!(printer.unload_component("macro"));
+        assert!(!printer.process_gcode_line("M999", true).unwrap().handler_found);
+        assert_eq!(registry.load_component(&printer, "macro").unwrap(), vec!["macro"]);
+        assert_eq!(
+            printer.process_gcode_line("M999", true).unwrap().events[0],
+            DispatchEvent::Info("loaded".to_owned())
+        );
+    }
+
+    #[test]
     fn manual_gcode_unregistration_releases_component_ownership() {
         let printer = Printer::new();
         printer
