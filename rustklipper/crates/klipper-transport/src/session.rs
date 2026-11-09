@@ -446,29 +446,11 @@ impl ReliableSerialSession {
                 reason: "no startup clock sample is currently expected".into(),
             }));
         }
-        let clock_sync = self.clock_sync.as_mut().ok_or_else(|| {
-            SessionError::Dictionary(DictionaryError::InvalidField {
-                field: "clock_calibration".into(),
-                reason: "clock sync was not initialized from uptime".into(),
-            })
-        })?;
-        if response.name != "clock" || response.oid.is_some() {
-            return Err(SessionError::Dictionary(DictionaryError::InvalidField {
-                field: "clock".into(),
-                reason: format!("expected unscoped clock response, received {} with oid {:?}", response.name, response.oid),
-            }));
-        }
-        let clock = response.params.get("clock").and_then(Value::as_u64)
-            .and_then(|value| u32::try_from(value).ok())
-            .ok_or_else(|| DictionaryError::InvalidField {
-                field: "clock.clock".into(),
-                reason: "missing or out-of-range u32 value".into(),
-            })?;
-        let update = clock_sync.update_initial_sample(clock, response.sent_time, response.receive_time)?;
-        self.clock_calibration_remaining -= 1;
+        let update = self.update_owned_clock_sync(&response, true)?;
         if let Some(update) = update {
             self.apply_clock_update(update, response.receive_time)?;
         }
+        self.clock_calibration_remaining -= 1;
         if self.clock_calibration_remaining == 0 {
             return Ok(None);
         }
@@ -502,12 +484,33 @@ impl ReliableSerialSession {
                 reason: "periodic clock update received before startup calibration completed".into(),
             }));
         }
-        let clock_sync = self.clock_sync.as_mut().ok_or_else(|| {
-            SessionError::Dictionary(DictionaryError::InvalidField {
+        let update = self.update_owned_clock_sync(&response, false)?;
+        match update {
+            Some(update) => self.apply_clock_update(update, response.receive_time),
+            None => Ok(None),
+        }
+    }
+
+    /// Queue the next periodic clock query. Startup calibration must be complete.
+    pub fn request_periodic_clock(&mut self, queue_id: u64) -> Result<ResponseWaiter, SessionError> {
+        self.ensure_connected()?;
+        if !self.is_clock_calibrated() {
+            return Err(SessionError::Dictionary(DictionaryError::InvalidField {
                 field: "clock_sync".into(),
-                reason: "clock sync has not been initialized".into(),
-            })
-        })?;
+                reason: "periodic clock query requested before startup calibration completed".into(),
+            }));
+        }
+        self.request_get_clock(queue_id)
+    }
+
+    /// Update the ClockSync instance owned by this session. Keeping the mutable
+    /// synchronizer private prevents callers from accidentally maintaining a
+    /// second, divergent clock model for the same serial link.
+    fn update_owned_clock_sync(
+        &mut self,
+        response: &Response,
+        initial_sample: bool,
+    ) -> Result<Option<ClockUpdate>, SessionError> {
         if response.name != "clock" || response.oid.is_some() {
             return Err(SessionError::Dictionary(DictionaryError::InvalidField {
                 field: "clock".into(),
@@ -520,12 +523,19 @@ impl ReliableSerialSession {
                 field: "clock.clock".into(),
                 reason: "missing or out-of-range u32 value".into(),
             })?;
-        let update = clock_sync.update(clock, response.sent_time, response.receive_time)?;
-        match update {
-            Some(update) => self.apply_clock_update(update, response.receive_time),
-            None => Ok(None),
+        let clock_sync = self.clock_sync.as_mut().ok_or_else(|| {
+            SessionError::Dictionary(DictionaryError::InvalidField {
+                field: "clock_sync".into(),
+                reason: "clock sync has not been initialized from uptime".into(),
+            })
+        })?;
+        if initial_sample {
+            Ok(clock_sync.update_initial_sample(clock, response.sent_time, response.receive_time)?)
+        } else {
+            Ok(clock_sync.update(clock, response.sent_time, response.receive_time)?)
         }
     }
+
     /// Start the first half of the two-query MCU configuration handshake.
     pub fn begin_config_handshake(
         &mut self,
