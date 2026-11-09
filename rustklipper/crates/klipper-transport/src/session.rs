@@ -385,7 +385,8 @@ impl ReliableSerialSession {
         self.next_send_at
     }
 
-    /// Earliest known host deadline for either a scheduled command or a retry.
+    /// Earliest host deadline across command sends, UART retransmission,
+    /// periodic clock queries, and application-level response retries.
     pub fn next_poll_deadline(&self) -> Option<f64> {
         let command_or_retry =
             earliest_deadline(self.next_send_at, self.scheduler.next_retransmit_at());
