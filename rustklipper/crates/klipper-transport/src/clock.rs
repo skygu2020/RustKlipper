@@ -79,11 +79,21 @@ impl ClockSync {
     pub fn last_clock(&self) -> u64 { self.last_clock }
     pub fn mcu_frequency(&self) -> f64 { self.mcu_frequency }
 
-    /// Extend a wrapping 32-bit MCU clock to the closest signed delta.
+    /// Extend an arbitrary 32-bit MCU timestamp to the closest signed delta.
+    ///
+    /// This is used for asynchronous status/event clocks, which may legitimately
+    /// refer to a point slightly before the most recently observed clock sample.
     pub fn extend_clock32(&self, clock32: u32) -> u64 {
         let delta = clock32.wrapping_sub(self.last_clock as u32) as i32 as i64;
         if delta < 0 { self.last_clock.saturating_sub((-delta) as u64) }
         else { self.last_clock.saturating_add(delta as u64) }
+    }
+
+    /// Extend an ordered get_clock sample monotonically forward, matching
+    /// Klipper ClockSync._handle_clock(). A lower low-word means wrap here.
+    fn extend_clock_sample32(&self, clock32: u32) -> u64 {
+        self.last_clock
+            .saturating_add(clock32.wrapping_sub(self.last_clock as u32) as u64)
     }
 
     /// Process a get_clock response with monotonic send and receive timestamps.
@@ -93,7 +103,7 @@ impl ClockSync {
         if !sent_time.is_finite() || !receive_time.is_finite() || receive_time < sent_time {
             return Err(ClockSyncError::InvalidTimestamp);
         }
-        let clock = self.extend_clock32(clock32);
+        let clock = self.extend_clock_sample32(clock32);
         self.last_clock = clock;
         if sent_time == 0.0 { return Ok(None); }
 
@@ -212,6 +222,22 @@ mod tests {
         let sync = ClockSync::new(1_000_000.0, 10.0, 0x1_0000_0010).unwrap();
         assert_eq!(sync.clock32_to_clock64(0xffff_fff0), 0xffff_fff0);
     }
+    #[test]
+    fn clock_sample_extension_always_moves_forward_across_wrap() {
+        let mut sync = ClockSync::new(1_000_000.0, 10.0, 0x1_0000_0010).unwrap();
+
+        // get_clock samples are ordered observations. A lower low-word is
+        // interpreted as the next 32-bit epoch, not a stale event timestamp.
+        assert_eq!(sync.update(0xffff_fff0, 0.0, 0.0).unwrap(), None);
+        assert_eq!(sync.last_clock(), 0x2_0000_0000);
+    }
+
+    #[test]
+    fn arbitrary_event_clock_can_still_extend_slightly_backward() {
+        let sync = ClockSync::new(1_000_000.0, 10.0, 0x1_0000_0010).unwrap();
+        assert_eq!(sync.clock32_to_clock64(0xffff_fff0), 0xffff_fff0);
+    }
+
     #[test]
     fn clock_conversion_uses_estimated_frequency() {
         let estimate = ClockEstimate { sample_time: 5.0, clock: 1_000.0, frequency: 2_000.0 };
