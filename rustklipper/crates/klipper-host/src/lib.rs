@@ -989,14 +989,14 @@ mod tests {
 
     #[test]
     fn shutdown_during_identify_prevents_connect_event() {
-        let printer = Printer::new();
+        let printer = Arc::new(Printer::new());
         printer.install_config(ConfigDocument::parse("[fan]\npin=PA0\n").unwrap());
+        let shutdown_printer = printer.clone();
+        printer.register_event_handler(PrinterEventKind::McuIdentify, move |_| {
+            shutdown_printer.invoke_shutdown("identify failed");
+        });
         let connects = Arc::new(AtomicUsize::new(0));
         let observed = connects.clone();
-        printer.register_event_handler(PrinterEventKind::McuIdentify, |printer_event| {
-            let _ = printer_event;
-        });
-        printer.register_event_handler(PrinterEventKind::McuIdentify, |_| {});
         printer.register_event_handler(PrinterEventKind::Connect, move |_| {
             observed.fetch_add(1, Ordering::SeqCst);
         });
@@ -1009,11 +1009,12 @@ mod tests {
             })
             .unwrap();
 
-        printer.register_event_handler(PrinterEventKind::McuIdentify, |_| {});
-        // The event callback captures the printer through shared ownership.
-        // A second setup below exercises the shutdown path without a cycle.
-        assert_eq!(printer.initialize_components(&registry).unwrap(), vec!["fan"]);
-        assert_eq!(connects.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            printer.initialize_components(&registry).unwrap(),
+            vec!["fan".to_owned()]
+        );
+        assert_eq!(printer.state(), PrinterState::Shutdown);
+        assert_eq!(connects.load(Ordering::SeqCst), 0);
     }
 
     #[test]
