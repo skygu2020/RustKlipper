@@ -562,19 +562,16 @@ impl ReliableSerialSession {
                 if let Some(transaction_id) = self.retry_attempts.remove(&id) {
                     let exhausted = self.retry_transactions.get_mut(&transaction_id)
                         .and_then(|pending| match pending.transaction.attempt_acked(eventtime) {
-                            AckRetryDecision::Exhausted => Some((pending.name.clone(), pending.oid)),
+                            AckRetryDecision::Exhausted => Some((pending.name.clone(), pending.oid, pending.waiter_id)),
                             AckRetryDecision::RetryAfter(_) | AckRetryDecision::Complete => None,
                         });
-                    if let Some((name, oid)) = exhausted {
+                    if let Some((name, oid, waiter_id)) = exhausted {
                         self.retry_transactions.remove(&transaction_id);
                         self.sent_response_requests.retain(|entry| entry.transaction_id != transaction_id);
-                        // Remove the corresponding FIFO waiter as well; otherwise
-                        // its abandoned registration could consume the next request's
-                        // response with the same name and OID.
-                        if let Some(pending) = self.retry_transactions.get(&transaction_id) {
-                            if let Some(waiter_id) = pending.waiter_id {
-                                self.response_router.cancel_waiter(&name, oid, waiter_id);
-                            }
+                        // Remove this transaction's exact waiter; other requests
+                        // with the same name and OID must retain their FIFO positions.
+                        if let Some(waiter_id) = waiter_id {
+                            self.response_router.cancel_waiter(&name, oid, waiter_id);
                         }
                         events.push(SessionEvent::RetryExhausted { name, oid });
                     }
