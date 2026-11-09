@@ -61,6 +61,73 @@ pub enum PrinterError {
     ObjectTypeMismatch { name: String },
 }
 
+type ComponentFactory =
+    Arc<dyn Fn(&Printer, &klipper_config::ConfigSection) -> Result<(), String> + Send + Sync>;
+
+/// Registry of Rust host components keyed by their Klipper config section.
+#[derive(Default)]
+pub struct ComponentRegistry {
+    factories: HashMap<String, ComponentFactory>,
+}
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum ComponentError {
+    #[error("configuration must be installed before loading components")]
+    ConfigNotLoaded,
+    #[error("component factory for section '{section}' is already registered")]
+    DuplicateFactory { section: String },
+    #[error("failed to load component section '{section}': {message}")]
+    LoadFailed { section: String, message: String },
+}
+
+impl ComponentRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn register<F>(
+        &mut self,
+        section: impl Into<String>,
+        factory: F,
+    ) -> Result<(), ComponentError>
+    where
+        F: Fn(&Printer, &klipper_config::ConfigSection) -> Result<(), String>
+            + Send
+            + Sync
+            + 'static,
+    {
+        let section = section.into();
+        if section.trim().is_empty() {
+            return Err(ComponentError::LoadFailed {
+                section,
+                message: "section name cannot be empty".to_owned(),
+            });
+        }
+        if self.factories.contains_key(&section) {
+            return Err(ComponentError::DuplicateFactory { section });
+        }
+        self.factories.insert(section, Arc::new(factory));
+        Ok(())
+    }
+
+    /// Instantiate registered components in configuration-file order.
+    /// Unregistered sections are left for later validation/component crates.
+    pub fn load_registered(&self, printer: &Printer) -> Result<Vec<String>, ComponentError> {
+        let config = printer.config().ok_or(ComponentError::ConfigNotLoaded)?;
+        let mut loaded = Vec::new();
+        for section in config.sections() {
+            if let Some(factory) = self.factories.get(&section.name) {
+                factory(printer, section).map_err(|message| ComponentError::LoadFailed {
+                    section: section.name.clone(),
+                    message,
+                })?;
+                loaded.push(section.name.clone());
+            }
+        }
+        Ok(loaded)
+    }
+}
+
 pub struct Printer {
     state: RwLock<PrinterState>,
     state_message: RwLock<String>,
@@ -122,6 +189,13 @@ impl Printer {
             .read()
             .expect("printer config lock poisoned")
             .clone()
+    }
+
+    pub fn load_components(
+        &self,
+        registry: &ComponentRegistry,
+    ) -> Result<Vec<String>, ComponentError> {
+        registry.load_registered(self)
     }
 
     pub fn set_configuring(&self) {
@@ -357,6 +431,57 @@ mod tests {
         );
 
         std::fs::remove_file(path).unwrap();
+    }
+
+
+    #[test]
+    fn component_registry_loads_registered_sections_in_config_order() {
+        let printer = Printer::new();
+        printer.install_config(
+            ConfigDocument::parse(
+                "[fan]\\npin: PA0\\n[heater_generic hotend]\\nmax_temp: 250\\n",
+            )
+            .unwrap(),
+        );
+
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register("fan", |printer, section| {
+                let pin = section.get("pin").ok_or("missing pin")?.to_owned();
+                printer.register_object("fan_pin", pin).map_err(|error| error.to_string())
+            })
+            .unwrap();
+        registry
+            .register("heater_generic hotend", |printer, section| {
+                let max_temp = section.get("max_temp").ok_or("missing max_temp")?.to_owned();
+                printer
+                    .register_object("hotend_max_temp", max_temp)
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        let loaded = printer.load_components(&registry).unwrap();
+        assert_eq!(loaded, vec!["fan", "heater_generic hotend"]);
+        assert_eq!(&*printer.lookup_object::<String>("fan_pin").unwrap(), "PA0");
+        assert_eq!(
+            &*printer.lookup_object::<String>("hotend_max_temp").unwrap(),
+            "250"
+        );
+    }
+
+    #[test]
+    fn component_registry_requires_config_and_rejects_duplicate_factories() {
+        let printer = Printer::new();
+        let mut registry = ComponentRegistry::new();
+        assert!(matches!(
+            printer.load_components(&registry),
+            Err(ComponentError::ConfigNotLoaded)
+        ));
+        registry.register("fan", |_, _| Ok(())).unwrap();
+        assert!(matches!(
+            registry.register("fan", |_, _| Ok(())),
+            Err(ComponentError::DuplicateFactory { .. })
+        ));
     }
 
     #[test]
