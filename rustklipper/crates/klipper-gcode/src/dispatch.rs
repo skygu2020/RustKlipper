@@ -157,7 +157,7 @@ impl GCodeDispatcher {
     /// Klipper's `run_script` / `run_script_from_command` behavior.
     pub fn process_script(&self, script: &str) -> Vec<DispatchOutcome> {
         script
-            .split('\\n')
+            .split('\n')
             .filter_map(|line| self.process_line(line, false))
             .collect()
     }
@@ -373,7 +373,7 @@ mod tests {
             })
             .unwrap();
 
-        let results = dispatcher.process_script("G1 X1\\n\\nM400 ; wait\\n");
+        let results = dispatcher.process_script("G1 X1\n\nM400 ; wait\n");
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].command, "G1");
         assert_eq!(results[1].command, "M400");
