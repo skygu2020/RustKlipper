@@ -289,6 +289,7 @@ pub struct Printer {
     config: RwLock<Option<Arc<ConfigDocument>>>,
     config_usage: ConfigUsageTracker,
     loaded_components: Mutex<HashSet<String>>,
+    connection_initialized: AtomicBool,
     objects: RwLock<HashMap<String, Arc<dyn Any + Send + Sync>>>,
     event_handlers: Mutex<HashMap<PrinterEventKind, Vec<EventHandler>>>,
     gcode: Mutex<GCodeDispatcher>,
@@ -309,6 +310,7 @@ impl Printer {
             config: RwLock::new(None),
             config_usage: ConfigUsageTracker::new(),
             loaded_components: Mutex::new(HashSet::new()),
+            connection_initialized: AtomicBool::new(false),
             objects: RwLock::new(HashMap::new()),
             event_handlers: Mutex::new(HashMap::new()),
             gcode: Mutex::new(GCodeDispatcher::new()),
@@ -386,6 +388,7 @@ impl Printer {
     /// Install a parsed host configuration and enter the configuring state.
     pub fn install_config(&self, config: ConfigDocument) {
         self.config_usage.clear();
+        self.connection_initialized.store(false, Ordering::SeqCst);
         self.loaded_components
             .lock()
             .expect("loaded component lock poisoned")
@@ -620,6 +623,11 @@ impl Printer {
         &self,
         registry: &ComponentRegistry,
     ) -> Result<Vec<String>, ComponentError> {
+        if self.connection_initialized.load(Ordering::SeqCst)
+            || self.state() != PrinterState::Configuring
+        {
+            return Ok(Vec::new());
+        }
         let loaded = self.load_components(registry)?;
         self.validate_config()?;
         let identify_panics = self.send_event(PrinterEvent::McuIdentify);
@@ -639,6 +647,7 @@ impl Printer {
                 count: connect_panics,
             });
         }
+        self.connection_initialized.store(true, Ordering::SeqCst);
         Ok(loaded)
     }
 
@@ -934,7 +943,7 @@ impl Printer {
 mod tests {
     use super::*;
     use klipper_gcode::DispatchEvent;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     #[test]
     fn configuring_transition_cannot_clear_shutdown() {
@@ -1705,6 +1714,35 @@ mod tests {
             printer.load_components(&registry),
             Err(ComponentError::DependencyCycle { .. })
         ));
+    }
+
+    #[test]
+    fn component_initialization_events_are_emitted_once() {
+        let printer = Printer::new();
+        printer.install_config(ConfigDocument::parse("[fan]\npin=PA0\n").unwrap());
+        let identifies = Arc::new(AtomicUsize::new(0));
+        let connects = Arc::new(AtomicUsize::new(0));
+        let observed_identifies = identifies.clone();
+        let observed_connects = connects.clone();
+        printer.register_event_handler(PrinterEventKind::McuIdentify, move |_| {
+            observed_identifies.fetch_add(1, Ordering::SeqCst);
+        });
+        printer.register_event_handler(PrinterEventKind::Connect, move |_| {
+            observed_connects.fetch_add(1, Ordering::SeqCst);
+        });
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register("fan", |printer, section| {
+                printer
+                    .register_object("fan", section.get("pin").unwrap().to_owned())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        assert_eq!(printer.initialize_components(&registry).unwrap(), vec!["fan"]);
+        assert!(printer.initialize_components(&registry).unwrap().is_empty());
+        assert_eq!(identifies.load(Ordering::SeqCst), 1);
+        assert_eq!(connects.load(Ordering::SeqCst), 1);
     }
 
     #[test]
