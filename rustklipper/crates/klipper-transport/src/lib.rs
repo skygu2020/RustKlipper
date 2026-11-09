@@ -15,7 +15,7 @@ pub use retry::RetryPolicy;
 pub use retransmit::{AckResult, Retransmission, RetransmitError, RetransmitState, TrackedFrame, DEFAULT_RTO_SECONDS, DUP_ACK_THRESHOLD, MAX_RTO_SECONDS, MIN_RTO_SECONDS};
 pub use scheduler::{CommandScheduler, ReceivedFrameResult, ScheduleError, ScheduledCommand, ScheduledFrame, BACKGROUND_PRIORITY_CLOCK};
 pub use clock::{ClockEstimate, ClockSync, ClockSyncError, ClockUpdate, UartTiming};
-pub use config::{ConfigAction, ConfigError, ConfigResponse, McuConfigPlan};
+pub use config::{ConfigAction, ConfigError, ConfigResponse, McuConfigPlan, OidAllocator};
 
 
 use std::io::{Read, Write};
