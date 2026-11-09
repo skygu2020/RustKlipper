@@ -469,6 +469,25 @@ impl<'a> TrackedConfigSection<'a> {
         self.section.has_option(option)
     }
 
+    /// Read an option or return a default; a supplied default counts as used.
+    pub fn get_with_default(
+        &self,
+        option: &str,
+        default: Option<&'a str>,
+        note_valid: bool,
+    ) -> Option<&'a str> {
+        if let Some(value) = self.section.get(option) {
+            if note_valid {
+                self.tracker.mark_used(&self.section.name, option);
+            }
+            return Some(value);
+        }
+        if default.is_some() && note_valid {
+            self.tracker.mark_used(&self.section.name, option);
+        }
+        default
+    }
+
     pub fn get_required(&self, option: &str) -> Result<&'a str, ConfigValueError> {
         self.get(option).ok_or_else(|| ConfigValueError::Missing {
             section: self.section.name.clone(),
@@ -571,6 +590,27 @@ impl ConfigUsageTracker {
         let value = config.get(section, option)?;
         self.mark_used(section, option);
         Some(value)
+    }
+
+    /// Read an option or return a default; a supplied default counts as used.
+    pub fn get_with_default<'a>(
+        &self,
+        config: &'a ConfigDocument,
+        section: &str,
+        option: &str,
+        default: Option<&'a str>,
+        note_valid: bool,
+    ) -> Option<&'a str> {
+        if let Some(value) = config.get(section, option) {
+            if note_valid {
+                self.mark_used(section, option);
+            }
+            return Some(value);
+        }
+        if default.is_some() && note_valid {
+            self.mark_used(section, option);
+        }
+        default
     }
 
     pub fn get_required<'a>(
@@ -780,6 +820,21 @@ mod tests {
         tracker.clear();
         tracker.get(&clean, "printer", "kinematics");
         assert!(tracker.validate(&clean, &valid_sections).is_ok());
+    }
+
+    #[test]
+    fn config_defaults_are_tracked_only_when_non_null_and_valid() {
+        let config = ConfigDocument::parse("[printer]\nkinematics=cartesian\n").unwrap();
+        let tracker = ConfigUsageTracker::new();
+        assert_eq!(
+            tracker.get_with_default(&config, "printer", "missing", Some("default"), true),
+            Some("default")
+        );
+        assert_eq!(
+            tracker.get_with_default(&config, "printer", "optional", None, true),
+            None
+        );
+        assert!(tracker.unused_options(&config).is_empty());
     }
 
     #[test]
