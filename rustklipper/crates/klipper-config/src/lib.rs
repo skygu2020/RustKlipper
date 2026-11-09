@@ -521,6 +521,22 @@ mod tests {
     }
 
     #[test]
+    fn rejects_missing_direct_include_but_allows_empty_glob() {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!("rustklipper-config-missing-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("direct.cfg"), "[include absent.cfg]\n").unwrap();
+        assert!(matches!(
+            ConfigFileLoader::load(dir.join("direct.cfg")),
+            Err(ConfigLoadError::IncludeNotFound { .. })
+        ));
+        fs::write(dir.join("wildcard.cfg"), "[include optional-*.cfg]\n").unwrap();
+        assert!(ConfigFileLoader::load(dir.join("wildcard.cfg")).is_ok());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn rejects_recursive_includes() {
         use std::fs;
         let dir = std::env::temp_dir().join(format!("rustklipper-config-cycle-{}", std::process::id()));
