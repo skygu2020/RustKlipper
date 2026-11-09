@@ -509,11 +509,13 @@ impl Printer {
     }
 
     pub fn disconnect(&self) {
-        if self.state() == PrinterState::Disconnected {
-            return;
+        {
+            let mut state = self.state.write().expect("printer state lock poisoned");
+            if *state == PrinterState::Disconnected {
+                return;
+            }
+            *state = PrinterState::Disconnected;
         }
-        *self.state.write().expect("printer state lock poisoned") =
-            PrinterState::Disconnected;
         *self.state_message.write().expect("printer state message lock poisoned") =
             "Printer is disconnected".to_owned();
         self.gcode
