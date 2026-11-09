@@ -3276,7 +3276,9 @@ mod tests {
             loading_printer.load_components(&registry)
         });
         barrier.wait();
-        printer.register_object("external", "owned by another thread").unwrap();
+        printer
+            .register_object("external", "owned by another thread".to_owned())
+            .unwrap();
         barrier.wait();
         assert!(matches!(
             loader.join().unwrap(),
@@ -3285,8 +3287,8 @@ mod tests {
 
         assert!(!printer.has_object("fan"));
         assert_eq!(
-            &*printer.lookup_object::<&str>("external").unwrap(),
-            &"owned by another thread"
+            &*printer.lookup_object::<String>("external").unwrap(),
+            "owned by another thread"
         );
     }
 
