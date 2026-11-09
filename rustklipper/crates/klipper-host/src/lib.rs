@@ -384,7 +384,10 @@ impl Printer {
 
     /// Dispatch an event without holding the handler registry lock while user
     /// callbacks execute, allowing handlers to register other callbacks.
-    pub fn send_event(&self, event: PrinterEvent) {
+    ///
+    /// A panicking handler is isolated from the remaining handlers. The return
+    /// value is the number of handlers that panicked.
+    pub fn send_event(&self, event: PrinterEvent) -> usize {
         let handlers = self
             .event_handlers
             .lock()
@@ -392,9 +395,13 @@ impl Printer {
             .get(&event.kind())
             .cloned()
             .unwrap_or_default();
-        for handler in handlers {
-            handler(&event);
-        }
+        handlers
+            .into_iter()
+            .filter(|handler| {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(&event)))
+                    .is_err()
+            })
+            .count()
     }
 
     pub fn gcode_dispatcher(&self) -> MutexGuard<'_, GCodeDispatcher> {
@@ -609,6 +616,22 @@ mod tests {
         });
 
         assert_eq!(printer.run_reactor_once(), 1);
+        assert_eq!(called.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn event_handler_panic_does_not_prevent_later_handlers() {
+        let printer = Printer::new();
+        let called = Arc::new(AtomicUsize::new(0));
+        printer.register_event_handler(PrinterEventKind::Ready, |_| {
+            panic!("handler failure");
+        });
+        let observed = called.clone();
+        printer.register_event_handler(PrinterEventKind::Ready, move |_| {
+            observed.fetch_add(1, Ordering::SeqCst);
+        });
+
+        assert_eq!(printer.send_event(PrinterEvent::Ready), 1);
         assert_eq!(called.load(Ordering::SeqCst), 1);
     }
 
