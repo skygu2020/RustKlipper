@@ -563,6 +563,37 @@ mod tests {
     }
 
     #[test]
+    fn cancelling_response_notify_after_send_preserves_uart_retransmission() {
+        let mut scheduler = CommandScheduler::new();
+        scheduler.enqueue(
+            1,
+            ScheduledCommand::new(vec![0x41, 0x42], 0, 1).with_notify(900),
+        ).unwrap();
+        scheduler.promote_ready(0);
+
+        let sent = scheduler.build_frame().unwrap().unwrap();
+        scheduler.mark_frame_sent(&sent, 1.0).unwrap();
+        assert_eq!(sent.notify_ids, vec![900]);
+        assert_eq!(scheduler.retransmit_state().outstanding_len(), 1);
+
+        // Once packed and written, cancelling the application response
+        // notification must not erase the independent UART frame retry state.
+        assert!(!scheduler.cancel_notify(900));
+        assert_eq!(scheduler.retransmit_state().outstanding_len(), 1);
+        let retry = scheduler.poll_retransmissions(1.250).unwrap();
+        assert_eq!(retry.len(), 1);
+        assert_eq!(retry[0].bytes, sent.bytes);
+
+        let ack = scheduler.acknowledge_at(
+            sent.send_sequence + 1,
+            sent.bytes.len(),
+            1.300,
+        ).unwrap();
+        assert_eq!(ack.acknowledged.len(), 1);
+        assert!(scheduler.retransmit_state().is_empty());
+    }
+
+    #[test]
     fn incoming_empty_frame_triggers_nak_after_first_ack() {
         let mut s = CommandScheduler::new();
         s.enqueue(1, ScheduledCommand::new(vec![0x41], 0, 1)).unwrap();
