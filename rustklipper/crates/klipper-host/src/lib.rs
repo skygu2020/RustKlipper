@@ -176,6 +176,12 @@ impl ComponentRegistry {
         if self.factories.contains_key(&section) {
             return Err(ComponentError::DuplicateFactory { section });
         }
+        if dependencies.iter().any(|dependency| dependency.trim().is_empty()) {
+            return Err(ComponentError::LoadFailed {
+                section,
+                message: "dependency names cannot be empty".to_owned(),
+            });
+        }
         self.factories.insert(
             section,
             ComponentFactoryEntry {
@@ -1662,6 +1668,16 @@ mod tests {
             vec!["provider".to_owned(), "first".to_owned(), "second".to_owned()]
         );
         assert_eq!(provider_loads.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn component_registration_rejects_empty_dependency_names() {
+        let mut registry = ComponentRegistry::new();
+        assert!(matches!(
+            registry.register_with_dependencies("fan", vec![" ".to_owned()], |_, _| Ok(())),
+            Err(ComponentError::LoadFailed { message, .. })
+                if message == "dependency names cannot be empty"
+        ));
     }
 
     #[test]
