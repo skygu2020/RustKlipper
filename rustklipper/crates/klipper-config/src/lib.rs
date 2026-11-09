@@ -354,7 +354,7 @@ mod tests {
 
     #[test]
     fn parses_string_and_integer_lists_with_optional_element_count() {
-        let config = ConfigDocument::parse("[stepper_x]\\nposition=10, 20,30\\n").unwrap();
+        let config = ConfigDocument::parse("[stepper_x]\nposition=10, 20,30\n").unwrap();
         assert_eq!(
             config.get_list("stepper_x", "position", ',', Some(3)).unwrap(),
             vec!["10", "20", "30"],
@@ -371,7 +371,7 @@ mod tests {
 
     #[test]
     fn parses_finite_float_lists() {
-        let config = ConfigDocument::parse("[bed_mesh]\\nmesh_min=0.5, 1.25\\n").unwrap();
+        let config = ConfigDocument::parse("[bed_mesh]\nmesh_min=0.5, 1.25\n").unwrap();
         assert_eq!(
             config.get_f64_list("bed_mesh", "mesh_min", ',', Some(2)).unwrap(),
             vec![0.5, 1.25],
