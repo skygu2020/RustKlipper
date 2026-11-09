@@ -1,3 +1,6 @@
+pub mod reactor;
+pub use reactor::{Reactor, ReactorError, TaskId};
+
 //! Core Rust Klipper host runtime.
 //!
 //! This crate owns printer lifecycle, typed object registration, configuration
@@ -135,6 +138,7 @@ pub struct Printer {
     objects: RwLock<HashMap<String, Arc<dyn Any + Send + Sync>>>,
     event_handlers: Mutex<HashMap<PrinterEventKind, Vec<EventHandler>>>,
     gcode: Mutex<GCodeDispatcher>,
+    reactor: Reactor,
 }
 
 impl Default for Printer {
@@ -152,6 +156,7 @@ impl Printer {
             objects: RwLock::new(HashMap::new()),
             event_handlers: Mutex::new(HashMap::new()),
             gcode: Mutex::new(GCodeDispatcher::new()),
+            reactor: Reactor::new(),
         }
     }
 
@@ -331,6 +336,16 @@ impl Printer {
         self.gcode.lock().expect("gcode dispatcher lock poisoned")
     }
 
+    /// Access the cooperative host event scheduler.
+    pub fn reactor(&self) -> &Reactor {
+        &self.reactor
+    }
+
+    /// Run callbacks and timers whose deadlines have elapsed.
+    pub fn run_reactor_once(&self) -> usize {
+        self.reactor.run_due(std::time::Instant::now())
+    }
+
     pub fn process_gcode_line(
         &self,
         line: &str,
@@ -482,6 +497,20 @@ mod tests {
             registry.register("fan", |_, _| Ok(())),
             Err(ComponentError::DuplicateFactory { .. })
         ));
+    }
+
+
+    #[test]
+    fn printer_exposes_reactor_for_host_callbacks() {
+        let printer = Printer::new();
+        let called = Arc::new(AtomicUsize::new(0));
+        let observed = called.clone();
+        printer.reactor().register_callback(move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+        });
+
+        assert_eq!(printer.run_reactor_once(), 1);
+        assert_eq!(called.load(Ordering::SeqCst), 1);
     }
 
     #[test]
