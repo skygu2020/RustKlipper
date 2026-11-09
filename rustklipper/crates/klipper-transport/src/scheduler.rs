@@ -508,6 +508,26 @@ mod tests {
     }
 
     #[test]
+    fn requeued_retry_is_eligible_at_the_existing_ack_clock() {
+        let mut scheduler = CommandScheduler::new();
+        let command = ScheduledCommand::new(vec![0x71], 100, 200);
+
+        // The first attempt becomes eligible when the MCU clock reaches 100.
+        scheduler.enqueue(7, command.clone()).unwrap();
+        assert_eq!(scheduler.promote_ready(100), None);
+        let first = scheduler.build_frame().unwrap().unwrap();
+        assert_eq!(first.notify_ids, Vec::<u64>::new());
+
+        // A response retry reuses the original absolute clock constraints.
+        // It must not need a new clock update to become eligible.
+        scheduler.enqueue(7, command).unwrap();
+        assert_eq!(scheduler.promote_ready(100), None);
+        let retry = scheduler.build_frame().unwrap().unwrap();
+        assert_eq!(retry.bytes.len(), first.bytes.len());
+        assert_eq!(retry.send_sequence, first.send_sequence + 1);
+    }
+
+    #[test]
     fn pending_block_limit_stops_additional_transmission() {
         let mut s = CommandScheduler::new();
         s.send_sequence = 13; s.receive_sequence = 1;
