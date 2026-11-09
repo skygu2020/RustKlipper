@@ -396,6 +396,19 @@ mod tests {
     }
 
     #[test]
+    fn in_flight_dispatcher_snapshot_survives_reset() {
+        let mut dispatcher = GCodeDispatcher::new();
+        dispatcher
+            .register_command("M999", true, None, |_| Ok(Vec::new()))
+            .unwrap();
+        let snapshot = dispatcher.clone();
+        dispatcher.reset();
+
+        assert!(snapshot.process_line("M999", true).unwrap().handler_found);
+        assert!(!dispatcher.process_line("M999", true).unwrap().handler_found);
+    }
+
+    #[test]
     fn reset_clears_handlers_muxes_and_ready_state() {
         let mut dispatcher = GCodeDispatcher::new();
         dispatcher
