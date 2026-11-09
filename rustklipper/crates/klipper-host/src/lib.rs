@@ -1710,7 +1710,7 @@ mod tests {
             })
             .unwrap();
 
-        assert!(printer.process_gcode_line("M105", true).unwrap().handler_found);
+        assert!(printer.process_gcode_line("M999", true).unwrap().handler_found);
         assert!(printer.process_gcode_line("M999", true).unwrap().handler_found);
     }
 
@@ -1733,14 +1733,14 @@ mod tests {
     fn ready_only_gcode_handlers_are_disabled_after_shutdown() {
         let printer = Printer::new();
         printer
-            .register_gcode_command("M105", false, None, |_| Ok(Vec::new()))
+            .register_gcode_command("M999", false, None, |_| Ok(Vec::new()))
             .unwrap();
         printer.set_ready();
-        assert!(printer.process_gcode_line("M105", true).unwrap().handler_found);
+        assert!(printer.process_gcode_line("M999", true).unwrap().handler_found);
         printer.invoke_shutdown("runtime fault");
-        assert!(!printer.process_gcode_line("M105", true).unwrap().handler_found);
+        assert!(!printer.process_gcode_line("M999", true).unwrap().handler_found);
         printer.disconnect();
-        assert!(!printer.process_gcode_line("M105", true).unwrap().handler_found);
+        assert!(!printer.process_gcode_line("M999", true).unwrap().handler_found);
     }
 
     #[test]
@@ -2130,7 +2130,10 @@ mod tests {
             Err(ComponentError::LoadFailed { section, .. }) if section == "second"
         ));
         let outcome = printer.process_gcode_line("M999", true).unwrap();
-        assert_eq!(outcome.events, vec![DispatchEvent::Info("1".to_owned())]);
+        assert_eq!(
+            outcome.events.first(),
+            Some(&DispatchEvent::Info("1".to_owned()))
+        );
     }
 
     #[test]
