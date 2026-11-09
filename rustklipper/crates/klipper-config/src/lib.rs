@@ -1344,6 +1344,23 @@ mod tests {
     }
 
     #[test]
+    fn usage_tracker_maps_config_choice_values() {
+        let config = ConfigDocument::parse("[heater]\ncontrol=pid\n").unwrap();
+        let tracker = ConfigUsageTracker::new();
+        let choices = vec![
+            ("pid".to_owned(), 1u8),
+            ("watermark".to_owned(), 2u8),
+        ];
+        assert_eq!(
+            tracker
+                .get_choice(&config, "heater", "control", &choices, None)
+                .unwrap(),
+            1
+        );
+        assert!(tracker.unused_options(&config).is_empty());
+    }
+
+    #[test]
     fn usage_tracker_parses_integer_and_float_lists() {
         let config = ConfigDocument::parse(
             "[stepper_x]\nposition=10, 20,30\n[bed_mesh]\nmesh_min=0.5,1.25\n",
