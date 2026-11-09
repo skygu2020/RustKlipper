@@ -465,7 +465,13 @@ impl Printer {
     }
 
     pub fn set_ready(&self) {
-        *self.state.write().expect("printer state lock poisoned") = PrinterState::Ready;
+        {
+            let mut state = self.state.write().expect("printer state lock poisoned");
+            if matches!(*state, PrinterState::Shutdown | PrinterState::Disconnected) {
+                return;
+            }
+            *state = PrinterState::Ready;
+        }
         *self.state_message.write().expect("printer state message lock poisoned") =
             "Printer is ready".to_owned();
         self.gcode
@@ -1274,17 +1280,25 @@ mod tests {
 
     #[test]
     fn shutdown_event_only_fires_after_ready() {
-        let printer = Printer::new();
+        let startup = Printer::new();
         let events = Arc::new(AtomicUsize::new(0));
         let observed = events.clone();
-        printer.register_event_handler(PrinterEventKind::Shutdown, move |_| {
+        startup.register_event_handler(PrinterEventKind::Shutdown, move |_| {
             observed.fetch_add(1, Ordering::SeqCst);
         });
 
-        printer.invoke_shutdown("startup failed");
+        startup.invoke_shutdown("startup failed");
         assert_eq!(events.load(Ordering::SeqCst), 0);
-        printer.set_ready();
-        printer.invoke_shutdown("runtime failure");
+        startup.set_ready();
+        assert_eq!(startup.state(), PrinterState::Shutdown);
+
+        let runtime = Printer::new();
+        let observed = events.clone();
+        runtime.register_event_handler(PrinterEventKind::Shutdown, move |_| {
+            observed.fetch_add(1, Ordering::SeqCst);
+        });
+        runtime.set_ready();
+        runtime.invoke_shutdown("runtime failure");
         assert_eq!(events.load(Ordering::SeqCst), 1);
     }
 }
