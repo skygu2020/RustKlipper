@@ -246,6 +246,27 @@ impl ConfigDocument {
             .collect()
     }
 
+    pub fn get_f64_list(&self, section: &str, option: &str, separator: char, count: Option<usize>)
+        -> Result<Vec<f64>, ConfigValueError>
+    {
+        self.get_list(section, option, separator, count)?
+            .into_iter()
+            .map(|value| {
+                let parsed: f64 = value.parse().map_err(|_| ConfigValueError::Invalid {
+                    section: section.to_owned(), option: option.to_owned(),
+                    value: value.clone(), expected: "number list",
+                })?;
+                if !parsed.is_finite() {
+                    return Err(ConfigValueError::Invalid {
+                        section: section.to_owned(), option: option.to_owned(),
+                        value, expected: "finite number list",
+                    });
+                }
+                Ok(parsed)
+            })
+            .collect()
+    }
+
     pub fn get_bool(&self, section: &str, option: &str) -> Result<bool, ConfigValueError> {
         let value = self.get_required(section, option)?;
         match value.to_ascii_lowercase().as_str() {
@@ -346,6 +367,15 @@ mod tests {
             config.get_list("stepper_x", "position", ',', Some(2)),
             Err(ConfigValueError::ElementCount { expected: 2, actual: 3, .. })
         ));
+    }
+
+    #[test]
+    fn parses_finite_float_lists() {
+        let config = ConfigDocument::parse("[bed_mesh]\\nmesh_min=0.5, 1.25\\n").unwrap();
+        assert_eq!(
+            config.get_f64_list("bed_mesh", "mesh_min", ',', Some(2)).unwrap(),
+            vec![0.5, 1.25],
+        );
     }
 
     #[test]
