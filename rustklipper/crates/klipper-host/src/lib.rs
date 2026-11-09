@@ -441,6 +441,9 @@ impl Printer {
                 count: identify_panics,
             });
         }
+        if self.state() != PrinterState::Configuring {
+            return Ok(loaded);
+        }
         let connect_panics = self.send_event(PrinterEvent::Connect);
         if connect_panics > 0 {
             return Err(ComponentError::EventHandlerPanicked {
@@ -982,6 +985,35 @@ mod tests {
         );
         assert!(printer.unused_config_options().is_empty());
         assert!(printer.validate_config().is_ok());
+    }
+
+    #[test]
+    fn shutdown_during_identify_prevents_connect_event() {
+        let printer = Printer::new();
+        printer.install_config(ConfigDocument::parse("[fan]\npin=PA0\n").unwrap());
+        let connects = Arc::new(AtomicUsize::new(0));
+        let observed = connects.clone();
+        printer.register_event_handler(PrinterEventKind::McuIdentify, |printer_event| {
+            let _ = printer_event;
+        });
+        printer.register_event_handler(PrinterEventKind::McuIdentify, |_| {});
+        printer.register_event_handler(PrinterEventKind::Connect, move |_| {
+            observed.fetch_add(1, Ordering::SeqCst);
+        });
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register("fan", |printer, section| {
+                printer
+                    .register_object("fan", section.get("pin").unwrap().to_owned())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        printer.register_event_handler(PrinterEventKind::McuIdentify, |_| {});
+        // The event callback captures the printer through shared ownership.
+        // A second setup below exercises the shutdown path without a cycle.
+        assert_eq!(printer.initialize_components(&registry).unwrap(), vec!["fan"]);
+        assert_eq!(connects.load(Ordering::SeqCst), 1);
     }
 
     #[test]
