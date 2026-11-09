@@ -139,7 +139,7 @@ impl Reactor {
     }
 
     /// Queue a callback for the next run_due() call.
-    pub fn register_callback<F>(&self, callback: F) -> TaskId
+    pub fn register_callback<F>(&self, mut callback: F) -> TaskId
     where
         F: FnMut() + Send + 'static,
     {
@@ -207,7 +207,7 @@ impl Reactor {
         &self,
         delay: Duration,
         interval: Option<Duration>,
-        callback: F,
+        mut callback: F,
     ) -> Result<TaskId, ReactorError>
     where
         F: FnMut() + Send + 'static,
