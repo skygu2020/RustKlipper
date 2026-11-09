@@ -190,7 +190,9 @@ impl GCodeDispatcher {
                 // Klipper intentionally handles these two requests before the
                 // printer is ready; M105 includes its ACK payload.
                 "M105" => {
-                    events.push(DispatchEvent::Ack(Some("T:0".to_owned())));
+                    if need_ack {
+                        events.push(DispatchEvent::Ack(Some("T:0".to_owned())));
+                    }
                     handler_found = true;
                 }
                 "M21" => handler_found = true,
