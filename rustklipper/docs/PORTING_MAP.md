@@ -4,7 +4,7 @@ Baseline: `282db764dc568841837f68af3964762189d2baee`.
 
 | Rust component | Upstream reference | Responsibility |
 |---|---|---|
-| `klipper-protocol` | `klippy/msgproto.py` | MCU wire framing, CRC, integer and message dictionary codec |
+| `klipper-protocol` | `klippy/msgproto.py` | MCU wire framing, CRC, integer and message dictionary codec (initial implementation committed) |
 | `klipper-transport` (planned) | `klippy/serialhdl.py` | USB serial lifecycle, reader/writer queues, ACK and response routing |
 | `klipper-reactor` (planned) | `klippy/reactor.py` | Timers, file readiness, async completions and event dispatch |
 | `klipper-clock` (planned) | `klippy/clocksync.py` | MCU clock extension, RTT tracking and host/MCU clock regression |
