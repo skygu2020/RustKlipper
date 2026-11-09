@@ -76,7 +76,7 @@ impl Reactor {
     where
         F: FnMut() + Send + 'static,
     {
-        if interval.is_some_and(Duration::is_zero) {
+        if interval.is_some_and(|value| value.is_zero()) {
             return Err(ReactorError::ZeroInterval);
         }
         Ok(self.insert_task(Instant::now() + delay, interval, callback))
