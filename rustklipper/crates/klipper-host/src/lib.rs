@@ -27,6 +27,14 @@ pub enum PrinterState {
     Disconnected,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrinterStateCategory {
+    Startup,
+    Ready,
+    Shutdown,
+    Error,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PrinterEventKind {
     ConfigLoaded,
@@ -169,6 +177,18 @@ impl Printer {
             .read()
             .expect("printer state message lock poisoned")
             .clone()
+    }
+
+    /// Return the UI-facing state category alongside the current message.
+    pub fn state_category(&self) -> PrinterStateCategory {
+        match self.state() {
+            PrinterState::Startup | PrinterState::Configuring => {
+                PrinterStateCategory::Startup
+            }
+            PrinterState::Ready => PrinterStateCategory::Ready,
+            PrinterState::Shutdown => PrinterStateCategory::Shutdown,
+            PrinterState::Disconnected => PrinterStateCategory::Error,
+        }
     }
 
     /// Load a Klipper config file, recursively expand its includes, and
@@ -441,6 +461,20 @@ mod tests {
     use super::*;
     use klipper_gcode::DispatchEvent;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn printer_state_category_tracks_lifecycle() {
+        let printer = Printer::new();
+        assert_eq!(printer.state_category(), PrinterStateCategory::Startup);
+        printer.set_configuring();
+        assert_eq!(printer.state_category(), PrinterStateCategory::Startup);
+        printer.set_ready();
+        assert_eq!(printer.state_category(), PrinterStateCategory::Ready);
+        printer.invoke_shutdown("failure");
+        assert_eq!(printer.state_category(), PrinterStateCategory::Shutdown);
+        printer.disconnect();
+        assert_eq!(printer.state_category(), PrinterStateCategory::Error);
+    }
 
     #[test]
     fn lifecycle_controls_gcode_readiness() {
