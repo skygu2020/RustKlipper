@@ -308,6 +308,15 @@ impl ReliableSerialSession {
     /// The caller must continue polling the session while waiting for the response.
     pub fn request_get_config(&mut self, queue_id: u64) -> Result<ResponseWaiter, SessionError> {
         self.ensure_connected()?;
+        if !matches!(
+            self.startup_stage,
+            McuStartupStage::ClockReady | McuStartupStage::Configuring
+        ) {
+            return Err(SessionError::StartupOrder {
+                expected: "ClockReady or Configuring",
+                actual: self.startup_stage,
+            });
+        }
         let dictionary = self.dictionary.as_ref().ok_or_else(|| {
             SessionError::Dictionary(DictionaryError::UnknownMessage("get_config".into()))
         })?;
