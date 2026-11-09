@@ -46,6 +46,10 @@ pub enum ScheduleError {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReceivedFrameResult {
     pub receive_sequence: u64,
+    /// Matches serialqueue's last_receive_sent_time for ACK notifications.
+    pub last_receive_sent_time: f64,
+    /// Timestamp attached to a data response (zero after retransmit cutoff).
+    pub response_sent_time: f64,
     pub has_payload: bool,
     pub acknowledged: Vec<crate::retransmit::TrackedFrame>,
     pub retransmissions: Vec<Retransmission>,
@@ -220,7 +224,8 @@ impl CommandScheduler {
         }
         let mut acknowledged = Vec::new();
         if receive_sequence > self.receive_sequence {
-            acknowledged = self.retransmit.acknowledge(receive_sequence, now)?.acknowledged;
+            let ack_result = self.retransmit.acknowledge(receive_sequence, now)?;
+            acknowledged = ack_result.acknowledged;
             self.acknowledge(receive_sequence, 0);
         }
         let retransmissions = if frame.payload.is_empty() {
@@ -231,8 +236,13 @@ impl CommandScheduler {
             }
             self.retransmit.handle_empty_ack(receive_sequence, self.send_sequence, now)?
         } else { Vec::new() };
+        let last_receive_sent_time = self.retransmit.last_receive_sent_time();
+        let response_sent_time = if receive_sequence > self.retransmit.retransmit_sequence() {
+            last_receive_sent_time
+        } else { 0.0 };
         Ok(ReceivedFrameResult {
-            receive_sequence, has_payload: !frame.payload.is_empty(),
+            receive_sequence, last_receive_sent_time, response_sent_time,
+            has_payload: !frame.payload.is_empty(),
             acknowledged, retransmissions,
         })
     }
@@ -440,6 +450,25 @@ mod tests {
         assert_eq!(s.last_ack_sequence, 0);
         assert_eq!(s.sent_blocks.len(), 1);
         assert_eq!(s.sent_blocks.front().unwrap().0, frames[2].send_sequence);
+    }
+
+    #[test]
+    fn data_response_uses_last_acknowledged_frame_timestamp() {
+        let mut s = CommandScheduler::new();
+        s.enqueue(1, ScheduledCommand::new(vec![0x61], 0, 1)).unwrap();
+        s.promote_ready(0);
+        let sent = s.build_frame().unwrap().unwrap();
+        s.mark_frame_sent(&sent, 1.0).unwrap();
+
+        let response = Frame { sequence: 2, payload: vec![0x55] };
+        let first = s.handle_received_frame(&response, 1.5).unwrap();
+        assert_eq!(first.last_receive_sent_time, 1.0);
+        assert_eq!(first.response_sent_time, 1.0);
+
+        let next = Frame { sequence: 2, payload: vec![0x56] };
+        let second = s.handle_received_frame(&next, 1.6).unwrap();
+        assert_eq!(second.last_receive_sent_time, 1.0);
+        assert_eq!(second.response_sent_time, 1.0);
     }
 
     #[test]

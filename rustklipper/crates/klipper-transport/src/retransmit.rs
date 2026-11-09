@@ -30,6 +30,8 @@ pub struct Retransmission {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AckResult {
     pub acknowledged: Vec<TrackedFrame>,
+    /// Timestamp of the most recently acknowledged host frame, retained across duplicate ACKs.
+    pub last_receive_sent_time: f64,
     /// Set when duplicate ACKs trigger fast retransmission.
     pub fast_retransmit: Option<Retransmission>,
     /// RTT sample used for the estimator, if this ACK provided an unambiguous sample.
@@ -70,6 +72,7 @@ pub struct RetransmitState {
     rtt_sample_seq: Option<u64>,
     retransmit_deadline: Option<f64>,
     wire_time_per_byte: f64,
+    last_receive_sent_time: f64,
 }
 
 impl Default for RetransmitState {
@@ -86,6 +89,7 @@ impl Default for RetransmitState {
             rtt_sample_seq: None,
             retransmit_deadline: None,
             wire_time_per_byte: 0.0,
+            last_receive_sent_time: 0.0,
         }
     }
 }
@@ -97,6 +101,8 @@ impl RetransmitState {
     pub fn rto(&self) -> f64 { self.rto }
     pub fn outstanding_len(&self) -> usize { self.outstanding.len() }
     pub fn is_empty(&self) -> bool { self.outstanding.is_empty() }
+    pub fn last_receive_sent_time(&self) -> f64 { self.last_receive_sent_time }
+    pub fn retransmit_sequence(&self) -> u64 { self.retransmit_sequence }
 
     /// Configure UART 8N1 transmission time per byte for ACK deadline margin.
     pub fn set_wire_time_per_byte(&mut self, seconds: f64) -> Result<(), RetransmitError> {
@@ -152,7 +158,7 @@ impl RetransmitState {
     {
         self.validate_time(now)?;
         if ack_sequence < self.last_ack_seq {
-            return Ok(AckResult { acknowledged: Vec::new(), fast_retransmit: None, rtt_sample_seconds: None });
+            return Ok(AckResult { acknowledged: Vec::new(), last_receive_sent_time: self.last_receive_sent_time, fast_retransmit: None, rtt_sample_seconds: None });
         }
 
         let mut acknowledged = Vec::new();
@@ -167,6 +173,10 @@ impl RetransmitState {
 
         // serialqueue.c samples once per RTT window, using the transmission
         // completion time of the block immediately preceding the received seq.
+        if let Some(sent_time) = last_receive_sent_time {
+            self.last_receive_sent_time = sent_time;
+        }
+
         let rtt_sample_seconds = if self.rtt_sample_seq.is_some_and(|seq| ack_sequence > seq) {
             self.rtt_sample_seq = None;
             if last_frame_retransmitted {
@@ -190,7 +200,7 @@ impl RetransmitState {
             self.retransmit_deadline = Some(now + self.rto + oldest_wire_time);
         }
 
-        Ok(AckResult { acknowledged, fast_retransmit: None, rtt_sample_seconds })
+        Ok(AckResult { acknowledged, last_receive_sent_time: self.last_receive_sent_time, fast_retransmit: None, rtt_sample_seconds })
     }
 
     /// Process an empty MCU message block using serialqueue.c's NAK rules.

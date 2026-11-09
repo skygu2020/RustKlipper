@@ -5,7 +5,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AckEvent { pub sent_time: f64, pub receive_time: f64 }
 #[derive(Debug)]
-struct PendingAck { required_send_seq: Option<u64>, sent_time: Option<f64>, send_order: u64, sender: Sender<AckEvent> }
+struct PendingAck { required_send_seq: Option<u64>, send_order: u64, sender: Sender<AckEvent> }
 
 /// Tracks notify IDs against extended (not four-bit wire) send sequence numbers.
 #[derive(Debug, Default)]
@@ -21,7 +21,7 @@ impl AckTracker {
         let (tx, rx) = mpsc::channel();
         let send_order = self.next_send_order;
         self.next_send_order = self.next_send_order.wrapping_add(1);
-        self.pending.insert(id, PendingAck { required_send_seq: Some(required_send_seq), sent_time: None, send_order, sender: tx });
+        self.pending.insert(id, PendingAck { required_send_seq: Some(required_send_seq), send_order, sender: tx });
         (id, rx)
     }
     /// Reserve a caller-selected notify ID before enqueueing its command.
@@ -29,15 +29,14 @@ impl AckTracker {
     pub fn register_notify(&mut self, id: u64) -> Option<Receiver<AckEvent>> {
         if self.pending.contains_key(&id) { return None; }
         let (tx, rx) = mpsc::channel();
-        self.pending.insert(id, PendingAck { required_send_seq: None, sent_time: None, send_order: u64::MAX, sender: tx });
+        self.pending.insert(id, PendingAck { required_send_seq: None, send_order: u64::MAX, sender: tx });
         Some(rx)
     }
 
-    pub fn mark_sent(&mut self, id: u64, required_send_seq: u64, sent_time: f64) -> bool {
+    pub fn mark_sent(&mut self, id: u64, required_send_seq: u64, _sent_time: f64) -> bool {
         let Some(pending) = self.pending.get_mut(&id) else { return false; };
         if pending.required_send_seq.is_some() { return false; }
         pending.required_send_seq = Some(required_send_seq);
-        pending.sent_time = Some(sent_time);
         pending.send_order = self.next_send_order;
         self.next_send_order = self.next_send_order.wrapping_add(1);
         true
@@ -58,7 +57,7 @@ impl AckTracker {
         for (_, _, id) in completed {
             if let Some(p) = self.pending.remove(&id) {
                 let event = AckEvent {
-                    sent_time: p.sent_time.unwrap_or(fallback_sent_time),
+                    sent_time: fallback_sent_time,
                     receive_time,
                 };
                 let _ = p.sender.send(event);
@@ -97,7 +96,7 @@ mod tests {
         assert_eq!(rx.recv().unwrap(), AckEvent { sent_time: 1.1, receive_time: 2.1 });
     }
     #[test]
-    fn notify_uses_its_own_successful_send_timestamp() {
+    fn notify_uses_acknowledged_frame_timestamp_for_all_notifications() {
         let mut tracker = AckTracker::new();
         let first = tracker.register_notify(41).unwrap();
         let second = tracker.register_notify(42).unwrap();
@@ -105,11 +104,11 @@ mod tests {
         assert!(tracker.mark_sent(42, 11, 1.75));
         let completed = tracker.acknowledge_events(12, false, 99.0, 2.0);
         assert_eq!(completed, vec![
-            (41, AckEvent { sent_time: 1.25, receive_time: 2.0 }),
-            (42, AckEvent { sent_time: 1.75, receive_time: 2.0 }),
+            (41, AckEvent { sent_time: 99.0, receive_time: 2.0 }),
+            (42, AckEvent { sent_time: 99.0, receive_time: 2.0 }),
         ]);
-        assert_eq!(first.recv().unwrap().sent_time, 1.25);
-        assert_eq!(second.recv().unwrap().sent_time, 1.75);
+        assert_eq!(first.recv().unwrap().sent_time, 99.0);
+        assert_eq!(second.recv().unwrap().sent_time, 99.0);
     }
 
 

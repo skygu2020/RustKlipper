@@ -67,7 +67,7 @@ pub enum IdentifyProgress {
 /// A transport or protocol error is terminal for this session. Re-open the
 /// serial device and perform MCU identify/configuration again before reuse.
 #[derive(Debug, Clone)]
-struct PendingResponseSend { name: String, oid: Option<u32>, sent_time: f64 }
+struct PendingResponseSend { name: String, oid: Option<u32> }
 
 pub struct ReliableSerialSession {
     transport: UsbSerialTransport,
@@ -349,6 +349,7 @@ impl ReliableSerialSession {
         &mut self,
         name: String,
         params: BTreeMap<String, Value>,
+        sent_time: f64,
         receive_time: f64,
         events: &mut Vec<SessionEvent>,
     ) {
@@ -368,7 +369,7 @@ impl ReliableSerialSession {
                 .expect("located response request must exist");
             self.response_router.dispatch(Response {
                 name: name.clone(), oid, params: params.clone(),
-                sent_time: pending.sent_time, receive_time,
+                sent_time, receive_time,
             })
         } else { false };
         events.push(SessionEvent::DecodedMessage { name: name.clone(), params, receive_time });
@@ -468,7 +469,7 @@ impl ReliableSerialSession {
 
             let receive_time = self.now();
             for (id, ack) in self.ack_tracker.acknowledge_events(
-                result.receive_sequence, result.has_payload, 0.0, receive_time,
+                result.receive_sequence, result.has_payload, result.last_receive_sent_time, receive_time,
             ) {
                 if let Some(receiver) = self.response_ack_receivers.remove(&id) {
                     // Consume the same event through the waiter channel as well;
@@ -486,7 +487,7 @@ impl ReliableSerialSession {
                     match dictionary.decode_messages(&frame.payload) {
                         Ok(messages) => {
                             for (name, params) in messages {
-                                self.route_decoded_message(name, params, receive_time, &mut events);
+                                self.route_decoded_message(name, params, result.response_sent_time, receive_time, &mut events);
                             }
                         }
                         Err(error) => events.push(SessionEvent::DecodeError {
@@ -549,9 +550,7 @@ impl ReliableSerialSession {
                     return Err(SessionError::Notification(*id));
                 }
                 if let Some((name, oid)) = self.response_requests.remove(id) {
-                    self.sent_response_requests.push_back(PendingResponseSend {
-                        name, oid, sent_time: sent_at,
-                    });
+                    self.sent_response_requests.push_back(PendingResponseSend { name, oid });
                 }
             }
             events.push(SessionEvent::Sent {
