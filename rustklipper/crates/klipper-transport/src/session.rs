@@ -1188,6 +1188,7 @@ impl ReliableSerialSession {
         if let Some(timing) = &mut self.uart_timing {
             timing.reset_idle(write_started_at);
             timing.reserve_transmission(write_started_at, 0, batch_bytes);
+            timing.observe_pending(self.now(), self.transport.bytes_to_write()? as usize);
         }
         for retry in retries {
             if let Err(error) = self.scheduler.retransmit_state_mut()
@@ -1418,6 +1419,7 @@ impl ReliableSerialSession {
             let sent_at = write_started_at;
             if let Some(timing) = &mut self.uart_timing {
                 timing.reserve_transmission(write_started_at, 0, frame.bytes.len());
+                timing.observe_pending(self.now(), self.transport.bytes_to_write()? as usize);
             }
             if let Err(error) = self.scheduler.mark_frame_sent(&frame, sent_at) {
                 self.disconnected = true;
