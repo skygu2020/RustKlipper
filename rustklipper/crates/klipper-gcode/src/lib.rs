@@ -225,7 +225,7 @@ fn shell_tokens(input: &str) -> Result<Vec<String>, ()> {
             active = true;
             continue;
         }
-        if ch == '\\\\' && quote.is_some() {
+        if ch == '\\' && quote.is_some() {
             escaped = true;
             continue;
         }
