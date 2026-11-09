@@ -1687,6 +1687,12 @@ mod read_timeout_deadline_tests {
     use std::time::Duration;
 
     #[test]
+    fn read_timeout_without_send_deadline_keeps_configured_value() {
+        let configured = Duration::from_millis(20);
+        assert_eq!(read_timeout_until(configured, 1.0, None), configured);
+    }
+
+    #[test]
     fn read_timeout_is_shortened_to_a_nearby_send_deadline() {
         assert_eq!(
             read_timeout_until(Duration::from_millis(20), 0.0, Some(0.005)),
