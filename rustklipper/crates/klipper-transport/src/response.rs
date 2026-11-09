@@ -333,11 +333,13 @@ mod tests {
         let router = ResponseRouter::new();
         let cancelled = router.register("status", Some(5));
         let live = router.register("status", Some(5));
+        let cancelled_id = router.claim_oldest("status", Some(5)).unwrap();
         let live_id = router.claim_oldest("status", Some(5)).unwrap();
 
         // The consuming API relies on ResponseWaiter::drop to unregister.
         cancelled.cancel();
 
+        assert!(!router.contains_waiter("status", Some(5), cancelled_id));
         assert_eq!(router.pending_count("status", Some(5)), 1);
         assert!(router.contains_waiter("status", Some(5), live_id));
         assert!(router.dispatch_to_waiter(response("status", Some(5)), live_id));
