@@ -222,6 +222,19 @@ fn earliest_retry_deadline(
     })
 }
 
+fn due_retry_transaction_ids(
+    transactions: &HashMap<u64, PendingRetryRequest>,
+    now: f64,
+) -> Vec<u64> {
+    transactions.iter()
+        .filter_map(|(id, pending)| {
+            pending.transaction.retry_deadline()
+                .filter(|deadline| now >= *deadline)
+                .map(|_| *id)
+        })
+        .collect()
+}
+
 fn periodic_clock_deadline(
     queue_configured: bool,
     request_in_flight: bool,
@@ -1536,13 +1549,7 @@ impl ReliableSerialSession {
         // Inspect due deadlines without consuming them. If scheduler enqueue
         // fails, the deadline must remain armed so the next poll can retry the
         // operation instead of leaving a live transaction permanently idle.
-        let due: Vec<u64> = self.retry_transactions.iter()
-            .filter_map(|(id, pending)| {
-                pending.transaction.retry_deadline()
-                    .filter(|deadline| now >= *deadline)
-                    .map(|_| *id)
-            })
-            .collect();
+        let due = due_retry_transaction_ids(&self.retry_transactions, now);
         for transaction_id in due {
             let command = match self.retry_transactions.get(&transaction_id) {
                 Some(pending) => pending.command.clone(),
@@ -2200,5 +2207,37 @@ mod combined_poll_deadline_tests {
     fn ignores_unarmed_sources_and_returns_none_when_idle() {
         assert_eq!(combined_poll_deadline(Some(5.0), None, Some(7.0)), Some(5.0));
         assert_eq!(combined_poll_deadline(None, None, None), None);
+    }
+}
+
+#[cfg(test)]
+mod due_retry_selection_tests {
+    use super::*;
+
+    #[test]
+    fn selecting_due_retry_does_not_consume_its_deadline() {
+        let mut transaction = RetryTransaction::default();
+        assert_eq!(
+            transaction.attempt_acked(1.0),
+            AckRetryDecision::RetryAfter(std::time::Duration::from_millis(10)),
+        );
+        let deadline = transaction.retry_deadline().unwrap();
+        let pending = PendingRetryRequest {
+            queue_id: 7,
+            command: ScheduledCommand::new(vec![0x01], 0, 0),
+            name: "status".into(),
+            oid: Some(3),
+            waiter_id: 11,
+            transaction,
+        };
+        let transactions = HashMap::from([(9, pending)]);
+
+        assert!(due_retry_transaction_ids(&transactions, deadline - 0.001).is_empty());
+        assert_eq!(due_retry_transaction_ids(&transactions, deadline), vec![9]);
+        assert_eq!(
+            transactions[&9].transaction.retry_deadline(),
+            Some(deadline),
+            "inspection must leave the deadline armed until enqueue succeeds",
+        );
     }
 }
