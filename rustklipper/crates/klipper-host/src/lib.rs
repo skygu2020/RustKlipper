@@ -1822,6 +1822,61 @@ mod tests {
     }
 
     #[test]
+    fn config_reinstall_waits_for_in_progress_component_factory() {
+        let printer = Arc::new(Printer::new());
+        printer.install_config(ConfigDocument::parse("[macro]\n").unwrap());
+
+        let factory_entered = Arc::new(std::sync::Barrier::new(2));
+        let release_factory = Arc::new(std::sync::Barrier::new(2));
+        let mut registry = ComponentRegistry::new();
+        let entered = factory_entered.clone();
+        let release = release_factory.clone();
+        registry
+            .register("macro", move |printer, _| {
+                entered.wait();
+                release.wait();
+                printer
+                    .register_component_gcode_command("macro", "M999", true, None, |_| {
+                        Ok(Vec::new())
+                    })
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        let loading_printer = printer.clone();
+        let loading_registry = Arc::new(registry);
+        let loading = std::thread::spawn(move || {
+            loading_printer.load_components(&loading_registry).unwrap();
+        });
+        factory_entered.wait();
+
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let installing_printer = printer.clone();
+        let installing = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            installing_printer.install_config(
+                ConfigDocument::parse("[macro]\nname=reloaded\n").unwrap(),
+            );
+            finished_tx.send(()).unwrap();
+        });
+        started_rx.recv().unwrap();
+        assert!(finished_rx.recv_timeout(std::time::Duration::from_millis(10)).is_err());
+
+        release_factory.wait();
+        loading.join().unwrap();
+        finished_rx.recv_timeout(std::time::Duration::from_secs(1)).unwrap();
+        installing.join().unwrap();
+
+        assert_eq!(
+            printer.config().unwrap().get("macro", "name"),
+            Some("reloaded")
+        );
+        assert!(!printer.registered_gcode_commands().contains(&"M999".to_owned()));
+        assert!(printer.loaded_component_names().is_empty());
+    }
+
+    #[test]
     fn component_gcode_command_cannot_be_owned_by_two_components() {
         let printer = Printer::new();
         printer
