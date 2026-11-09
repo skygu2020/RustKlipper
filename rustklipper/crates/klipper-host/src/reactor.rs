@@ -10,11 +10,11 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 pub type TaskId = u64;
-type Callback = Box<dyn FnMut() + Send + 'static>;
+type Callback = Box<dyn FnMut(Instant) -> Option<Instant> + Send + 'static>;
 
 struct Task {
     callback: Callback,
-    interval: Option<Duration>,
+    deadline: Instant,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,7 +62,7 @@ impl Reactor {
     where
         F: FnMut() + Send + 'static,
     {
-        self.insert_task(Instant::now(), None, callback)
+        self.insert_task(Instant::now(), move |_| { callback(); None })
     }
 
     /// Register a one-shot or periodic timer.
@@ -81,17 +81,41 @@ impl Reactor {
         if interval.is_some_and(|value| value.is_zero()) {
             return Err(ReactorError::ZeroInterval);
         }
-        Ok(self.insert_task(Instant::now() + delay, interval, callback))
+        let deadline = Instant::now() + delay;
+        let next_interval = interval;
+        Ok(self.insert_task(deadline, move |eventtime| {
+            callback();
+            next_interval.map(|value| eventtime + value)
+        }))
     }
 
-    fn insert_task<F>(
-        &self,
-        deadline: Instant,
-        interval: Option<Duration>,
-        callback: F,
-    ) -> TaskId
+    /// Register a Klipper-style timer whose callback chooses its next deadline.
+    /// Returning `None` unregisters the timer; returning a deadline reschedules it.
+    pub fn register_timer_at<F>(&self, deadline: Instant, callback: F) -> TaskId
     where
-        F: FnMut() + Send + 'static,
+        F: FnMut(Instant) -> Option<Instant> + Send + 'static,
+    {
+        self.insert_task(deadline, callback)
+    }
+
+    /// Update a pending timer deadline. Running timers cannot be updated.
+    /// Returns false when the timer is unknown or currently executing.
+    pub fn update_timer(&self, id: TaskId, deadline: Instant) -> bool {
+        let mut state = self.state.lock().expect("reactor lock poisoned");
+        if state.running.contains(&id) {
+            return false;
+        }
+        let Some(task) = state.tasks.get_mut(&id) else {
+            return false;
+        };
+        task.deadline = deadline;
+        state.queue.push(Reverse(Scheduled { deadline, id }));
+        true
+    }
+
+    fn insert_task<F>(&self, deadline: Instant, callback: F) -> TaskId
+    where
+        F: FnMut(Instant) -> Option<Instant> + Send + 'static,
     {
         let mut state = self.state.lock().expect("reactor lock poisoned");
         state.next_id = state.next_id.wrapping_add(1).max(1);
@@ -100,7 +124,7 @@ impl Reactor {
             id,
             Task {
                 callback: Box::new(callback),
-                interval,
+                deadline,
             },
         );
         state.queue.push(Reverse(Scheduled { deadline, id }));
@@ -136,23 +160,27 @@ impl Reactor {
                     break;
                 }
                 state.queue.pop();
-                let Some(task) = state.tasks.remove(&entry.id) else {
+                let Some(task) = state.tasks.get(&entry.id) else {
                     continue;
                 };
+                if task.deadline != entry.deadline {
+                    continue;
+                }
+                let task = state.tasks.remove(&entry.id).expect("task was just checked");
                 state.running.insert(entry.id);
                 (entry, task)
             };
 
             let (entry, mut task) = next;
-            (task.callback)();
+            let next_deadline = (task.callback)(entry.deadline);
             executed += 1;
 
             let mut state = self.state.lock().expect("reactor lock poisoned");
             state.running.remove(&entry.id);
             let cancelled = state.cancelled.remove(&entry.id);
-            if let Some(interval) = task.interval {
-                if !cancelled {
-                    let deadline = entry.deadline + interval;
+            if !cancelled {
+                if let Some(deadline) = next_deadline {
+                    task.deadline = deadline;
                     state.tasks.insert(entry.id, task);
                     state.queue.push(Reverse(Scheduled {
                         deadline,
@@ -169,7 +197,7 @@ impl Reactor {
         let mut state = self.state.lock().expect("reactor lock poisoned");
         loop {
             let Reverse(entry) = state.queue.peek().copied()?;
-            if state.tasks.contains_key(&entry.id) {
+            if state.tasks.get(&entry.id).is_some_and(|task| task.deadline == entry.deadline) {
                 return Some(entry.deadline);
             }
             state.queue.pop();
@@ -345,6 +373,42 @@ mod tests {
         assert_eq!(reactor.run_due(Instant::now() + Duration::from_secs(1)), 2);
         assert_eq!(reactor.run_due(Instant::now() + Duration::from_secs(1)), 0);
         assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+
+    #[test]
+    fn timer_callback_can_choose_its_next_deadline() {
+        let reactor = Reactor::new();
+        let count = std::sync::Arc::new(AtomicUsize::new(0));
+        let observed = count.clone();
+        let start = Instant::now();
+        reactor.register_timer_at(start, move |eventtime| {
+            let current = observed.fetch_add(1, Ordering::SeqCst);
+            if current == 0 { Some(eventtime + Duration::from_secs(5)) } else { None }
+        });
+        assert_eq!(reactor.run_due(start + Duration::from_secs(1)), 1);
+        assert_eq!(reactor.pending_tasks(), 1);
+        assert_eq!(reactor.run_due(start + Duration::from_secs(4)), 0);
+        assert_eq!(reactor.run_due(start + Duration::from_secs(6)), 1);
+        assert_eq!(reactor.pending_tasks(), 0);
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn update_timer_replaces_the_pending_deadline() {
+        let reactor = Reactor::new();
+        let start = Instant::now();
+        let count = std::sync::Arc::new(AtomicUsize::new(0));
+        let observed = count.clone();
+        let id = reactor.register_timer_at(start + Duration::from_secs(30), move |_| {
+            observed.fetch_add(1, Ordering::SeqCst);
+            None
+        });
+        assert!(reactor.update_timer(id, start + Duration::from_secs(2)));
+        assert_eq!(reactor.next_deadline(), Some(start + Duration::from_secs(2)));
+        assert_eq!(reactor.run_due(start + Duration::from_secs(3)), 1);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert!(!reactor.update_timer(id, start + Duration::from_secs(4)));
     }
 
     #[test]
