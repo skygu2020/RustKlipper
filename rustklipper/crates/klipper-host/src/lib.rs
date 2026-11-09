@@ -227,7 +227,11 @@ impl Printer {
     /// Enter shutdown. Klipper's shutdown event is emitted only if the printer
     /// had reached the ready state.
     pub fn invoke_shutdown(&self, reason: impl Into<String>) {
-        let was_ready = self.state() == PrinterState::Ready;
+        let current_state = self.state();
+        if current_state == PrinterState::Shutdown {
+            return;
+        }
+        let was_ready = current_state == PrinterState::Ready;
         let reason = reason.into();
         *self.state.write().expect("printer state lock poisoned") = PrinterState::Shutdown;
         *self.state_message.write().expect("printer state message lock poisoned") =
@@ -594,6 +598,15 @@ mod tests {
 
         assert_eq!(printer.run_reactor_once(), 1);
         assert_eq!(called.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn repeated_shutdown_preserves_the_first_reason() {
+        let printer = Printer::new();
+        printer.invoke_shutdown("initial failure");
+        printer.invoke_shutdown("secondary failure");
+        assert_eq!(printer.state(), PrinterState::Shutdown);
+        assert_eq!(printer.state_message(), "initial failure");
     }
 
     #[test]
