@@ -196,7 +196,10 @@ impl ComponentRegistry {
         loading: &mut HashSet<String>,
         requested_by: Option<&str>,
     ) -> Result<(), ComponentError> {
-        if loaded_set.contains(name) || printer.has_object(name) {
+        if loaded_set.contains(name)
+            || printer.is_component_loaded(name)
+            || printer.has_object(name)
+        {
             return Ok(());
         }
         let Some(entry) = self.factories.get(name) else {
@@ -244,6 +247,7 @@ impl ComponentRegistry {
         })?;
         loading.remove(name);
         loaded_set.insert(name.to_owned());
+        printer.mark_component_loaded(name);
         loaded.push(name.to_owned());
         Ok(())
     }
@@ -278,6 +282,7 @@ pub struct Printer {
     state_message: RwLock<String>,
     config: RwLock<Option<Arc<ConfigDocument>>>,
     config_usage: ConfigUsageTracker,
+    loaded_components: Mutex<HashSet<String>>,
     objects: RwLock<HashMap<String, Arc<dyn Any + Send + Sync>>>,
     event_handlers: Mutex<HashMap<PrinterEventKind, Vec<EventHandler>>>,
     gcode: Mutex<GCodeDispatcher>,
@@ -297,6 +302,7 @@ impl Printer {
             state_message: RwLock::new("Printer is not ready".to_owned()),
             config: RwLock::new(None),
             config_usage: ConfigUsageTracker::new(),
+            loaded_components: Mutex::new(HashSet::new()),
             objects: RwLock::new(HashMap::new()),
             event_handlers: Mutex::new(HashMap::new()),
             gcode: Mutex::new(GCodeDispatcher::new()),
@@ -374,6 +380,14 @@ impl Printer {
     /// Install a parsed host configuration and enter the configuring state.
     pub fn install_config(&self, config: ConfigDocument) {
         self.config_usage.clear();
+        self.loaded_components
+            .lock()
+            .expect("loaded component lock poisoned")
+            .clear();
+        self.objects
+            .write()
+            .expect("printer object lock poisoned")
+            .clear();
         *self.config.write().expect("printer config lock poisoned") = Some(Arc::new(config));
         self.set_configuring();
         self.send_event(PrinterEvent::ConfigLoaded);
@@ -801,6 +815,20 @@ impl Printer {
             right_exact.cmp(&left_exact).then_with(|| left.0.cmp(&right.0))
         });
         matches
+    }
+
+    fn is_component_loaded(&self, section: &str) -> bool {
+        self.loaded_components
+            .lock()
+            .expect("loaded component lock poisoned")
+            .contains(section)
+    }
+
+    fn mark_component_loaded(&self, section: &str) {
+        self.loaded_components
+            .lock()
+            .expect("loaded component lock poisoned")
+            .insert(section.to_owned());
     }
 
     pub fn has_object(&self, name: &str) -> bool {
@@ -1558,6 +1586,30 @@ mod tests {
                 dependency,
             }) if section == "consumer" && dependency == "missing"
         ));
+    }
+
+    #[test]
+    fn component_loading_is_cached_until_config_reinstall() {
+        let printer = Printer::new();
+        printer.install_config(ConfigDocument::parse("[fan]\npin=PA0\n").unwrap());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register("fan", move |_, section| {
+                observed.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(section.get("pin"), Some("PA0"));
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(printer.load_components(&registry).unwrap(), vec!["fan"]);
+        assert!(printer.load_components(&registry).unwrap().is_empty());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        printer.install_config(ConfigDocument::parse("[fan]\npin=PB0\n").unwrap());
+        assert_eq!(printer.load_components(&registry).unwrap(), vec!["fan"]);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     #[test]
