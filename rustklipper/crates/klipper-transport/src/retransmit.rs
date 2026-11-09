@@ -104,6 +104,7 @@ impl RetransmitState {
     pub fn is_empty(&self) -> bool { self.outstanding.is_empty() }
     pub fn last_receive_sent_time(&self) -> f64 { self.last_receive_sent_time }
     pub fn retransmit_sequence(&self) -> u64 { self.retransmit_sequence }
+    pub fn retransmit_deadline(&self) -> Option<f64> { self.retransmit_deadline }
 
     /// Configure UART 8N1 transmission time per byte for ACK deadline margin.
     pub fn set_wire_time_per_byte(&mut self, seconds: f64) -> Result<(), RetransmitError> {
