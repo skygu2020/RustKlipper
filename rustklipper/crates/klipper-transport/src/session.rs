@@ -67,6 +67,18 @@ pub enum IdentifyProgress {
     Complete { version: String },
 }
 
+/// Observable high-level state of the MCU startup sequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McuStartupStage {
+    AwaitingIdentify,
+    Identified,
+    AwaitingUptime,
+    CalibratingClock { remaining_samples: u8 },
+    ClockReady,
+    Configuring,
+    Ready,
+}
+
 /// Owns one USB serial link and its reliable MCU command scheduler.
 ///
 /// A transport or protocol error is terminal for this session. Re-open the
@@ -138,6 +150,7 @@ pub struct ReliableSerialSession {
     dictionary: Option<IdentifyDictionary>,
     clock_sync: Option<crate::ClockSync>,
     clock_calibration_remaining: u8,
+    startup_stage: McuStartupStage,
     identify_assembler: IdentifyAssembler,
     identify_queue_id: Option<u64>,
     identify_chunk_count: Option<u8>,
@@ -176,6 +189,7 @@ impl ReliableSerialSession {
             dictionary: None,
             clock_sync: None,
             clock_calibration_remaining: 0,
+            startup_stage: McuStartupStage::AwaitingIdentify,
             identify_assembler: IdentifyAssembler::new(),
             identify_queue_id: None,
             identify_chunk_count: None,
@@ -207,9 +221,16 @@ impl ReliableSerialSession {
     /// Install the MCU-provided dictionary after identify has completed.
     pub fn set_dictionary(&mut self, dictionary: IdentifyDictionary) {
         self.dictionary = Some(dictionary);
+        self.startup_stage = McuStartupStage::Identified;
     }
 
     pub fn has_dictionary(&self) -> bool { self.dictionary.is_some() }
+
+    /// Current high-level MCU startup phase. This is observational; the
+    /// lower-level request APIs remain available for advanced/manual flows.
+    pub fn startup_stage(&self) -> McuStartupStage {
+        self.startup_stage
+    }
 
     /// Consume one bootstrap identify_response chunk. Returns the next byte
     /// offset while more data is needed; installs the dictionary on completion.
@@ -289,7 +310,12 @@ impl ReliableSerialSession {
                 reason: "startup clock calibration is already in progress".into(),
             }));
         }
-        self.request_get_uptime(queue_id)
+        if !self.has_dictionary() {
+            return Err(SessionError::Dictionary(DictionaryError::UnknownMessage("get_uptime".into())));
+        }
+        let waiter = self.request_get_uptime(queue_id)?;
+        self.startup_stage = McuStartupStage::AwaitingUptime;
+        Ok(waiter)
     }
     /// Queue Klipper's initial uptime query after identify has installed the dictionary.
     /// The returned response carries the actual UART-write timestamp used to
@@ -422,11 +448,13 @@ impl ReliableSerialSession {
         let clock_sync = self.clock_sync_from_uptime_response(uptime_response)?;
         self.clock_sync = Some(clock_sync);
         self.clock_calibration_remaining = 8;
+        self.startup_stage = McuStartupStage::CalibratingClock { remaining_samples: 8 };
         match self.request_get_clock(queue_id) {
             Ok(waiter) => Ok(waiter),
             Err(error) => {
                 self.clock_calibration_remaining = 0;
                 self.clock_sync = None;
+                self.startup_stage = McuStartupStage::AwaitingUptime;
                 Err(error)
             }
         }
@@ -452,8 +480,12 @@ impl ReliableSerialSession {
         }
         self.clock_calibration_remaining -= 1;
         if self.clock_calibration_remaining == 0 {
+            self.startup_stage = McuStartupStage::ClockReady;
             return Ok(None);
         }
+        self.startup_stage = McuStartupStage::CalibratingClock {
+            remaining_samples: self.clock_calibration_remaining,
+        };
         self.request_get_clock(queue_id).map(Some)
     }
 
@@ -541,7 +573,9 @@ impl ReliableSerialSession {
         &mut self,
         queue_id: u64,
     ) -> Result<ResponseWaiter, SessionError> {
-        self.request_get_config(queue_id)
+        let waiter = self.request_get_config(queue_id)?;
+        self.startup_stage = McuStartupStage::Configuring;
+        Ok(waiter)
     }
 
     /// Consume the initial response, queue config/restart/init commands, then
@@ -568,7 +602,9 @@ impl ReliableSerialSession {
     ) -> Result<u16, SessionError> {
         self.ensure_connected()?;
         let config = Self::parse_config_response(final_response)?;
-        Ok(handshake.handle_final_response(config)?)
+        let usable = handshake.handle_final_response(config)?;
+        self.startup_stage = McuStartupStage::Ready;
+        Ok(usable)
     }
 
     fn parse_config_response(response: Response) -> Result<ConfigResponse, SessionError> {
