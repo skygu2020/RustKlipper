@@ -93,7 +93,11 @@ impl<T> Completion<T> {
     }
 
     pub fn is_complete(&self) -> bool {
-        self.state.0.lock().expect("completion lock poisoned").is_some()
+        self.state
+            .0
+            .lock()
+            .expect("completion lock poisoned")
+            .is_some()
     }
 
     pub fn is_cancelled(&self) -> bool {
@@ -120,11 +124,18 @@ impl<T> Completion<T> {
     where
         T: Clone,
     {
-        self.state.0.lock().expect("completion lock poisoned")
-            .as_ref().and_then(|value| value.as_ref().ok()).cloned()
+        self.state
+            .0
+            .lock()
+            .expect("completion lock poisoned")
+            .as_ref()
+            .and_then(|value| value.as_ref().ok())
+            .cloned()
     }
 
-    /// Wait for completion or cancellation. Do not call this on the reactor dispatch thread.
+    /// Wait for completion or cancellation.
+    ///
+    /// Do not call this on the reactor dispatch thread.
     pub fn wait(&self) -> Result<T, CompletionCancelled>
     where
         T: Clone,
@@ -215,14 +226,18 @@ impl Reactor {
         let callback_completion = completion.clone();
         let mut callback = Some(callback);
         let cancelled_completion = completion.clone();
-        let id = self.insert_task_with_cancel(deadline, move |eventtime| {
-            let callback = callback.take().expect("one-shot callback invoked once");
-            let result = callback(eventtime);
-            let _ = callback_completion.complete(result);
-            None
-        }, move || {
-            cancelled_completion.cancel();
-        });
+        let id = self.insert_task_with_cancel(
+            deadline,
+            move |eventtime| {
+                let callback = callback.take().expect("one-shot callback invoked once");
+                let result = callback(eventtime);
+                let _ = callback_completion.complete(result);
+                None
+            },
+            move || {
+                cancelled_completion.cancel();
+            },
+        );
         (id, completion)
     }
 
@@ -281,7 +296,12 @@ impl Reactor {
         self.insert_task_with_cancel(deadline, callback, || {})
     }
 
-    fn insert_task_with_cancel<F, C>(&self, deadline: Instant, callback: F, on_cancel: C) -> TaskId
+    fn insert_task_with_cancel<F, C>(
+        &self,
+        deadline: Instant,
+        callback: F,
+        on_cancel: C,
+    ) -> TaskId
     where
         F: FnMut(Instant) -> Option<Instant> + Send + 'static,
         C: FnOnce() + Send + 'static,
