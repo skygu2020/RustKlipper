@@ -3163,6 +3163,32 @@ mod tests {
     }
 
     #[test]
+    fn panicking_component_factory_rolls_back_objects_and_config_usage() {
+        let printer = Printer::new();
+        printer.install_config(ConfigDocument::parse("[fan]\npin=PA0\n").unwrap());
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register("fan", |printer, section| {
+                assert_eq!(section.get("pin"), Some("PA0"));
+                section.deprecate("pin", None, None);
+                printer
+                    .register_object("fan", "partially initialized")
+                    .map_err(|error| error.to_string())?;
+                panic!("factory panic after partial initialization");
+            })
+            .unwrap();
+
+        assert!(matches!(
+            printer.load_components(&registry),
+            Err(ComponentError::LoadFailed { message, .. })
+                if message == "component factory panicked"
+        ));
+        assert!(!printer.has_object("fan"));
+        assert_eq!(printer.unused_config_options().len(), 1);
+        assert!(printer.config_warnings().is_empty());
+    }
+
+    #[test]
     fn failed_component_factory_rolls_back_config_usage_and_warnings() {
         let printer = Printer::new();
         printer.install_config(ConfigDocument::parse("[fan]\npin=PA0\n").unwrap());
