@@ -197,6 +197,23 @@ mod tests {
         assert_eq!(s.queued_counts(), (0, 1));
     }
     #[test]
+    fn cumulative_ack_retires_only_confirmed_frames() {
+        let mut s = CommandScheduler::new();
+        for id in 0..3 {
+            s.enqueue(id, ScheduledCommand::new(vec![id as u8 + 1; 50], 0, id)).unwrap();
+        }
+        s.promote_ready(0);
+        let first = s.build_frame().unwrap().unwrap();
+        let second = s.build_frame().unwrap().unwrap();
+        assert_eq!(s.sent_blocks.len(), 2);
+        let outstanding = s.need_ack_bytes;
+        s.acknowledge(2, first.bytes.len());
+        assert_eq!(s.sent_blocks.len(), 1);
+        assert_eq!(s.need_ack_bytes, outstanding - first.bytes.len());
+        assert_eq!(s.sent_blocks.front().unwrap().0, second.send_sequence);
+    }
+
+    #[test]
     fn pending_block_limit_stops_additional_transmission() {
         let mut s = CommandScheduler::new();
         s.send_sequence = 13; s.receive_sequence = 1;
