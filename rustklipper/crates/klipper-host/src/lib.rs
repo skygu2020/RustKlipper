@@ -106,6 +106,11 @@ pub enum ComponentError {
     LoadFailed { section: String, message: String },
     #[error(transparent)]
     ConfigValidation(#[from] ConfigValidationError),
+    #[error("{count} handler(s) panicked while dispatching {event:?}")]
+    EventHandlerPanicked {
+        event: PrinterEventKind,
+        count: usize,
+    },
 }
 
 impl ComponentRegistry {
@@ -429,8 +434,20 @@ impl Printer {
     ) -> Result<Vec<String>, ComponentError> {
         let loaded = self.load_components(registry)?;
         self.validate_config()?;
-        self.send_event(PrinterEvent::McuIdentify);
-        self.send_event(PrinterEvent::Connect);
+        let identify_panics = self.send_event(PrinterEvent::McuIdentify);
+        if identify_panics > 0 {
+            return Err(ComponentError::EventHandlerPanicked {
+                event: PrinterEventKind::McuIdentify,
+                count: identify_panics,
+            });
+        }
+        let connect_panics = self.send_event(PrinterEvent::Connect);
+        if connect_panics > 0 {
+            return Err(ComponentError::EventHandlerPanicked {
+                event: PrinterEventKind::Connect,
+                count: connect_panics,
+            });
+        }
         Ok(loaded)
     }
 
@@ -965,6 +982,37 @@ mod tests {
         );
         assert!(printer.unused_config_options().is_empty());
         assert!(printer.validate_config().is_ok());
+    }
+
+    #[test]
+    fn identify_handler_panic_prevents_connect_event() {
+        let printer = Printer::new();
+        printer.install_config(ConfigDocument::parse("[fan]\npin=PA0\n").unwrap());
+        let connects = Arc::new(AtomicUsize::new(0));
+        let observed = connects.clone();
+        printer.register_event_handler(PrinterEventKind::McuIdentify, |_| {
+            panic!("identify handler panic");
+        });
+        printer.register_event_handler(PrinterEventKind::Connect, move |_| {
+            observed.fetch_add(1, Ordering::SeqCst);
+        });
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register("fan", |printer, section| {
+                printer
+                    .register_object("fan", section.get("pin").unwrap().to_owned())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        assert!(matches!(
+            printer.initialize_components(&registry),
+            Err(ComponentError::EventHandlerPanicked {
+                event: PrinterEventKind::McuIdentify,
+                count: 1,
+            })
+        ));
+        assert_eq!(connects.load(Ordering::SeqCst), 0);
     }
 
     #[test]
