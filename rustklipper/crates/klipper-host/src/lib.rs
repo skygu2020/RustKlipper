@@ -6,6 +6,7 @@
 //! layers.
 
 pub mod mcu;
+pub use mcu::{McuPollBatch, McuPollError, McuRegistry, McuRegistryError, McuSessionEvent};
 mod reactor;
 pub use reactor::{Completion, CompletionCancelled, Reactor, ReactorError, TaskId};
 
