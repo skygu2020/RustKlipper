@@ -6,7 +6,7 @@ use serde_json::Value;
 use klipper_protocol::{encode_identify_request, DictionaryError, Frame, IdentifyAssembler, IdentifyChunk, IdentifyDictionary, IDENTIFY_CHUNK_SIZE, MESSAGE_MAX, MESSAGE_MIN};
 
 use crate::{
-    AckEvent, AckRetryDecision, AckTracker, CommandScheduler, ConfigAction, ConfigError, ConfigResponse, McuConfigHandshake, Response, ResponseRouter, ResponseWaiter, RetryTransaction, ScheduleError, ScheduledCommand, TransportError, UsbSerialTransport,
+    AckEvent, AckRetryDecision, AckTracker, ClockUpdate, CommandScheduler, ConfigAction, ConfigError, ConfigResponse, McuConfigHandshake, Response, ResponseRouter, ResponseWaiter, RetryTransaction, ScheduleError, ScheduledCommand, TransportError, UsbSerialTransport,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -31,6 +31,8 @@ pub enum SessionError {
     Dictionary(#[from] DictionaryError),
     #[error(transparent)]
     Config(#[from] ConfigError),
+    #[error(transparent)]
+    Clock(#[from] crate::ClockSyncError),
     #[error("expected an unscoped config response, received {name} with oid {oid:?}")]
     UnexpectedConfigResponse { name: String, oid: Option<u32> },
 }
@@ -582,6 +584,23 @@ impl ReliableSerialSession {
         self.ensure_connected()?;
         self.last_ack_clock = advance_ack_clock(self.last_ack_clock, ack_clock);
         Ok(self.scheduler.promote_ready(self.last_ack_clock))
+    }
+
+    /// Apply a ClockSync update to the scheduler using the conservative queue
+    /// clock model. host_time must use the same monotonic time base supplied to
+    /// ClockSync::update(). Rejected outliers are intentionally ignored, matching
+    /// Klipper's ClockSync._handle_clock() behavior.
+    pub fn apply_clock_update(
+        &mut self,
+        update: ClockUpdate,
+        host_time: f64,
+    ) -> Result<Option<u64>, SessionError> {
+        self.ensure_connected()?;
+        if update.rejected_outlier {
+            return Ok(None);
+        }
+        let queue_clock = update.queue_clock_at(host_time)?;
+        self.promote_ready(queue_clock)
     }
 
     fn write_retry_batch(
