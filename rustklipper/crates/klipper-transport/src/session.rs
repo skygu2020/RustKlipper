@@ -35,6 +35,8 @@ pub enum SessionError {
     Clock(#[from] crate::ClockSyncError),
     #[error("expected an unscoped config response, received {name} with oid {oid:?}")]
     UnexpectedConfigResponse { name: String, oid: Option<u32> },
+    #[error("invalid MCU startup order: expected {expected}, current stage is {actual:?}")]
+    StartupOrder { expected: &'static str, actual: McuStartupStage },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -304,11 +306,11 @@ impl ReliableSerialSession {
         &mut self,
         queue_id: u64,
     ) -> Result<ResponseWaiter, SessionError> {
-        if self.clock_calibration_remaining != 0 {
-            return Err(SessionError::Dictionary(DictionaryError::InvalidField {
-                field: "clock_calibration".into(),
-                reason: "startup clock calibration is already in progress".into(),
-            }));
+        if self.startup_stage != McuStartupStage::Identified {
+            return Err(SessionError::StartupOrder {
+                expected: "Identified",
+                actual: self.startup_stage,
+            });
         }
         if !self.has_dictionary() {
             return Err(SessionError::Dictionary(DictionaryError::UnknownMessage("get_uptime".into())));
@@ -439,11 +441,11 @@ impl ReliableSerialSession {
         queue_id: u64,
         uptime_response: Response,
     ) -> Result<ResponseWaiter, SessionError> {
-        if self.clock_calibration_remaining != 0 {
-            return Err(SessionError::Dictionary(DictionaryError::InvalidField {
-                field: "clock_calibration".into(),
-                reason: "startup clock calibration is already in progress".into(),
-            }));
+        if self.startup_stage != McuStartupStage::AwaitingUptime {
+            return Err(SessionError::StartupOrder {
+                expected: "AwaitingUptime",
+                actual: self.startup_stage,
+            });
         }
         let clock_sync = self.clock_sync_from_uptime_response(uptime_response)?;
         self.clock_sync = Some(clock_sync);
@@ -468,6 +470,12 @@ impl ReliableSerialSession {
         response: Response,
     ) -> Result<Option<ResponseWaiter>, SessionError> {
         self.ensure_connected()?;
+        if !matches!(self.startup_stage, McuStartupStage::CalibratingClock { .. }) {
+            return Err(SessionError::StartupOrder {
+                expected: "CalibratingClock",
+                actual: self.startup_stage,
+            });
+        }
         if self.clock_calibration_remaining == 0 {
             return Err(SessionError::Dictionary(DictionaryError::InvalidField {
                 field: "clock_calibration".into(),
@@ -573,6 +581,12 @@ impl ReliableSerialSession {
         &mut self,
         queue_id: u64,
     ) -> Result<ResponseWaiter, SessionError> {
+        if self.startup_stage != McuStartupStage::ClockReady {
+            return Err(SessionError::StartupOrder {
+                expected: "ClockReady",
+                actual: self.startup_stage,
+            });
+        }
         let waiter = self.request_get_config(queue_id)?;
         self.startup_stage = McuStartupStage::Configuring;
         Ok(waiter)
@@ -588,6 +602,12 @@ impl ReliableSerialSession {
         firmware_restart: bool,
     ) -> Result<ResponseWaiter, SessionError> {
         self.ensure_connected()?;
+        if self.startup_stage != McuStartupStage::Configuring {
+            return Err(SessionError::StartupOrder {
+                expected: "Configuring",
+                actual: self.startup_stage,
+            });
+        }
         let config = Self::parse_config_response(initial_response)?;
         let action = handshake.handle_initial_response(config, firmware_restart)?;
         self.enqueue_config_action(queue_id, &action)?;
@@ -601,6 +621,12 @@ impl ReliableSerialSession {
         final_response: Response,
     ) -> Result<u16, SessionError> {
         self.ensure_connected()?;
+        if self.startup_stage != McuStartupStage::Configuring {
+            return Err(SessionError::StartupOrder {
+                expected: "Configuring",
+                actual: self.startup_stage,
+            });
+        }
         let config = Self::parse_config_response(final_response)?;
         let usable = handshake.handle_final_response(config)?;
         self.startup_stage = McuStartupStage::Ready;
