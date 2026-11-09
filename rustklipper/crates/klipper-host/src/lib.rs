@@ -777,6 +777,39 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_status_reads_observe_matching_state_messages() {
+        let printer = Arc::new(Printer::new());
+        let writer_printer = printer.clone();
+        let writer = std::thread::spawn(move || {
+            for _ in 0..500 {
+                writer_printer.set_configuring();
+                writer_printer.set_ready();
+            }
+        });
+        for _ in 0..500 {
+            let status = printer.status();
+            match status.state {
+                PrinterState::Startup => {
+                    assert_eq!(status.category, PrinterStateCategory::Startup);
+                    assert_eq!(status.message, "Printer is not ready");
+                }
+                PrinterState::Configuring => {
+                    assert_eq!(status.category, PrinterStateCategory::Startup);
+                    assert_eq!(status.message, "Printer is configuring");
+                }
+                PrinterState::Ready => {
+                    assert_eq!(status.category, PrinterStateCategory::Ready);
+                    assert_eq!(status.message, "Printer is ready");
+                }
+                PrinterState::Shutdown | PrinterState::Disconnected => {
+                    panic!("unexpected terminal state in status snapshot test");
+                }
+            }
+        }
+        writer.join().unwrap();
+    }
+
+    #[test]
     fn printer_status_returns_a_consistent_snapshot() {
         let printer = Printer::new();
         printer.set_configuring();
