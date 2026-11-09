@@ -329,6 +329,23 @@ mod tests {
     }
 
     #[test]
+    fn consuming_cancel_removes_only_its_waiter_registration() {
+        let router = ResponseRouter::new();
+        let cancelled = router.register("status", Some(5));
+        let live = router.register("status", Some(5));
+        let live_id = router.claim_oldest("status", Some(5)).unwrap();
+
+        // The consuming API relies on ResponseWaiter::drop to unregister.
+        cancelled.cancel();
+
+        assert_eq!(router.pending_count("status", Some(5)), 1);
+        assert!(router.contains_waiter("status", Some(5), live_id));
+        assert!(router.dispatch_to_waiter(response("status", Some(5)), live_id));
+        assert_eq!(live.wait(Duration::from_millis(1)).unwrap().oid, Some(5));
+        assert_eq!(router.pending_count("status", Some(5)), 0);
+    }
+
+    #[test]
     fn exact_waiter_presence_is_independent_of_same_key_waiters() {
         let router = ResponseRouter::new();
         let first = router.register("status", Some(4));
