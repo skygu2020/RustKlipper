@@ -1513,6 +1513,17 @@ mod tests {
     }
 
     #[test]
+    fn gcode_script_dispatches_without_per_line_acknowledgements() {
+        let printer = Printer::new();
+        printer
+            .register_gcode_command("M999", true, None, |_| Ok(Vec::new()))
+            .unwrap();
+        let outcomes = printer.process_gcode_script("M999\nM999");
+        assert_eq!(outcomes.len(), 2);
+        assert!(outcomes.iter().all(|outcome| !outcome.acknowledged));
+    }
+
+    #[test]
     fn script_observes_commands_registered_by_prior_handlers() {
         let printer = Arc::new(Printer::new());
         let registering_printer = printer.clone();
