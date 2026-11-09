@@ -1447,6 +1447,9 @@ mod tests {
                 Ok(Vec::new())
             })
             .unwrap();
+        assert!(printer
+            .register_gcode_command("M105", true, None, |_| Ok(Vec::new()))
+            .is_err());
         printer
             .register_mux_gcode_command(
                 "SET_HEATER",
