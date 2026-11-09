@@ -148,7 +148,7 @@ impl<T> Completion<T> {
         current.as_ref().expect("completion was checked").clone()
     }
 
-    /// Wait up to the given duration; returns None if no result arrives in time.
+    /// Wait up to the given duration; returns None if no result or cancellation arrives.
     pub fn wait_timeout(&self, timeout: Duration) -> Option<Result<T, CompletionCancelled>>
     where
         T: Clone,
@@ -688,9 +688,11 @@ mod tests {
         let reactor = Reactor::new();
         let count = Arc::new(AtomicUsize::new(0));
         let observed = count.clone();
-        reactor.register_timer(Duration::from_millis(5), None, move || {
-            observed.fetch_add(1, Ordering::SeqCst);
-        }).unwrap();
+        reactor
+            .register_timer(Duration::from_millis(5), None, move || {
+                observed.fetch_add(1, Ordering::SeqCst);
+            })
+            .unwrap();
         assert_eq!(reactor.run_once(Duration::from_secs(1)), 1);
         assert_eq!(count.load(Ordering::SeqCst), 1);
     }
