@@ -1,3 +1,6 @@
+pub mod dispatch;
+pub use dispatch::{DispatchEvent, DispatchOutcome, GCodeDispatcher};
+
 //! Klipper host-side G-code parsing primitives.
 //!
 //! The tokenization follows the command/parameter splitting strategy used by
