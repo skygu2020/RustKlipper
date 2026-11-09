@@ -69,6 +69,7 @@ pub struct RetransmitState {
     last_now: Option<f64>,
     rtt_sample_seq: Option<u64>,
     retransmit_deadline: Option<f64>,
+    wire_time_per_byte: f64,
 }
 
 impl Default for RetransmitState {
@@ -84,6 +85,7 @@ impl Default for RetransmitState {
             last_now: None,
             rtt_sample_seq: None,
             retransmit_deadline: None,
+            wire_time_per_byte: 0.0,
         }
     }
 }
@@ -95,6 +97,16 @@ impl RetransmitState {
     pub fn rto(&self) -> f64 { self.rto }
     pub fn outstanding_len(&self) -> usize { self.outstanding.len() }
     pub fn is_empty(&self) -> bool { self.outstanding.is_empty() }
+
+    /// Configure UART 8N1 transmission time per byte. A zero value keeps
+    /// deterministic transports/tests that do not model wire time unchanged.
+    pub fn set_wire_time_per_byte(&mut self, seconds: f64) -> Result<(), RetransmitError> {
+        if !seconds.is_finite() || seconds < 0.0 {
+            return Err(RetransmitError::InvalidTime);
+        }
+        self.wire_time_per_byte = seconds;
+        Ok(())
+    }
 
     /// Validate a monotonic timestamp without changing the retry clock.
     pub fn check_time(&self, now: f64) -> Result<(), RetransmitError> {
@@ -170,7 +182,9 @@ impl RetransmitState {
         if self.outstanding.is_empty() {
             self.retransmit_deadline = None;
         } else if !acknowledged.is_empty() {
-            self.retransmit_deadline = Some(now + self.rto);
+            self.retransmit_deadline = self.outstanding.front().map(|entry| {
+                now + self.rto + self.wire_time_per_byte * entry.frame.bytes.len() as f64
+            });
         }
 
         Ok(AckResult { acknowledged, fast_retransmit: None, rtt_sample_seconds })
@@ -232,7 +246,7 @@ impl RetransmitState {
         // serialqueue.c schedules the next timeout from the first block in
         // the retransmitted window, not from the final block's write completion.
         if is_oldest {
-            self.retransmit_deadline = Some(sent_at + self.rto);
+            self.retransmit_deadline = Some(sent_at + self.rto + self.wire_time_per_byte * (entry.frame.bytes.len() + 1) as f64);
         }
         Ok(())
     }
