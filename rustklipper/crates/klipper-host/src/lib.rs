@@ -457,6 +457,9 @@ impl Printer {
     pub fn set_configuring(&self) {
         {
             let mut state = self.state.write().expect("printer state lock poisoned");
+            if matches!(*state, PrinterState::Shutdown | PrinterState::Disconnected) {
+                return;
+            }
             *state = PrinterState::Configuring;
             *self
                 .state_message
@@ -720,6 +723,15 @@ mod tests {
     use super::*;
     use klipper_gcode::DispatchEvent;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn configuring_transition_cannot_clear_shutdown() {
+        let printer = Printer::new();
+        printer.invoke_shutdown("startup failure");
+        printer.set_configuring();
+        assert_eq!(printer.state(), PrinterState::Shutdown);
+        assert_eq!(printer.state_message(), "startup failure");
+    }
 
     #[test]
     fn printer_state_category_tracks_lifecycle() {
