@@ -95,6 +95,28 @@ fn allocate_retry_transaction_id(
     }
 }
 
+/// Finalize ACK-exhausted requests only after the current frame's payload has
+/// had a chance to complete them. Returns transaction IDs whose attempt state
+/// still needs to be retired by the owning session.
+fn finalize_exhausted_transactions(
+    exhausted: Vec<(u64, String, Option<u32>, u64)>,
+    retry_transactions: &mut HashMap<u64, PendingRetryRequest>,
+    sent_response_requests: &mut VecDeque<PendingResponseSend>,
+    response_router: &ResponseRouter,
+    events: &mut Vec<SessionEvent>,
+) -> Vec<u64> {
+    let mut retired = Vec::new();
+    for (transaction_id, name, oid, waiter_id) in exhausted {
+        if retry_transactions.remove(&transaction_id).is_some() {
+            sent_response_requests.retain(|entry| entry.transaction_id != transaction_id);
+            response_router.cancel_waiter(&name, oid, waiter_id);
+            events.push(SessionEvent::RetryExhausted { name, oid });
+            retired.push(transaction_id);
+        }
+    }
+    retired
+}
+
 pub struct ReliableSerialSession {
     transport: UsbSerialTransport,
     scheduler: CommandScheduler,
@@ -671,15 +693,15 @@ impl ReliableSerialSession {
             // Only report exhaustion if routing this frame did not complete
             // the transaction. In particular, a response carried alongside
             // the final ACK removes the transaction in route_decoded_message().
-            for (transaction_id, name, oid, waiter_id) in exhausted_transactions {
-                if self.retry_transactions.remove(&transaction_id).is_some() {
-                    self.sent_response_requests.retain(|entry| entry.transaction_id != transaction_id);
-                    self.cancel_retry_attempts(transaction_id);
-                    // Remove this transaction's exact waiter; other requests
-                    // with the same name and OID must retain their FIFO positions.
-                    self.response_router.cancel_waiter(&name, oid, waiter_id);
-                    events.push(SessionEvent::RetryExhausted { name, oid });
-                }
+            let retired = finalize_exhausted_transactions(
+                exhausted_transactions,
+                &mut self.retry_transactions,
+                &mut self.sent_response_requests,
+                &self.response_router,
+                &mut events,
+            );
+            for transaction_id in retired {
+                self.cancel_retry_attempts(transaction_id);
             }
             events.push(SessionEvent::Received { frame, result });
         }
@@ -763,6 +785,73 @@ impl ReliableSerialSession {
 /// time minus the UART time occupied by the complete encoded frame.
 fn adjusted_receive_time(now: f64, wire_time_per_byte: f64, frame_len: usize) -> f64 {
     (now - wire_time_per_byte * frame_len as f64).max(0.0)
+}
+
+#[cfg(test)]
+mod exhausted_transaction_tests {
+    use super::*;
+
+    fn pending(waiter_id: u64) -> PendingRetryRequest {
+        PendingRetryRequest {
+            queue_id: 7,
+            command: ScheduledCommand::new(vec![0x01], 0, 0),
+            name: "status".into(),
+            oid: Some(3),
+            waiter_id,
+            transaction: RetryTransaction::default(),
+        }
+    }
+
+    #[test]
+    fn same_frame_response_completion_suppresses_retry_exhausted_event() {
+        let router = ResponseRouter::new();
+        let waiter = router.register("status", Some(3));
+        let waiter_id = router.claim_oldest("status", Some(3)).unwrap();
+        let mut transactions = HashMap::new();
+        transactions.insert(9, pending(waiter_id));
+        let mut sent = VecDeque::from([PendingResponseSend {
+            transaction_id: 9, name: "status".into(), oid: Some(3),
+        }]);
+        let mut events = Vec::new();
+
+        // route_decoded_message() removes a successfully completed transaction
+        // before this deferred exhaustion finalizer runs.
+        transactions.remove(&9);
+        let retired = finalize_exhausted_transactions(
+            vec![(9, "status".into(), Some(3), waiter_id)],
+            &mut transactions, &mut sent, &router, &mut events,
+        );
+
+        assert!(retired.is_empty());
+        assert!(events.is_empty());
+        assert_eq!(sent.len(), 1); // normal response routing owns this entry
+        assert_eq!(router.pending_count("status", Some(3)), 1);
+        drop(waiter);
+    }
+
+    #[test]
+    fn genuinely_exhausted_request_is_removed_and_reported_once() {
+        let router = ResponseRouter::new();
+        let waiter = router.register("status", Some(3));
+        let waiter_id = router.claim_oldest("status", Some(3)).unwrap();
+        let mut transactions = HashMap::from([(9, pending(waiter_id))]);
+        let mut sent = VecDeque::from([PendingResponseSend {
+            transaction_id: 9, name: "status".into(), oid: Some(3),
+        }]);
+        let mut events = Vec::new();
+
+        let retired = finalize_exhausted_transactions(
+            vec![(9, "status".into(), Some(3), waiter_id)],
+            &mut transactions, &mut sent, &router, &mut events,
+        );
+
+        assert_eq!(retired, vec![9]);
+        assert!(!transactions.contains_key(&9));
+        assert!(sent.is_empty());
+        assert_eq!(router.pending_count("status", Some(3)), 0);
+        assert!(matches!(events.as_slice(), [SessionEvent::RetryExhausted { name, oid: Some(3) }] if name == "status"));
+        drop(waiter);
+    }
 }
 
 #[cfg(test)]
