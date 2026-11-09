@@ -1140,13 +1140,14 @@ impl ReliableSerialSession {
             return Ok(());
         }
         let batch_bytes = 1 + retries.iter().map(|retry| retry.bytes.len()).sum::<usize>();
+        let write_started_at = self.now();
         if let Err(error) = self.transport.write_retransmission_batch(&retries) {
             self.disconnected = true;
             return Err(SessionError::Transport(error));
         }
         let sent_at = self.now();
         if let Some(timing) = &mut self.uart_timing {
-            timing.reserve_transmission(sent_at, 0, batch_bytes);
+            timing.reserve_transmission(write_started_at, 0, batch_bytes);
         }
         for retry in retries {
             if let Err(error) = self.scheduler.retransmit_state_mut()
@@ -1355,13 +1356,14 @@ impl ReliableSerialSession {
                     return Err(SessionError::Schedule(error));
                 }
             };
+            let write_started_at = self.now();
             if let Err(error) = self.transport.write_scheduled_frame(&frame) {
                 self.disconnected = true;
                 return Err(SessionError::Transport(error));
             }
             let sent_at = self.now();
             if let Some(timing) = &mut self.uart_timing {
-                timing.reserve_transmission(sent_at, 0, frame.bytes.len());
+                timing.reserve_transmission(write_started_at, 0, frame.bytes.len());
             }
             if let Err(error) = self.scheduler.mark_frame_sent(&frame, sent_at) {
                 self.disconnected = true;
