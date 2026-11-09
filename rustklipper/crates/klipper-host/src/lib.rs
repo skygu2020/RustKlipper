@@ -466,6 +466,10 @@ impl Printer {
             .clear();
         *self.config.write().expect("printer config lock poisoned") = Some(Arc::new(config));
         self.set_configuring();
+        // Event handlers may initialize or load components; release the
+        // lifecycle lock before invoking user callbacks to avoid reentrant
+        // acquisition of component_load_lock.
+        drop(_load_guard);
         self.send_event(PrinterEvent::ConfigLoaded);
     }
 
@@ -956,6 +960,13 @@ impl Printer {
     /// Unload a component's owned G-code commands and invalidate its load cache.
     /// Callers remain responsible for removing objects and dependent components.
     pub fn unload_component(&self, section: &str) -> bool {
+        // Serialize unload with component factories and configuration
+        // replacement so a concurrent load cannot publish a partially
+        // unloaded component as successfully loaded.
+        let _load_guard = self
+            .component_load_lock
+            .lock()
+            .expect("component load lock poisoned");
         let removed_commands = self.remove_component_gcode_commands(section);
         let removed_component = self
             .loaded_components
