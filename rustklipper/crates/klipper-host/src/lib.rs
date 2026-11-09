@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use klipper_config::{
     ConfigDocument, ConfigFileLoader, ConfigLoadError, ConfigUsageTracker,
-    ConfigValidationError, UnusedConfigOption,
+    ConfigValidationError, ConfigWarning, UnusedConfigOption,
 };
 use klipper_gcode::{DispatchOutcome, GCodeDispatcher};
 use thiserror::Error;
@@ -246,6 +246,11 @@ impl Printer {
             return Vec::new();
         };
         self.config_usage.unused_options(&config)
+    }
+
+    /// Return deduplicated config deprecation warnings collected by components.
+    pub fn config_warnings(&self) -> Vec<ConfigWarning> {
+        self.config_usage.warnings()
     }
 
     /// Validate config sections and options after all registered components load.
@@ -609,6 +614,24 @@ mod tests {
         );
     }
 
+
+    #[test]
+    fn printer_exposes_config_deprecation_warnings() {
+        let printer = Printer::new();
+        printer.install_config(
+            ConfigDocument::parse("[printer]\nkinematics=cartesian\n").unwrap(),
+        );
+        let config = printer.config().unwrap();
+        let section = printer
+            .config_usage
+            .track_section(config.section("printer").unwrap());
+        section.deprecate("kinematics", None, None);
+        assert_eq!(printer.config_warnings().len(), 1);
+        printer.install_config(
+            ConfigDocument::parse("[printer]\nkinematics=corexy\n").unwrap(),
+        );
+        assert!(printer.config_warnings().is_empty());
+    }
 
     #[test]
     fn printer_validation_rejects_unknown_config_sections() {
