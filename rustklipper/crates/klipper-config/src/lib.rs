@@ -689,6 +689,26 @@ impl<'a> TrackedConfigSection<'a> {
         })
     }
 
+    pub fn get_i64_range(
+        &self,
+        option: &str,
+        min: Option<i64>,
+        max: Option<i64>,
+    ) -> Result<i64, ConfigValueError> {
+        let value = self.get_i64(option)?;
+        if min.is_some_and(|minimum| value < minimum)
+            || max.is_some_and(|maximum| value > maximum)
+        {
+            return Err(ConfigValueError::Invalid {
+                section: self.section.name.clone(),
+                option: option.to_owned(),
+                value: value.to_string(),
+                expected: "integer within configured range",
+            });
+        }
+        Ok(value)
+    }
+
     pub fn get_f64(&self, option: &str) -> Result<f64, ConfigValueError> {
         let value = self.get_required(option)?;
         let parsed: f64 = value.parse().map_err(|_| ConfigValueError::Invalid {
@@ -731,6 +751,30 @@ impl<'a> TrackedConfigSection<'a> {
                 value: value.to_owned(),
                 expected: "valid choice",
             })
+    }
+
+    pub fn get_f64_range(
+        &self,
+        option: &str,
+        min: Option<f64>,
+        max: Option<f64>,
+        above: Option<f64>,
+        below: Option<f64>,
+    ) -> Result<f64, ConfigValueError> {
+        let value = self.get_f64(option)?;
+        if min.is_some_and(|minimum| value < minimum)
+            || max.is_some_and(|maximum| value > maximum)
+            || above.is_some_and(|minimum| value <= minimum)
+            || below.is_some_and(|maximum| value >= maximum)
+        {
+            return Err(ConfigValueError::Invalid {
+                section: self.section.name.clone(),
+                option: option.to_owned(),
+                value: value.to_string(),
+                expected: "float within configured bounds",
+            });
+        }
+        Ok(value)
     }
 
     pub fn get_bool(&self, option: &str) -> Result<bool, ConfigValueError> {
@@ -986,6 +1030,28 @@ impl ConfigUsageTracker {
             })
     }
 
+    pub fn get_i64_range(
+        &self,
+        config: &ConfigDocument,
+        section: &str,
+        option: &str,
+        min: Option<i64>,
+        max: Option<i64>,
+    ) -> Result<i64, ConfigValueError> {
+        let value = self.get_i64(config, section, option)?;
+        if min.is_some_and(|minimum| value < minimum)
+            || max.is_some_and(|maximum| value > maximum)
+        {
+            return Err(ConfigValueError::Invalid {
+                section: section.to_owned(),
+                option: option.to_owned(),
+                value: value.to_string(),
+                expected: "integer within configured range",
+            });
+        }
+        Ok(value)
+    }
+
     pub fn get_i64(
         &self,
         config: &ConfigDocument,
@@ -1023,6 +1089,32 @@ impl ConfigUsageTracker {
             });
         }
         Ok(parsed)
+    }
+
+    pub fn get_f64_range(
+        &self,
+        config: &ConfigDocument,
+        section: &str,
+        option: &str,
+        min: Option<f64>,
+        max: Option<f64>,
+        above: Option<f64>,
+        below: Option<f64>,
+    ) -> Result<f64, ConfigValueError> {
+        let value = self.get_f64(config, section, option)?;
+        if min.is_some_and(|minimum| value < minimum)
+            || max.is_some_and(|maximum| value > maximum)
+            || above.is_some_and(|minimum| value <= minimum)
+            || below.is_some_and(|maximum| value >= maximum)
+        {
+            return Err(ConfigValueError::Invalid {
+                section: section.to_owned(),
+                option: option.to_owned(),
+                value: value.to_string(),
+                expected: "float within configured bounds",
+            });
+        }
+        Ok(value)
     }
 
     pub fn get_bool(
@@ -1295,6 +1387,27 @@ mod tests {
             section.get_f64_list("mesh_min", ',', Some(2)).unwrap(),
             vec![0.5, 1.25]
         );
+    }
+
+    #[test]
+    fn tracked_numeric_getters_enforce_inclusive_and_exclusive_bounds() {
+        let config = ConfigDocument::parse(
+            "[printer]\nmax_velocity=300\nmax_accel=5000.5\n",
+        )
+        .unwrap();
+        let tracker = ConfigUsageTracker::new();
+        let section = tracker.track_section(config.section("printer").unwrap());
+        assert_eq!(section.get_i64_range("max_velocity", Some(100), Some(300)).unwrap(), 300);
+        assert_eq!(
+            section
+                .get_f64_range("max_accel", Some(1000.0), None, Some(5000.0), None)
+                .unwrap(),
+            5000.5
+        );
+        assert!(matches!(
+            section.get_f64_range("max_accel", None, None, Some(5000.5), None),
+            Err(ConfigValueError::Invalid { .. })
+        ));
     }
 
     #[test]
