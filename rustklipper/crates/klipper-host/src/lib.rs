@@ -1506,8 +1506,7 @@ mod tests {
     fn pre_registered_component_object_satisfies_dependency() {
         let printer = Printer::new();
         printer.install_config(
-            ConfigDocument::parse("[consumer]\nsource=provider\n[provider]\nvalue=ready\n")
-                .unwrap(),
+            ConfigDocument::parse("[consumer]\nsource=provider\n").unwrap(),
         );
         printer.register_object("provider", "preloaded".to_owned()).unwrap();
         let mut registry = ComponentRegistry::new();
