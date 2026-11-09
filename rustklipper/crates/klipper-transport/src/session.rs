@@ -506,3 +506,45 @@ impl ReliableSerialSession {
 
     pub fn is_disconnected(&self) -> bool { self.disconnected }
 }
+#[cfg(test)]
+mod config_handshake_session_tests {
+    use super::*;
+
+    fn response(name: &str, oid: Option<u32>) -> Response {
+        Response {
+            name: name.to_owned(),
+            oid,
+            params: BTreeMap::from([
+                ("is_config".into(), Value::from(1)),
+                ("crc".into(), Value::from(0x1234_u64)),
+                ("is_shutdown".into(), Value::from(0)),
+                ("move_count".into(), Value::from(64)),
+            ]),
+            sent_time: 1.0,
+            receive_time: 2.0,
+        }
+    }
+
+    #[test]
+    fn parses_unscoped_config_response_for_handshake() {
+        let parsed = ReliableSerialSession::parse_config_response(response("config", None)).unwrap();
+        assert_eq!(parsed, ConfigResponse {
+            is_config: true,
+            crc: 0x1234,
+            is_shutdown: false,
+            move_count: 64,
+        });
+    }
+
+    #[test]
+    fn rejects_wrong_response_name_or_oid_for_config_handshake() {
+        assert!(matches!(
+            ReliableSerialSession::parse_config_response(response("identify_response", None)),
+            Err(SessionError::UnexpectedConfigResponse { .. })
+        ));
+        assert!(matches!(
+            ReliableSerialSession::parse_config_response(response("config", Some(3))),
+            Err(SessionError::UnexpectedConfigResponse { .. })
+        ));
+    }
+}
