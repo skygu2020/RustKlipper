@@ -509,6 +509,13 @@ pub struct ConfigUsageTracker {
     warnings: std::sync::Mutex<Vec<ConfigWarning>>,
 }
 
+/// Snapshot of configuration usage state for a serialized component-load attempt.
+#[derive(Debug, Clone)]
+pub struct ConfigUsageCheckpoint {
+    used: std::collections::HashSet<(String, String)>,
+    warnings: Vec<ConfigWarning>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnusedConfigOption {
     pub section: String,
@@ -806,6 +813,24 @@ impl<'a> TrackedConfigSection<'a> {
 impl ConfigUsageTracker {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Capture usage and warning state before invoking a component factory.
+    ///
+    /// Callers that restore a checkpoint must serialize mutations to this tracker
+    /// for the duration of the transaction.
+    pub fn checkpoint(&self) -> ConfigUsageCheckpoint {
+        ConfigUsageCheckpoint {
+            used: self.used.lock().expect("config usage lock poisoned").clone(),
+            warnings: self.warnings.lock().expect("config warning lock poisoned").clone(),
+        }
+    }
+
+    /// Restore a checkpoint when a component factory fails, so failed loads do
+    /// not make unread options appear consumed or leave deprecation warnings.
+    pub fn restore(&self, checkpoint: ConfigUsageCheckpoint) {
+        *self.used.lock().expect("config usage lock poisoned") = checkpoint.used;
+        *self.warnings.lock().expect("config warning lock poisoned") = checkpoint.warnings;
     }
 
     /// Reset access history when a new configuration document is installed.
