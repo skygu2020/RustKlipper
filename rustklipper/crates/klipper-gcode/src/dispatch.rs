@@ -323,7 +323,7 @@ fn dispatch_mux(
     let suggestion = mux
         .values
         .keys()
-        .filter_map(Option::as_deref)
+        .filter_map(|value| value.as_deref())
         .find(|candidate| !value_text.is_empty() && candidate.contains(value_text));
     if let Some(suggestion) = suggestion {
         hint = format!(". Did you mean '{suggestion}'?");
@@ -331,7 +331,7 @@ fn dispatch_mux(
         let options: Vec<_> = mux
             .values
             .keys()
-            .filter_map(Option::as_deref)
+            .filter_map(|value| value.as_deref())
             .map(|option| format!("'{option}'"))
             .collect();
         if !options.is_empty() {
