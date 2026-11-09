@@ -5,6 +5,7 @@ pub mod retry;
 pub mod retransmit;
 pub mod scheduler;
 pub mod clock;
+pub mod config;
 pub mod session;
 pub use session::{IdentifyProgress, ReliableSerialSession, SessionError, SessionEvent};
 
@@ -14,6 +15,7 @@ pub use retry::RetryPolicy;
 pub use retransmit::{AckResult, Retransmission, RetransmitError, RetransmitState, TrackedFrame, DEFAULT_RTO_SECONDS, DUP_ACK_THRESHOLD, MAX_RTO_SECONDS, MIN_RTO_SECONDS};
 pub use scheduler::{CommandScheduler, ReceivedFrameResult, ScheduleError, ScheduledCommand, ScheduledFrame, BACKGROUND_PRIORITY_CLOCK};
 pub use clock::{ClockEstimate, ClockSync, ClockSyncError, ClockUpdate, UartTiming};
+pub use config::{ConfigAction, ConfigError, ConfigResponse, McuConfigPlan};
 
 
 use std::io::{Read, Write};

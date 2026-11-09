@@ -10,4 +10,5 @@ description = "Cross-platform USB serial transport primitives for Klipper"
 klipper-protocol = { path = "../klipper-protocol" }
 thiserror.workspace = true
 serde_json = "1"
+crc32fast = "1"
 serialport = { version = "4.7", default-features = false }
