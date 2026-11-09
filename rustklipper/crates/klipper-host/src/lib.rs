@@ -1073,8 +1073,10 @@ impl Printer {
     }
 
     pub fn process_gcode_script(&self, script: &str) -> Vec<DispatchOutcome> {
-        let dispatcher = self.gcode_dispatcher().clone();
-        dispatcher.process_script(script)
+        script
+            .split('\n')
+            .filter_map(|line| self.process_gcode_line(line, false))
+            .collect()
     }
 }
 
@@ -1435,6 +1437,28 @@ mod tests {
             .unwrap();
         printer.invoke_shutdown("runtime fault");
         assert!(printer.process_gcode_line("M112", true).unwrap().handler_found);
+    }
+
+    #[test]
+    fn script_observes_state_changes_between_command_handlers() {
+        let printer = Arc::new(Printer::new());
+        let shutdown_printer = printer.clone();
+        printer
+            .register_gcode_command("M999", false, None, move |_| {
+                shutdown_printer.invoke_shutdown("script shutdown");
+                Ok(Vec::new())
+            })
+            .unwrap();
+        printer
+            .register_gcode_command("M998", false, None, |_| Ok(Vec::new()))
+            .unwrap();
+        printer.set_ready();
+
+        let outcomes = printer.process_gcode_script("M999\nM998");
+        assert_eq!(outcomes.len(), 2);
+        assert!(outcomes[0].handler_found);
+        assert!(!outcomes[1].handler_found);
+        assert_eq!(printer.state(), PrinterState::Shutdown);
     }
 
     #[test]
