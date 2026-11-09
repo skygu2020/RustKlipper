@@ -33,6 +33,8 @@ impl AckTracker {
         Some(rx)
     }
 
+    /// Bind a reserved notification to its sent frame. `_sent_time` is retained
+    /// for API compatibility; Klipper timestamps the event from the ACKed frame.
     pub fn mark_sent(&mut self, id: u64, required_send_seq: u64, _sent_time: f64) -> bool {
         let Some(pending) = self.pending.get_mut(&id) else { return false; };
         if pending.required_send_seq.is_some() { return false; }
@@ -44,7 +46,7 @@ impl AckTracker {
 
     /// Klipper wake_seq is receive_seq - 1 for an empty ACK, - 2 for data.
     pub fn acknowledge_events(&mut self, receive_seq: u64, has_payload: bool,
-                              fallback_sent_time: f64, receive_time: f64) -> Vec<(u64, AckEvent)> {
+                              last_receive_sent_time: f64, receive_time: f64) -> Vec<(u64, AckEvent)> {
         let wake_seq = receive_seq.saturating_sub(if has_payload { 2 } else { 1 });
         let mut completed: Vec<(u64, u64, u64)> = self.pending.iter()
             .filter_map(|(id, p)| p.required_send_seq
@@ -57,7 +59,7 @@ impl AckTracker {
         for (_, _, id) in completed {
             if let Some(p) = self.pending.remove(&id) {
                 let event = AckEvent {
-                    sent_time: fallback_sent_time,
+                    sent_time: last_receive_sent_time,
                     receive_time,
                 };
                 let _ = p.sender.send(event);
@@ -68,8 +70,8 @@ impl AckTracker {
     }
 
     pub fn acknowledge(&mut self, receive_seq: u64, has_payload: bool,
-                       sent_time: f64, receive_time: f64) -> Vec<u64> {
-        self.acknowledge_events(receive_seq, has_payload, sent_time, receive_time)
+                       last_receive_sent_time: f64, receive_time: f64) -> Vec<u64> {
+        self.acknowledge_events(receive_seq, has_payload, last_receive_sent_time, receive_time)
             .into_iter().map(|(id, _)| id).collect()
     }
     pub fn cancel_notify(&mut self, id: u64) -> bool { self.pending.remove(&id).is_some() }
