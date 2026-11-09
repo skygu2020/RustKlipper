@@ -118,7 +118,7 @@ impl CommandScheduler {
         if command.req_clock != BACKGROUND_PRIORITY_CLOCK
             && command.min_clock.wrapping_add(1u64 << 31) < command.req_clock
         {
-            command.min_clock = command.req_clock - (3u64 << 29);
+            command.min_clock = command.req_clock - (1u64 << 31);
         }
         self.queues.entry(queue_id).or_default().upcoming.push_back(command);
         Ok(())
