@@ -285,6 +285,55 @@ impl Printer {
         })
     }
 
+    /// Look up an optional typed object without treating absence as an error.
+    pub fn lookup_object_optional<T>(&self, name: &str) -> Result<Option<Arc<T>>, PrinterError>
+    where
+        T: Any + Send + Sync,
+    {
+        let object = self
+            .objects
+            .read()
+            .expect("printer object lock poisoned")
+            .get(name)
+            .cloned();
+        object
+            .map(|object| {
+                Arc::downcast::<T>(object).map_err(|_| PrinterError::ObjectTypeMismatch {
+                    name: name.to_owned(),
+                })
+            })
+            .transpose()
+    }
+
+    /// Return all objects, or the named object and its space-delimited children.
+    ///
+    /// The exact module object is returned first, followed by child objects in
+    /// stable name order, matching Klipper's lookup_objects() traversal.
+    pub fn lookup_objects(
+        &self,
+        module: Option<&str>,
+    ) -> Vec<(String, Arc<dyn Any + Send + Sync>)> {
+        let objects = self.objects.read().expect("printer object lock poisoned");
+        let mut matches: Vec<_> = objects
+            .iter()
+            .filter(|(name, _)| {
+                module.is_none_or(|module| {
+                    name.as_str() == module
+                        || name
+                            .strip_prefix(module)
+                            .is_some_and(|suffix| suffix.starts_with(' '))
+                })
+            })
+            .map(|(name, object)| (name.clone(), Arc::clone(object)))
+            .collect();
+        matches.sort_by(|left, right| {
+            let left_exact = module.is_some_and(|module| left.0 == module);
+            let right_exact = module.is_some_and(|module| right.0 == module);
+            right_exact.cmp(&left_exact).then_with(|| left.0.cmp(&right.0))
+        });
+        matches
+    }
+
     pub fn remove_object(&self, name: &str) -> bool {
         self.objects
             .write()
@@ -413,6 +462,35 @@ mod tests {
             printer.lookup_object::<usize>("counter"),
             Err(PrinterError::ObjectNotFound { .. })
         ));
+    }
+
+    #[test]
+    fn object_registry_supports_optional_and_module_lookups() {
+        let printer = Printer::new();
+        printer.register_object("fan", 1usize).unwrap();
+        printer.register_object("fan generic", 2usize).unwrap();
+        printer.register_object("fan extra", 3usize).unwrap();
+        printer.register_object("heater", 4usize).unwrap();
+
+        assert!(printer.lookup_object_optional::<usize>("missing").unwrap().is_none());
+        assert_eq!(
+            *printer.lookup_object_optional::<usize>("fan").unwrap().unwrap(),
+            1
+        );
+        let names: Vec<_> = printer
+            .lookup_objects(Some("fan"))
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "fan".to_owned(),
+                "fan extra".to_owned(),
+                "fan generic".to_owned()
+            ]
+        );
+        assert_eq!(printer.lookup_objects(None).len(), 4);
     }
 
     #[test]
