@@ -1936,6 +1936,27 @@ mod tests {
     }
 
     #[test]
+    fn manual_gcode_unregistration_releases_component_ownership() {
+        let printer = Printer::new();
+        printer
+            .register_component_gcode_command("first", "M999", true, None, |_| {
+                Ok(vec![DispatchEvent::Info("first".to_owned())])
+            })
+            .unwrap();
+        assert!(printer.unregister_gcode_command("M999"));
+
+        printer
+            .register_component_gcode_command("second", "M999", true, None, |_| {
+                Ok(vec![DispatchEvent::Info("second".to_owned())])
+            })
+            .unwrap();
+        assert!(!printer.unload_component("first"));
+        printer.set_ready();
+        let outcome = printer.process_gcode_line("M999", true).unwrap();
+        assert_eq!(outcome.events[0], DispatchEvent::Info("second".to_owned()));
+    }
+
+    #[test]
     fn unloading_component_unregisters_owned_gcode_commands() {
         let printer = Printer::new();
         printer
