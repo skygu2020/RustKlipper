@@ -509,9 +509,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rustklipper-config-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("base.cfg"), "[printer]\\nmax_velocity=200\\n").unwrap();
+        fs::write(dir.join("base.cfg"), "[printer]\nmax_velocity=200\n").unwrap();
         fs::write(dir.join("main.cfg"),
-            "[printer]\\nmax_accel=3000\\n[include base.cfg]\\n[stepper_x]\\npin=PA0\\n"
+            "[printer]\nmax_accel=3000\n[include base.cfg]\n[stepper_x]\npin=PA0\n"
         ).unwrap();
         let config = ConfigFileLoader::load(dir.join("main.cfg")).unwrap();
         assert_eq!(config.get("printer", "max_velocity"), Some("200"));
@@ -542,8 +542,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rustklipper-config-cycle-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("a.cfg"), "[include b.cfg]\\n").unwrap();
-        fs::write(dir.join("b.cfg"), "[include a.cfg]\\n").unwrap();
+        fs::write(dir.join("a.cfg"), "[include b.cfg]\n").unwrap();
+        fs::write(dir.join("b.cfg"), "[include a.cfg]\n").unwrap();
         assert!(matches!(
             ConfigFileLoader::load(dir.join("a.cfg")),
             Err(ConfigLoadError::RecursiveInclude { .. })
