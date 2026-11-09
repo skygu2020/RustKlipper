@@ -915,6 +915,23 @@ mod tests {
     }
 
     #[test]
+    fn config_reads_can_skip_access_tracking() {
+        let config = ConfigDocument::parse("[printer]\nkinematics=cartesian\n").unwrap();
+        let tracker = ConfigUsageTracker::new();
+        assert_eq!(
+            tracker.get_with_default(
+                &config,
+                "printer",
+                "kinematics",
+                Some("fallback"),
+                false,
+            ),
+            Some("cartesian")
+        );
+        assert_eq!(tracker.unused_options(&config).len(), 1);
+    }
+
+    #[test]
     fn usage_tracker_can_be_reset_for_config_reload() {
         let config = ConfigDocument::parse("[printer]\nkinematics=cartesian\n").unwrap();
         let tracker = ConfigUsageTracker::new();
