@@ -573,6 +573,11 @@ impl ReliableSerialSession {
     }
 
     /// Release commands whose minimum MCU clock is now eligible.
+    ///
+    /// `ack_clock` must be an extended MCU clock (not the four-bit wire value).
+    /// The session retains the greatest observed value so commands queued later,
+    /// including application-level retries, are promoted against the same clock
+    /// high-water mark without requiring a duplicate clock update.
     pub fn promote_ready(&mut self, ack_clock: u64) -> Result<Option<u64>, SessionError> {
         self.ensure_connected()?;
         self.last_ack_clock = advance_ack_clock(self.last_ack_clock, ack_clock);
