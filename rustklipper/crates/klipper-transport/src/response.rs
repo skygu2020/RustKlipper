@@ -259,7 +259,7 @@ mod tests {
         let failed_id = router.claim_oldest("status", Some(4)).unwrap();
         let next_id = router.claim_oldest("status", Some(4)).unwrap();
         assert!(router.cancel_waiter("status", Some(4), failed_id));
-        assert!(!router.cancel_waiter("status", Some(4), next_id));
+        assert!(router.contains_waiter("status", Some(4), next_id));
         assert_eq!(failed.wait(Duration::from_millis(1)), Err(WaitError::Disconnected));
         assert_eq!(router.pending_count("status", Some(4)), 1);
         assert!(router.dispatch(response("status", Some(4))));

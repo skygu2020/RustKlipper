@@ -666,7 +666,7 @@ impl ReliableSerialSession {
             .filter_map(|(id, pending)| pending.transaction.take_due_retry(now).then_some(*id))
             .collect();
         for transaction_id in due {
-            let mut command = match self.retry_transactions.get(&transaction_id) {
+            let command = match self.retry_transactions.get(&transaction_id) {
                 Some(pending) => pending.command.clone(),
                 None => continue,
             };
