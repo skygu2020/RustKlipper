@@ -175,6 +175,19 @@ impl CommandScheduler {
         Ok(retry_result)
     }
 
+    /// Process an empty duplicate MCU frame (NAK) and return all cached
+    /// outstanding frames that must be retransmitted immediately.
+    pub fn handle_nak_at(&mut self, now: f64) -> Result<Vec<Retransmission>, ScheduleError> {
+        Ok(self.retransmit.nak(now)?)
+    }
+
+    /// Poll timeout and return the complete outstanding window for retransmission.
+    pub fn poll_retransmissions(&mut self, now: f64)
+        -> Result<Vec<Retransmission>, ScheduleError>
+    {
+        Ok(self.retransmit.poll_timeout_all(now)?)
+    }
+
     /// Poll the oldest unacknowledged frame's retransmission deadline.
     pub fn poll_retransmission(&mut self, now: f64)
         -> Result<Option<Retransmission>, ScheduleError>

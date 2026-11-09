@@ -59,7 +59,8 @@ pub struct RetransmitState {
     rttvar: Option<f64>,
     rto: f64,
     last_ack: u64,
-    duplicate_acks: u8,
+    ignore_nak_sequence: u64,
+    retransmit_sequence: u64,
     last_now: Option<f64>,
 }
 
@@ -71,7 +72,8 @@ impl Default for RetransmitState {
             rttvar: None,
             rto: DEFAULT_RTO_SECONDS,
             last_ack: 0,
-            duplicate_acks: 0,
+            ignore_nak_sequence: 0,
+            retransmit_sequence: 0,
             last_now: None,
         }
     }
@@ -142,18 +144,62 @@ impl RetransmitState {
         let rtt_sample_seconds = if acknowledged.len() == 1 { rtt_candidate } else { None };
         if let Some(sample) = rtt_sample_seconds { self.update_rtt(sample); }
 
-        let mut fast_retransmit = None;
         if ack_sequence > self.last_ack {
             self.last_ack = ack_sequence;
-            self.duplicate_acks = 0;
-        } else if !self.outstanding.is_empty() {
-            self.duplicate_acks = self.duplicate_acks.saturating_add(1);
-            if self.duplicate_acks == DUP_ACK_THRESHOLD {
-                fast_retransmit = self.retransmit_front(now);
-            }
         }
 
-        Ok(AckResult { acknowledged, fast_retransmit, rtt_sample_seconds })
+        // Duplicate ACK handling is deliberately separate: only an empty MCU
+        // message block is a NAK. A data frame with the same sequence is not.
+        Ok(AckResult { acknowledged, fast_retransmit: None, rtt_sample_seconds })
+    }
+
+    /// Process an empty duplicate ACK (MCU NAK). Klipper retransmits every
+    /// outstanding host frame immediately, while suppressing repeated NAKs
+    /// for the same receive sequence until sequence progress is observed.
+    pub fn nak(&mut self, now: f64) -> Result<Vec<Retransmission>, RetransmitError> {
+        self.validate_time(now)?;
+        if self.last_ack <= self.ignore_nak_sequence || self.outstanding.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.ignore_nak_sequence = self.last_ack;
+        let next_send_sequence = self.outstanding.back()
+            .map(|entry| entry.frame.sequence.saturating_add(1))
+            .unwrap_or(self.last_ack);
+        if self.last_ack < self.retransmit_sequence {
+            self.ignore_nak_sequence = self.retransmit_sequence;
+        }
+        self.retransmit_sequence = next_send_sequence;
+        Ok(self.retransmit_all(now))
+    }
+
+    /// Retransmit the complete outstanding window, preserving each encoded frame.
+    pub fn retransmit_all(&mut self, now: f64) -> Vec<Retransmission> {
+        let mut retries = Vec::with_capacity(self.outstanding.len());
+        for entry in &mut self.outstanding {
+            entry.frame.transmissions = entry.frame.transmissions.saturating_add(1);
+            entry.retransmitted = true;
+            entry.last_sent_at = now;
+            retries.push(Retransmission {
+                sequence: entry.frame.sequence,
+                bytes: entry.frame.bytes.clone(),
+                transmissions: entry.frame.transmissions,
+                timeout_seconds: self.rto,
+            });
+        }
+        retries
+    }
+
+    /// Poll the oldest outstanding deadline and retransmit the full window on timeout.
+    pub fn poll_timeout_all(
+        &mut self,
+        now: f64,
+    ) -> Result<Vec<Retransmission>, RetransmitError> {
+        self.check_time(now)?;
+        self.last_now = Some(now);
+        let Some(front) = self.outstanding.front() else { return Ok(Vec::new()); };
+        if now - front.last_sent_at < self.rto { return Ok(Vec::new()); }
+        self.rto = (self.rto * 2.0).min(MAX_RTO_SECONDS);
+        Ok(self.retransmit_all(now))
     }
 
     /// Return a retransmission when the oldest outstanding frame's RTO expires.
@@ -236,6 +282,17 @@ mod tests {
     }
 
     #[test]
+    fn timeout_retransmits_entire_outstanding_window() {
+        let mut state = RetransmitState::new();
+        state.track_sent(4, vec![4], 0.0).unwrap();
+        state.track_sent(5, vec![5], 0.001).unwrap();
+        let retries = state.poll_timeout_all(0.250).unwrap();
+        assert_eq!(retries.len(), 2);
+        assert_eq!(retries[0].sequence, 4);
+        assert_eq!(retries[1].sequence, 5);
+    }
+
+    #[test]
     fn timeout_retransmits_oldest_and_exponentially_backs_off() {
         let mut state = RetransmitState::new();
         state.track_sent(7, vec![0xaa], 0.0).unwrap();
@@ -260,17 +317,18 @@ mod tests {
     }
 
     #[test]
-    fn three_duplicate_acks_fast_retransmit_oldest_unacked() {
+    fn duplicate_empty_ack_nak_retransmits_all_and_suppresses_repeat() {
         let mut state = RetransmitState::new();
         state.track_sent(10, vec![0x10], 0.0).unwrap();
         state.track_sent(11, vec![0x11], 0.001).unwrap();
-        assert!(state.acknowledge(10, 0.010).unwrap().fast_retransmit.is_none());
-        assert!(state.acknowledge(10, 0.011).unwrap().fast_retransmit.is_none());
-        let third = state.acknowledge(10, 0.012).unwrap();
-        let retry = third.fast_retransmit.unwrap();
-        assert_eq!(retry.sequence, 10);
-        assert_eq!(retry.bytes, vec![0x10]);
-        assert_eq!(retry.transmissions, 2);
+        state.acknowledge(10, 0.010).unwrap();
+        let retries = state.nak(0.011).unwrap();
+        assert_eq!(retries.len(), 2);
+        assert_eq!(retries[0].bytes, vec![0x10]);
+        assert_eq!(retries[1].bytes, vec![0x11]);
+        assert!(state.nak(0.012).unwrap().is_empty());
+        state.acknowledge(11, 0.013).unwrap();
+        assert_eq!(state.nak(0.014).unwrap().len(), 2);
     }
 
     #[test]
