@@ -370,6 +370,10 @@ impl ReliableSerialSession {
     /// Queue Klipper's initial uptime query after identify has installed the dictionary.
     /// The returned response carries the actual UART-write timestamp used to
     /// establish the initial host/MCU clock correspondence.
+    ///
+    /// This is a low-level bootstrap primitive and intentionally does not
+    /// enforce `McuStartupStage`; prefer `start_clock_calibration()` for the
+    /// guarded high-level startup sequence.
     pub fn request_get_uptime(&mut self, queue_id: u64) -> Result<ResponseWaiter, SessionError> {
         self.ensure_connected()?;
         let dictionary = self.dictionary.as_ref().ok_or_else(|| {
@@ -390,6 +394,10 @@ impl ReliableSerialSession {
     /// Queue one get_clock calibration/synchronization query.
     /// Registering the response before enqueueing preserves the request/write
     /// timestamp association maintained by the session.
+    ///
+    /// This is a low-level primitive for manual integrations. The normal
+    /// startup path uses the stage-checked calibration methods, and the normal
+    /// running path is driven automatically by `poll()`.
     pub fn request_get_clock(&mut self, queue_id: u64) -> Result<ResponseWaiter, SessionError> {
         self.ensure_connected()?;
         let dictionary = self.dictionary.as_ref().ok_or_else(|| {
@@ -831,6 +839,10 @@ impl ReliableSerialSession {
     /// Enqueue a command and associate its eventual response with the command's
     /// actual successful UART-write timestamp. The command must not already carry
     /// a caller-managed notify ID.
+    ///
+    /// Advanced protocol API: this does not enforce MCU startup-stage policy.
+    /// Use `request_get_config()` and the config-handshake methods for config
+    /// traffic so startup ordering remains checked.
     pub fn enqueue_request(
         &mut self,
         queue_id: u64,
@@ -843,6 +855,10 @@ impl ReliableSerialSession {
 
     /// Queue a response-tracked request with Klipper's optional application retry.
     /// When retry is false, the initial ACK is still awaited but no resend occurs.
+    ///
+    /// This is a low-level protocol primitive and may be used outside the
+    /// high-level startup workflow. It deliberately does not infer command
+    /// semantics from the encoded bytes or enforce `McuStartupStage`.
     pub fn enqueue_request_with_retry(
         &mut self,
         queue_id: u64,
@@ -1016,9 +1032,21 @@ impl ReliableSerialSession {
         });
     }
 
+    /// Inspect the underlying scheduler. Commands queued through this view
+    /// are outside the session's high-level startup-stage checks.
     pub fn scheduler(&self) -> &CommandScheduler { &self.scheduler }
+
+    /// Mutate the underlying scheduler directly.
+    ///
+    /// Advanced escape hatch: direct scheduling bypasses response tracking and
+    /// MCU startup-stage validation. Prefer the session's request/config APIs.
     pub fn scheduler_mut(&mut self) -> &mut CommandScheduler { &mut self.scheduler }
 
+    /// Queue an untracked low-level command.
+    ///
+    /// This escape hatch validates notification ownership and transport state,
+    /// but intentionally bypasses MCU startup-stage policy. Use the dedicated
+    /// identify, clock, and config methods for lifecycle-sensitive commands.
     pub fn enqueue(
         &mut self, queue_id: u64, command: ScheduledCommand,
     ) -> Result<(), SessionError> {
