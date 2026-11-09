@@ -676,6 +676,16 @@ mod tests {
     }
 
     #[test]
+    fn usage_tracker_can_be_reset_for_config_reload() {
+        let config = ConfigDocument::parse("[printer]\nkinematics=cartesian\n").unwrap();
+        let tracker = ConfigUsageTracker::new();
+        assert_eq!(tracker.get(&config, "printer", "kinematics"), Some("cartesian"));
+        assert!(tracker.unused_options(&config).is_empty());
+        tracker.clear();
+        assert_eq!(tracker.unused_options(&config).len(), 1);
+    }
+
+    #[test]
     fn tracked_section_supports_typed_and_prefixed_reads() {
         let config = ConfigDocument::parse(
             "[heater]\nmax_temp=275\ncontrol=pid\npid_kp=22.2\npid_ki=1.1\n",
