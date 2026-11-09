@@ -133,6 +133,42 @@ fn next_periodic_clock_deadline(due_at: f64, now: f64) -> f64 {
     next_due
 }
 
+/// Pure form of serialqueue.c's request-clock send decision.
+fn should_send_command(
+    scheduler: &CommandScheduler,
+    update: ClockUpdate,
+    timing: UartTiming,
+    eventtime: f64,
+    idle_time: f64,
+    pending_bytes: usize,
+) -> Result<bool, crate::ClockSyncError> {
+    let idletime = eventtime.max(idle_time)
+        + timing.seconds_for_bytes(pending_bytes.saturating_add(MESSAGE_MIN));
+    let ack_clock = update.queue_clock_at(idletime)?;
+
+    if scheduler.ready_bytes() >= MESSAGE_MAX - MESSAGE_MIN {
+        return Ok(true);
+    }
+
+    let background_time = if pending_bytes > 0 { idletime } else { idle_time };
+    let background_clock = update.queue_clock_at(background_time + 0.255)?;
+    let Some(min_ready_clock) =
+        scheduler.minimum_ready_request_clock(background_clock)
+    else {
+        return Ok(false);
+    };
+
+    let request_delta = (0.250 * update.queue_frequency).max(0.0) as u64;
+    if min_ready_clock <= ack_clock.saturating_add(request_delta) {
+        return Ok(true);
+    }
+
+    let want_clock = min_ready_clock.saturating_sub(request_delta);
+    let wake_time = idletime
+        + want_clock.saturating_sub(ack_clock) as f64 / update.queue_frequency;
+    Ok(eventtime >= wake_time)
+}
+
 fn allocate_retry_transaction_id(
     next_id: &mut u64,
     in_flight: &HashMap<u64, PendingRetryRequest>,
@@ -1182,35 +1218,9 @@ impl ReliableSerialSession {
             return Ok(true);
         };
 
-        let idletime = eventtime.max(idle_time)
-            + timing.seconds_for_bytes(pending_bytes.saturating_add(MESSAGE_MIN));
-        let ack_clock = update.queue_clock_at(idletime)?;
-
-        // serialqueue.c sends a full payload immediately, without waiting for
-        // the normal 250ms request-clock margin.
-        if self.scheduler.ready_bytes() >= MESSAGE_MAX - MESSAGE_MIN {
-            return Ok(true);
-        }
-
-        let background_time = if pending_bytes > 0 { idletime } else { idle_time };
-        let background_clock = update.queue_clock_at(
-            background_time + 0.250 + 0.005,
-        )?;
-        let Some(min_ready_clock) =
-            self.scheduler.minimum_ready_request_clock(background_clock)
-        else {
-            return Ok(false);
-        };
-
-        let request_delta = (0.250 * update.queue_frequency).max(0.0) as u64;
-        if min_ready_clock <= ack_clock.saturating_add(request_delta) {
-            return Ok(true);
-        }
-
-        let want_clock = min_ready_clock.saturating_sub(request_delta);
-        let wake_time = idletime
-            + want_clock.saturating_sub(ack_clock) as f64 / update.queue_frequency;
-        Ok(eventtime >= wake_time)
+        Ok(should_send_command(
+            &self.scheduler, update, timing, eventtime, idle_time, pending_bytes,
+        )?)
     }
 
     /// Perform one session iteration, bounded by the configured serial read timeout.
@@ -1613,6 +1623,52 @@ mod config_handshake_session_tests {
     }
 }
 
+
+#[cfg(test)]
+mod command_send_timing_tests {
+    use super::should_send_command;
+    use crate::{ClockEstimate, ClockUpdate, CommandScheduler, ScheduledCommand, UartTiming, BACKGROUND_PRIORITY_CLOCK};
+
+    fn update() -> ClockUpdate {
+        ClockUpdate {
+            queue_frequency: 1_000.0,
+            queue_conv_time: 0.0,
+            queue_conv_clock: 0,
+            estimate: ClockEstimate {
+                sample_time: 0.0,
+                clock: 0.0,
+                frequency: 1_000.0,
+            },
+            rejected_outlier: false,
+        }
+    }
+
+    #[test]
+    fn background_command_uses_255ms_wakeup_offset() {
+        let mut scheduler = CommandScheduler::new();
+        scheduler.enqueue(1, ScheduledCommand::new(
+            vec![0x11], 0, BACKGROUND_PRIORITY_CLOCK,
+        )).unwrap();
+        scheduler.promote_ready(0);
+        let timing = UartTiming::new(115_200).unwrap();
+
+        assert!(!should_send_command(&scheduler, update(), timing, 10.0, 10.0, 0).unwrap());
+        assert!(should_send_command(&scheduler, update(), timing, 10.006, 10.0, 0).unwrap());
+    }
+
+    #[test]
+    fn finite_request_waits_until_the_250ms_send_margin() {
+        let mut scheduler = CommandScheduler::new();
+        scheduler.enqueue(1, ScheduledCommand::new(
+            vec![0x22], 0, 10_500,
+        )).unwrap();
+        scheduler.promote_ready(0);
+        let timing = UartTiming::new(115_200).unwrap();
+
+        assert!(!should_send_command(&scheduler, update(), timing, 10.0, 10.0, 0).unwrap());
+        assert!(should_send_command(&scheduler, update(), timing, 10.25, 10.0, 0).unwrap());
+    }
+}
 
 #[cfg(test)]
 mod periodic_clock_deadline_tests {
