@@ -202,9 +202,15 @@ impl CommandScheduler {
             self.receive_sequence, frame.sequence
         );
         if receive_sequence > self.send_sequence {
-            return Err(ScheduleError::InvalidAckSequence {
-                received: receive_sequence, sent: self.send_sequence,
-            });
+            // serialqueue.c permits the first MCU response to establish the
+            // initial sequence when no host frame has been sent yet.
+            if self.receive_sequence == 1 && self.sent_blocks.is_empty() {
+                self.send_sequence = receive_sequence;
+            } else {
+                return Err(ScheduleError::InvalidAckSequence {
+                    received: receive_sequence, sent: self.send_sequence,
+                });
+            }
         }
         let mut acknowledged = Vec::new();
         if receive_sequence > self.receive_sequence {
@@ -335,6 +341,29 @@ mod tests {
         assert_eq!(duplicate.retransmissions[0].bytes, sent.bytes);
         let repeated = s.handle_received_frame(&ack, 1.03).unwrap();
         assert!(repeated.retransmissions.is_empty());
+    }
+
+    #[test]
+    fn first_mcu_frame_can_synchronize_initial_sequence() {
+        let mut s = CommandScheduler::new();
+        let first = Frame { sequence: 4, payload: vec![0x55] };
+        let received = s.handle_received_frame(&first, 0.01).unwrap();
+        assert_eq!(received.receive_sequence, 4);
+        assert!(received.has_payload);
+        assert_eq!(s.receive_sequence(), 4);
+        assert_eq!(s.send_sequence(), 4);
+    }
+
+    #[test]
+    fn sequence_ahead_of_sent_window_is_rejected_after_initial_sync() {
+        let mut s = CommandScheduler::new();
+        let first = Frame { sequence: 4, payload: vec![0x55] };
+        s.handle_received_frame(&first, 0.01).unwrap();
+        let invalid = Frame { sequence: 5, payload: vec![0x66] };
+        assert!(matches!(
+            s.handle_received_frame(&invalid, 0.02),
+            Err(ScheduleError::InvalidAckSequence { received: 5, sent: 4 })
+        ));
     }
 
     #[test]
