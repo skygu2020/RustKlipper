@@ -220,8 +220,9 @@ impl RetransmitState {
         retries
     }
 
-    /// Record completion of a retransmission write using the actual UART
-    /// completion timestamp, so the next RTO starts after successful I/O.
+    /// Record completion of a retransmission batch using the actual UART
+    /// drain timestamp. The session writes the entire cached window as one
+    /// sync-prefixed batch, so all entries share this completion timestamp.
     pub fn mark_retransmission_sent(
         &mut self, sequence: u64, sent_at: f64,
     ) -> Result<(), RetransmitError> {
@@ -232,8 +233,9 @@ impl RetransmitState {
             .find(|entry| entry.frame.sequence == sequence)
             .ok_or(RetransmitError::UnknownSequence(sequence))?;
         entry.last_sent_at = sent_at;
-        // serialqueue.c schedules the next timeout from the first block in
-        // the retransmitted window, not from the final block's write completion.
+        // Only the oldest outstanding entry controls the window deadline.
+        // The session records the shared completion time after the whole batch
+        // has drained, so later entries must not move that deadline.
         if is_oldest {
             self.retransmit_deadline = Some(sent_at + self.rto);
         }
