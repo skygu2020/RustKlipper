@@ -1,5 +1,5 @@
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 
 use klipper_transport::{ReliableSerialSession, SerialSettings, SessionEvent};
 use thiserror::Error;
@@ -12,6 +12,8 @@ pub enum McuRegistryError {
     DuplicateName { name: String },
     #[error("failed to open MCU '{name}': {message}")]
     OpenFailed { name: String, message: String },
+    #[error("opening MCU '{name}' was cancelled by registry cleanup")]
+    OpenCancelled { name: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -38,8 +40,17 @@ pub struct McuPollBatch {
 /// Session handles are independently locked so one MCU's serial read does not
 /// hold the registry lock or block access to another MCU's session.
 #[derive(Default)]
+struct McuRegistryState {
+    sessions: HashMap<String, Arc<Mutex<ReliableSerialSession>>>,
+    opening: HashSet<String>,
+    generation: u64,
+}
+
+#[derive(Default)]
 pub struct McuRegistry {
-    sessions: RwLock<HashMap<String, Arc<Mutex<ReliableSerialSession>>>>,
+    // Opening a serial device can block in the OS. Keep that work outside the
+    // registry lock, while reserving the name and generation transactionally.
+    state: Mutex<McuRegistryState>,
 }
 
 impl McuRegistry {
@@ -54,23 +65,33 @@ impl McuRegistry {
     ) -> Result<(), McuRegistryError> {
         let name = name.into();
         self.validate_name(&name)?;
-        // Keep the write lock through opening so two concurrent callers
-        // cannot both open the same named MCU before one loses registration.
-        let mut sessions = self
-            .sessions
-            .write()
-            .expect("MCU registry lock poisoned");
-        if sessions.contains_key(&name) {
-            return Err(McuRegistryError::DuplicateName { name });
-        }
-
-        let session = ReliableSerialSession::open(settings).map_err(|error| {
-            McuRegistryError::OpenFailed {
-                name: name.clone(),
-                message: error.to_string(),
+        let generation = {
+            let mut state = self.state.lock().expect("MCU registry lock poisoned");
+            if state.sessions.contains_key(&name) || !state.opening.insert(name.clone()) {
+                return Err(McuRegistryError::DuplicateName { name });
             }
+            state.generation
+        };
+
+        let opened = ReliableSerialSession::open(settings);
+        let mut state = self.state.lock().expect("MCU registry lock poisoned");
+        // A clear/disconnect may have happened while the OS was opening the
+        // device. Never publish a session into a newer printer lifecycle.
+        if state.generation != generation {
+            return match opened {
+                Ok(_) => Err(McuRegistryError::OpenCancelled { name }),
+                Err(error) => Err(McuRegistryError::OpenFailed {
+                    name,
+                    message: error.to_string(),
+                }),
+            };
+        }
+        state.opening.remove(&name);
+        let session = opened.map_err(|error| McuRegistryError::OpenFailed {
+            name: name.clone(),
+            message: error.to_string(),
         })?;
-        sessions.insert(name, Arc::new(Mutex::new(session)));
+        state.sessions.insert(name, Arc::new(Mutex::new(session)));
         Ok(())
     }
 
@@ -81,14 +102,11 @@ impl McuRegistry {
     ) -> Result<(), McuRegistryError> {
         let name = name.into();
         self.validate_name(&name)?;
-        let mut sessions = self
-            .sessions
-            .write()
-            .expect("MCU registry lock poisoned");
-        if sessions.contains_key(&name) {
+        let mut state = self.state.lock().expect("MCU registry lock poisoned");
+        if state.sessions.contains_key(&name) || state.opening.contains(&name) {
             return Err(McuRegistryError::DuplicateName { name });
         }
-        sessions.insert(name, Arc::new(Mutex::new(session)));
+        state.sessions.insert(name, Arc::new(Mutex::new(session)));
         Ok(())
     }
 
@@ -96,9 +114,10 @@ impl McuRegistry {
         &self,
         name: &str,
     ) -> Option<Arc<Mutex<ReliableSerialSession>>> {
-        self.sessions
-            .read()
+        self.state
+            .lock()
             .expect("MCU registry lock poisoned")
+            .sessions
             .get(name)
             .cloned()
     }
@@ -117,28 +136,29 @@ impl McuRegistry {
         &self,
         name: &str,
     ) -> Option<Arc<Mutex<ReliableSerialSession>>> {
-        self.sessions
-            .write()
+        self.state
+            .lock()
             .expect("MCU registry lock poisoned")
+            .sessions
             .remove(name)
     }
 
     pub fn clear(&self) -> Vec<String> {
-        let mut sessions = self
-            .sessions
-            .write()
-            .expect("MCU registry lock poisoned");
-        let mut names: Vec<_> = sessions.keys().cloned().collect();
+        let mut state = self.state.lock().expect("MCU registry lock poisoned");
+        let mut names: Vec<_> = state.sessions.keys().cloned().collect();
         names.sort();
-        sessions.clear();
+        state.sessions.clear();
+        state.opening.clear();
+        state.generation = state.generation.wrapping_add(1);
         names
     }
 
     pub fn session_names(&self) -> Vec<String> {
         let mut names: Vec<_> = self
-            .sessions
-            .read()
+            .state
+            .lock()
             .expect("MCU registry lock poisoned")
+            .sessions
             .keys()
             .cloned()
             .collect();
@@ -210,6 +230,22 @@ mod tests {
         let registry = McuRegistry::new();
         assert!(registry.clear().is_empty());
         assert!(registry.session_names().is_empty());
+    }
+
+    #[test]
+    fn clear_invalidates_an_in_progress_open_reservation() {
+        let registry = McuRegistry::new();
+        let generation = {
+            let mut state = registry.state.lock().unwrap();
+            state.opening.insert("mcu".to_owned());
+            state.generation
+        };
+
+        registry.clear();
+
+        let state = registry.state.lock().unwrap();
+        assert!(!state.opening.contains("mcu"));
+        assert_ne!(state.generation, generation);
     }
 
     #[test]
