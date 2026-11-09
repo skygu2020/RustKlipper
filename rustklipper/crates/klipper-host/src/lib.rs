@@ -13,7 +13,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use klipper_config::{
-    ConfigDocument, ConfigFileLoader, ConfigLoadError, ConfigUsageTracker, UnusedConfigOption,
+    ConfigDocument, ConfigFileLoader, ConfigLoadError, ConfigUsageTracker,
+    ConfigValidationError, UnusedConfigOption,
 };
 use klipper_gcode::{DispatchOutcome, GCodeDispatcher};
 use thiserror::Error;
@@ -245,6 +246,15 @@ impl Printer {
             return Vec::new();
         };
         self.config_usage.unused_options(&config)
+    }
+
+    /// Validate config sections and options after all registered components load.
+    pub fn validate_config(&self) -> Result<(), ConfigValidationError> {
+        let Some(config) = self.config() else {
+            return Ok(());
+        };
+        self.config_usage
+            .validate(&config, &self.object_names())
     }
 
     pub fn load_components(
@@ -601,6 +611,20 @@ mod tests {
 
 
     #[test]
+    fn printer_validation_rejects_unknown_config_sections() {
+        let printer = Printer::new();
+        printer.install_config(
+            ConfigDocument::parse("[unknown_section]\nvalue=1\n").unwrap(),
+        );
+        assert_eq!(
+            printer.validate_config(),
+            Err(ConfigValidationError::UnknownSection {
+                section: "unknown_section".to_owned(),
+            })
+        );
+    }
+
+    #[test]
     fn printer_tracks_consumed_config_options() {
         let printer = Printer::new();
         printer.install_config(
@@ -677,6 +701,7 @@ mod tests {
             "250"
         );
         assert!(printer.unused_config_options().is_empty());
+        assert!(printer.validate_config().is_ok());
     }
 
     #[test]
