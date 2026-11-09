@@ -604,6 +604,13 @@ mod tests {
         let unused = printer.unused_config_options();
         assert_eq!(unused.len(), 1);
         assert_eq!(unused[0].option, "max_velocity");
+
+        printer.install_config(
+            ConfigDocument::parse("[printer]\nkinematics=corexy\n").unwrap(),
+        );
+        let unused_after_reload = printer.unused_config_options();
+        assert_eq!(unused_after_reload.len(), 1);
+        assert_eq!(unused_after_reload[0].option, "kinematics");
     }
 
     #[test]
