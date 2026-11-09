@@ -1319,6 +1319,27 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_disconnect_requests_emit_one_event() {
+        let printer = Arc::new(Printer::new());
+        let events = Arc::new(AtomicUsize::new(0));
+        let observed = events.clone();
+        printer.register_event_handler(PrinterEventKind::Disconnect, move |_| {
+            observed.fetch_add(1, Ordering::SeqCst);
+        });
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                let printer = printer.clone();
+                std::thread::spawn(move || printer.disconnect())
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert_eq!(events.load(Ordering::SeqCst), 1);
+        assert_eq!(printer.state(), PrinterState::Disconnected);
+    }
+
+    #[test]
     fn repeated_disconnect_emits_one_event() {
         let printer = Printer::new();
         let events = Arc::new(AtomicUsize::new(0));
