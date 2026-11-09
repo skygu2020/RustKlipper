@@ -1126,6 +1126,11 @@ impl ReliableSerialSession {
         transaction_id: u64,
         mut command: ScheduledCommand,
     ) -> Result<(), SessionError> {
+        // Validate the logical transaction before reserving per-attempt ACK
+        // state. Otherwise a missing transaction would return early after
+        // registering a notify ID and storing its receiver.
+        let queue_id = self.retry_transactions.get(&transaction_id)
+            .ok_or(SessionError::Notification(transaction_id))?.queue_id;
         let mut candidate = self.next_response_notify_id;
         loop {
             if !self.ack_tracker.contains_notify(candidate)
@@ -1140,8 +1145,6 @@ impl ReliableSerialSession {
             .ok_or(SessionError::Notification(candidate))?;
         self.response_ack_receivers.insert(candidate, ack_receiver);
         command.notify_id = Some(candidate);
-        let queue_id = self.retry_transactions.get(&transaction_id)
-            .ok_or(SessionError::Notification(candidate))?.queue_id;
         if let Err(error) = self.scheduler.enqueue(queue_id, command) {
             self.ack_tracker.cancel_notify(candidate);
             self.response_ack_receivers.remove(&candidate);
