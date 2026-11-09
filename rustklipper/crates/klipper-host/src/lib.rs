@@ -510,7 +510,7 @@ impl Printer {
         let reason = reason.into();
         let was_ready = {
             let mut state = self.state.write().expect("printer state lock poisoned");
-            if *state == PrinterState::Shutdown {
+            if matches!(*state, PrinterState::Shutdown | PrinterState::Disconnected) {
                 return;
             }
             let was_ready = *state == PrinterState::Ready;
@@ -1363,6 +1363,8 @@ mod tests {
         printer.invoke_shutdown("failure");
         assert!(printer.is_shutdown());
         printer.disconnect();
+        printer.invoke_shutdown("late shutdown");
+        assert_eq!(printer.state(), PrinterState::Disconnected);
         assert!(!printer.is_shutdown());
     }
 
