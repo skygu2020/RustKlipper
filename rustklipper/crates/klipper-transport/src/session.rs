@@ -320,10 +320,13 @@ impl ReliableSerialSession {
     }
 
     fn prune_abandoned_response_requests(&mut self) {
+        // Keep response_requests until the command is actually written. A
+        // waiter may be dropped while its command is still queued; deleting
+        // this entry early would orphan its reserved ACK notification and
+        // prevent the successful-write timestamp from being associated with
+        // the eventual response. Once sent, the entry moves to
+        // sent_response_requests and can be pruned normally.
         let router = self.response_router.clone();
-        self.response_requests.retain(|_, (name, oid)| {
-            router.pending_count(name, *oid) > 0
-        });
         self.sent_response_requests.retain(|pending| {
             router.pending_count(&pending.name, pending.oid) > 0
         });
