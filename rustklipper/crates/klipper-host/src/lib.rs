@@ -1636,6 +1636,34 @@ mod tests {
     }
 
     #[test]
+    fn component_gcode_name_conflicts_are_reported_to_the_second_factory() {
+        let printer = Printer::new();
+        printer.install_config(
+            ConfigDocument::parse("[first]\nvalue=1\n[second]\nvalue=2\n").unwrap(),
+        );
+        let mut registry = ComponentRegistry::new();
+        for section_name in ["first", "second"] {
+            registry
+                .register(section_name, |printer, section| {
+                    let value = section.get("value").unwrap().to_owned();
+                    printer
+                        .register_gcode_command("M999", true, None, move |_| {
+                            Ok(vec![DispatchEvent::Info(value.clone())])
+                        })
+                        .map_err(|error| error.to_string())
+                })
+                .unwrap();
+        }
+
+        assert!(matches!(
+            printer.load_components(&registry),
+            Err(ComponentError::LoadFailed { section, .. }) if section == "second"
+        ));
+        let outcome = printer.process_gcode_line("M999", true).unwrap().unwrap();
+        assert_eq!(outcome.events, vec![DispatchEvent::Info("1".to_owned())]);
+    }
+
+    #[test]
     fn component_registered_gcode_commands_follow_config_lifecycle() {
         let printer = Printer::new();
         printer.install_config(ConfigDocument::parse("[macro]\nname=first\n").unwrap());
