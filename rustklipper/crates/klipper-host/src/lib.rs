@@ -755,6 +755,9 @@ mod tests {
         assert_eq!(printer.state_category(), PrinterStateCategory::Shutdown);
         printer.disconnect();
         assert_eq!(printer.state_category(), PrinterStateCategory::Error);
+        printer.set_ready();
+        assert_eq!(printer.state(), PrinterState::Disconnected);
+        assert!(!printer.is_ready());
     }
 
     #[test]
