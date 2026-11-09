@@ -181,9 +181,13 @@ mod tests {
 
     fn dictionary() -> IdentifyDictionary {
         IdentifyDictionary::from_json(br#"{
+            "enumerations": {"pin": {"PA0": 1, "PA1": 2}},
             "commands": {
                 "allocate_oids count=%c": 1,
-                "finalize_config crc=%u": 2
+                "finalize_config crc=%u": 2,
+                "config_pin oid=%c pin=%u value=%u": 3,
+                "restart_pin oid=%c value=%u": 4,
+                "init_pin oid=%c value=%u": 5
             },
             "responses": {}
         }"#).unwrap()
@@ -213,6 +217,38 @@ mod tests {
             vec![10],
             dictionary().encode_command("finalize_config", &BTreeMap::from([("crc".into(), Value::from(crc))])).unwrap(),
             vec![30],
+        ]);
+    }
+
+
+    #[test]
+    fn textual_plan_encodes_all_command_groups_and_uses_exact_config_text_crc() {
+        let dictionary = dictionary();
+        let config_lines = vec!["config_pin oid=0 pin=PA1 value=1".to_owned()];
+        let restart_lines = vec!["restart_pin oid=0 value=0".to_owned()];
+        let init_lines = vec!["init_pin oid=0 value=1".to_owned()];
+        let plan = McuConfigPlan::from_command_lines(
+            &dictionary, 1, &config_lines, &restart_lines, &init_lines,
+        ).unwrap();
+
+        let mut crc_input = b"allocate_oids count=1".to_vec();
+        crc_input.extend_from_slice(b"\nconfig_pin oid=0 pin=PA1 value=1");
+        assert_eq!(plan.crc(), crc32fast::hash(&crc_input));
+
+        let action = plan.initial_action(response(0, 0, 0, 32), false).unwrap();
+        let ConfigAction::SendFullConfig { commands, .. } = action else {
+            panic!("expected full configuration");
+        };
+        assert_eq!(commands[1], dictionary.encode_command_line(&config_lines[0]).unwrap());
+        assert_eq!(commands[3], dictionary.encode_command_line(&init_lines[0]).unwrap());
+
+        let existing = plan.initial_action(response(1, u64::from(plan.crc()), 0, 32), false).unwrap();
+        let ConfigAction::SendRestartAndInit { commands, .. } = existing else {
+            panic!("expected restart and init commands");
+        };
+        assert_eq!(commands, vec![
+            dictionary.encode_command_line(&restart_lines[0]).unwrap(),
+            dictionary.encode_command_line(&init_lines[0]).unwrap(),
         ]);
     }
 
