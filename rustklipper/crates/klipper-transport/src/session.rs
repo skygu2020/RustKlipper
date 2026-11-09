@@ -43,6 +43,7 @@ pub enum SessionEvent {
         bytes: usize,
     },
     IdentifyChunk { chunk: IdentifyChunk, receive_time: f64 },
+    IdentifyProgress { progress: IdentifyProgress },
     DecodedMessage { name: String, params: BTreeMap<String, Value>, receive_time: f64 },
     DecodeError { error: String, receive_time: f64 },
 }
@@ -116,6 +117,12 @@ impl ReliableSerialSession {
     /// offset while more data is needed; installs the dictionary on completion.
     pub fn accept_identify_chunk(&mut self, chunk: IdentifyChunk) -> Result<IdentifyProgress, SessionError> {
         self.ensure_connected()?;
+        if self.dictionary.is_some() {
+            return Err(SessionError::Dictionary(DictionaryError::InvalidField {
+                field: "identify_response".into(),
+                reason: "dictionary is already installed".into(),
+            }));
+        }
         let complete = self.identify_assembler.push(chunk)?;
         if complete {
             let assembler = std::mem::take(&mut self.identify_assembler);
@@ -327,9 +334,17 @@ impl ReliableSerialSession {
                     }
                 } else {
                     match klipper_protocol::decode_identify_response(&frame.payload) {
-                        Ok(chunk) => events.push(SessionEvent::IdentifyChunk {
-                            chunk, receive_time,
-                        }),
+                        Ok(chunk) => {
+                            events.push(SessionEvent::IdentifyChunk {
+                                chunk: chunk.clone(), receive_time,
+                            });
+                            match self.accept_identify_chunk(chunk) {
+                                Ok(progress) => events.push(SessionEvent::IdentifyProgress { progress }),
+                                Err(error) => events.push(SessionEvent::DecodeError {
+                                    error: error.to_string(), receive_time,
+                                }),
+                            }
+                        },
                         Err(error) => events.push(SessionEvent::DecodeError {
                             error: error.to_string(), receive_time,
                         }),
