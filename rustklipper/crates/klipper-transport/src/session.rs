@@ -1,7 +1,9 @@
 //! Reliable USB serial session: frame I/O, scheduling, ACK/NAK and retries.
+use std::collections::BTreeMap;
 use std::time::Instant;
 
-use klipper_protocol::Frame;
+use serde_json::Value;
+use klipper_protocol::{Frame, IdentifyChunk, IdentifyDictionary};
 
 use crate::{
     CommandScheduler, ScheduleError, ScheduledCommand, TransportError, UsbSerialTransport,
@@ -31,6 +33,9 @@ pub enum SessionEvent {
         sequence: u64,
         bytes: usize,
     },
+    IdentifyChunk { chunk: IdentifyChunk, receive_time: f64 },
+    DecodedMessage { name: String, params: BTreeMap<String, Value>, receive_time: f64 },
+    DecodeError { error: String, receive_time: f64 },
 }
 
 /// Owns one USB serial link and its reliable MCU command scheduler.
@@ -40,6 +45,7 @@ pub enum SessionEvent {
 pub struct ReliableSerialSession {
     transport: UsbSerialTransport,
     scheduler: CommandScheduler,
+    dictionary: Option<IdentifyDictionary>,
     started: Instant,
     disconnected: bool,
 }
@@ -53,6 +59,7 @@ impl ReliableSerialSession {
         Self {
             transport,
             scheduler: CommandScheduler::new(),
+            dictionary: None,
             started: Instant::now(),
             disconnected: false,
         }
@@ -65,6 +72,13 @@ impl ReliableSerialSession {
     fn ensure_connected(&self) -> Result<(), SessionError> {
         if self.disconnected { Err(SessionError::Disconnected) } else { Ok(()) }
     }
+
+    /// Install the MCU-provided dictionary after identify has completed.
+    pub fn set_dictionary(&mut self, dictionary: IdentifyDictionary) {
+        self.dictionary = Some(dictionary);
+    }
+
+    pub fn has_dictionary(&self) -> bool { self.dictionary.is_some() }
 
     pub fn scheduler(&self) -> &CommandScheduler { &self.scheduler }
     pub fn scheduler_mut(&mut self) -> &mut CommandScheduler { &mut self.scheduler }
@@ -133,6 +147,29 @@ impl ReliableSerialSession {
                 }
             };
             self.write_retry_batch(result.retransmissions.clone(), &mut events)?;
+
+            if !frame.payload.is_empty() {
+                let receive_time = self.now();
+                if let Some(dictionary) = self.dictionary.as_ref() {
+                    match dictionary.decode_message(&frame.payload) {
+                        Ok((name, params)) => events.push(SessionEvent::DecodedMessage {
+                            name, params, receive_time,
+                        }),
+                        Err(error) => events.push(SessionEvent::DecodeError {
+                            error: error.to_string(), receive_time,
+                        }),
+                    }
+                } else {
+                    match klipper_protocol::decode_identify_response(&frame.payload) {
+                        Ok(chunk) => events.push(SessionEvent::IdentifyChunk {
+                            chunk, receive_time,
+                        }),
+                        Err(error) => events.push(SessionEvent::DecodeError {
+                            error: error.to_string(), receive_time,
+                        }),
+                    }
+                }
+            }
             events.push(SessionEvent::Received { frame, result });
         }
 
