@@ -5,7 +5,7 @@
 //! while the scheduler's internal state lock is held.
 
 use std::cmp::{Ordering, Reverse};
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -42,6 +42,8 @@ struct ReactorState {
     next_id: TaskId,
     queue: BinaryHeap<Reverse<Scheduled>>,
     tasks: HashMap<TaskId, Task>,
+    running: HashSet<TaskId>,
+    cancelled: HashSet<TaskId>,
 }
 
 /// A lightweight, cooperative scheduler for host callbacks and timers.
@@ -107,12 +109,15 @@ impl Reactor {
 
     /// Cancel a pending callback or timer. Returns false for an unknown task.
     pub fn unregister(&self, id: TaskId) -> bool {
-        self.state
-            .lock()
-            .expect("reactor lock poisoned")
-            .tasks
-            .remove(&id)
-            .is_some()
+        let mut state = self.state.lock().expect("reactor lock poisoned");
+        if state.tasks.remove(&id).is_some() {
+            return true;
+        }
+        if state.running.contains(&id) {
+            state.cancelled.insert(id);
+            return true;
+        }
+        false
     }
 
     /// Execute all tasks due at the supplied monotonic time.
@@ -134,6 +139,7 @@ impl Reactor {
                 let Some(task) = state.tasks.remove(&entry.id) else {
                     continue;
                 };
+                state.running.insert(entry.id);
                 (entry, task)
             };
 
@@ -141,14 +147,18 @@ impl Reactor {
             (task.callback)();
             executed += 1;
 
+            let mut state = self.state.lock().expect("reactor lock poisoned");
+            state.running.remove(&entry.id);
+            let cancelled = state.cancelled.remove(&entry.id);
             if let Some(interval) = task.interval {
-                let deadline = entry.deadline + interval;
-                let mut state = self.state.lock().expect("reactor lock poisoned");
-                state.tasks.insert(entry.id, task);
-                state.queue.push(Reverse(Scheduled {
-                    deadline,
-                    id: entry.id,
-                }));
+                if !cancelled {
+                    let deadline = entry.deadline + interval;
+                    state.tasks.insert(entry.id, task);
+                    state.queue.push(Reverse(Scheduled {
+                        deadline,
+                        id: entry.id,
+                    }));
+                }
             }
         }
         executed
@@ -244,6 +254,32 @@ mod tests {
         assert!(!reactor.unregister(id));
         assert_eq!(reactor.run_due(Instant::now() + Duration::from_secs(2)), 0);
         assert_eq!(count.load(Ordering::SeqCst), 0);
+    }
+
+
+    #[test]
+    fn periodic_timer_can_cancel_itself_during_callback() {
+        let reactor = std::sync::Arc::new(Reactor::new());
+        let id_slot = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let count = std::sync::Arc::new(AtomicUsize::new(0));
+        let observed_reactor = reactor.clone();
+        let observed_id = id_slot.clone();
+        let observed_count = count.clone();
+        let id = reactor
+            .register_timer(Duration::ZERO, Some(Duration::from_secs(1)), move || {
+                observed_count.fetch_add(1, Ordering::SeqCst);
+                let id = observed_id.load(Ordering::SeqCst);
+                assert!(observed_reactor.unregister(id));
+            })
+            .unwrap();
+        id_slot.store(id, Ordering::SeqCst);
+
+        assert_eq!(
+            reactor.run_due(Instant::now() + Duration::from_secs(2)),
+            1
+        );
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert_eq!(reactor.pending_tasks(), 0);
     }
 
     #[test]
