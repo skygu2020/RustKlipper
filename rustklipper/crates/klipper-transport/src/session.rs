@@ -1657,6 +1657,31 @@ mod command_send_timing_tests {
     }
 
     #[test]
+    fn pending_batch_bytes_extend_the_background_wakeup_time() {
+        let mut scheduler = CommandScheduler::new();
+        scheduler.enqueue(1, ScheduledCommand::new(
+            vec![0x11], 0, BACKGROUND_PRIORITY_CLOCK,
+        )).unwrap();
+        scheduler.promote_ready(0);
+        let timing = UartTiming::new(115_200).unwrap();
+
+        assert!(!should_send_command(&scheduler, update(), timing, 10.006, 10.0, 100).unwrap());
+        assert!(should_send_command(&scheduler, update(), timing, 10.015, 10.0, 100).unwrap());
+    }
+
+    #[test]
+    fn full_ready_payload_bypasses_request_clock_delay() {
+        let mut scheduler = CommandScheduler::new();
+        scheduler.enqueue(1, ScheduledCommand::new(
+            vec![0x33; MESSAGE_MAX - MESSAGE_MIN], 0, 20_000,
+        )).unwrap();
+        scheduler.promote_ready(0);
+        let timing = UartTiming::new(115_200).unwrap();
+
+        assert!(should_send_command(&scheduler, update(), timing, 10.0, 10.0, 0).unwrap());
+    }
+
+    #[test]
     fn finite_request_waits_until_the_250ms_send_margin() {
         let mut scheduler = CommandScheduler::new();
         scheduler.enqueue(1, ScheduledCommand::new(
