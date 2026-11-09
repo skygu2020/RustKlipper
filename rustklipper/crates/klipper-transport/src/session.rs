@@ -9,7 +9,7 @@ const PERIODIC_CLOCK_INTERVAL_SECONDS: f64 = 0.9839;
 use klipper_protocol::{encode_identify_request, DictionaryError, Frame, IdentifyAssembler, IdentifyChunk, IdentifyDictionary, IDENTIFY_CHUNK_SIZE, MESSAGE_MAX, MESSAGE_MIN};
 
 use crate::{
-    AckEvent, AckRetryDecision, AckTracker, ClockUpdate, CommandScheduler, ConfigAction, ConfigError, ConfigResponse, McuConfigHandshake, Response, ResponseRouter, ResponseWaiter, RetryTransaction, ScheduleError, ScheduledCommand, TransportError, UsbSerialTransport,
+    AckEvent, AckRetryDecision, AckTracker, ClockUpdate, CommandScheduler, ConfigAction, ConfigError, ConfigResponse, McuConfigHandshake, Response, ResponseRouter, ResponseWaiter, RetryTransaction, ScheduleError, ScheduledCommand, TransportError, UartTiming, UsbSerialTransport,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -193,6 +193,7 @@ pub struct ReliableSerialSession {
     identify_chunk_count: Option<u8>,
     started: Instant,
     wire_time_per_byte: f64,
+    uart_timing: Option<UartTiming>,
     last_ack_clock: u64,
     queue_clock_update: Option<ClockUpdate>,
     disconnected: bool,
@@ -207,6 +208,7 @@ impl ReliableSerialSession {
         }
         let mut session = Self::new(UsbSerialTransport::open(settings)?);
         session.wire_time_per_byte = 10.0 / settings.baud_rate as f64;
+        session.uart_timing = Some(UartTiming::new(settings.baud_rate)?);
         session.scheduler.set_wire_time_per_byte(session.wire_time_per_byte)?;
         Ok(session)
     }
@@ -237,6 +239,7 @@ impl ReliableSerialSession {
             identify_chunk_count: None,
             started: Instant::now(),
             wire_time_per_byte: 0.0,
+            uart_timing: None,
             last_ack_clock: 0,
             queue_clock_update: None,
             disconnected: false,
@@ -1327,9 +1330,16 @@ impl ReliableSerialSession {
         // Treating it as u64::MAX would permanently rank background queries
         // behind every finite future command and can starve periodic get_clock.
         if let Some(update) = self.queue_clock_update {
-            let background_time = self.now() + 0.105;
-            let background_clock = update.queue_clock_at(background_time)?;
-            self.scheduler.set_background_priority_clock(background_clock);
+            // serialqueue.c uses its last UART idle deadline when no bytes are
+            // being packed, then includes the in-progress frame bytes plus
+            // MESSAGE_MIN when ranking subsequent commands in that frame.
+            let (idle_until, clock_per_byte) = self.uart_timing
+                .map(|timing| (timing.idle_until(), update.queue_frequency * timing.byte_time()))
+                .unwrap_or((self.now(), 0.0));
+            let background_clock = update.queue_clock_at(idle_until + 0.105)?;
+            self.scheduler.set_background_priority_clock_model(
+                background_clock, clock_per_byte, MESSAGE_MIN,
+            );
         }
 
         loop {
@@ -1341,11 +1351,15 @@ impl ReliableSerialSession {
                     return Err(SessionError::Schedule(error));
                 }
             };
+            let pending_bytes = self.transport.bytes_to_write()? as usize;
             if let Err(error) = self.transport.write_scheduled_frame(&frame) {
                 self.disconnected = true;
                 return Err(SessionError::Transport(error));
             }
             let sent_at = self.now();
+            if let Some(timing) = &mut self.uart_timing {
+                timing.reserve_transmission(sent_at, pending_bytes, frame.bytes.len());
+            }
             if let Err(error) = self.scheduler.mark_frame_sent(&frame, sent_at) {
                 self.disconnected = true;
                 return Err(SessionError::Schedule(error));
