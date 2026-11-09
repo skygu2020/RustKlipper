@@ -220,6 +220,19 @@ impl CommandScheduler {
         Ok(())
     }
 
+    /// Register a frame with its predicted UART-completion timestamp.
+    pub fn mark_frame_sent_with_receive_time(
+        &mut self,
+        frame: &ScheduledFrame,
+        sent_at: f64,
+        receive_time: f64,
+    ) -> Result<(), ScheduleError> {
+        self.retransmit.track_sent_with_receive_time(
+            frame.send_sequence, frame.bytes.clone(), sent_at, receive_time,
+        )?;
+        Ok(())
+    }
+
     /// Update state after the caller extends an MCU four-bit sequence.
     pub fn acknowledge(&mut self, receive_sequence: u64, acknowledged_frame_bytes: usize) {
         if receive_sequence <= self.receive_sequence { return; }
