@@ -9,8 +9,11 @@ Implemented:
 - Parsed configuration ownership and recursive config-file loading.
 - Configuration-ordered component factory registry.
 - Integration with the host G-code dispatcher and its readiness gating.
+- Cooperative Reactor for immediate callbacks, delayed/periodic timers, and
+  cancellation, driven by the host runtime.
 
 This crate does not compile, configure, flash, or emulate MCU firmware. MCU
 communication remains the responsibility of the host protocol and transport
-crates. Reactor scheduling and the complete printer object graph are subsequent
-host-runtime work.
+crates. The Reactor is a cooperative scheduler; the outer application remains
+responsible for polling it. Full asynchronous I/O integration and the complete
+printer object graph are subsequent host-runtime work.
