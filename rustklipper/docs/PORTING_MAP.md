@@ -4,7 +4,7 @@ Baseline: `282db764dc568841837f68af3964762189d2baee`.
 
 | Rust component | Upstream reference | Responsibility |
 |---|---|---|
-| `klipper-protocol` | `klippy/msgproto.py` | Frame encode/check/stream decode, CRC, integer codec, identify bootstrap chunks, zlib JSON dictionary, enums and typed command/response codec (initial implementation committed) |
+| `klipper-protocol` | `klippy/msgproto.py` | Frame encode/check/stream decode, CRC, integer codec, identify bootstrap chunks, zlib JSON dictionary, enums, typed command/response codec, and firmware `output` format decoder |
 | `klipper-transport` | `klippy/serialhdl.py` | Initial cross-platform USB serial open/read/write and incremental frame ingestion; scheduling, ACKs, callbacks and reconnect still pending |
 | `klipper-reactor` (planned) | `klippy/reactor.py` | Timers, file readiness, async completions and event dispatch |
 | `klipper-clock` (planned) | `klippy/clocksync.py` | MCU clock extension, RTT tracking and host/MCU clock regression |
@@ -38,7 +38,7 @@ but the Rust host will not implement those paths.
   dynamic firmware dictionary.
 - `IdentifyDictionary` currently handles command and response definitions,
   integer and dynamic-buffer fields, enum lookup, and config constants.
-- Firmware `output` format definitions are not yet implemented.
+- Firmware `output` format definitions are parsed and decoded into `#output` debug strings.
 - `klipper-transport` currently wraps `serialport` with bounded read timeouts.
   It is not yet a drop-in replacement for Klipper's C `serialqueue`.
 - Linux and Windows GitHub Actions tests are configured under
