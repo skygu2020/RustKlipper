@@ -507,13 +507,37 @@ pub enum ConfigValueError {
 pub struct ConfigUsageTracker {
     used: std::sync::Mutex<std::collections::HashSet<(String, String)>>,
     warnings: std::sync::Mutex<Vec<ConfigWarning>>,
+    transactions: std::sync::Mutex<
+        std::collections::HashMap<std::thread::ThreadId, Vec<ConfigUsageDelta>>,
+    >,
 }
 
-/// Snapshot of configuration usage state for a serialized component-load attempt.
-#[derive(Debug, Clone)]
-pub struct ConfigUsageCheckpoint {
+#[derive(Debug, Default)]
+struct ConfigUsageDelta {
     used: std::collections::HashSet<(String, String)>,
     warnings: Vec<ConfigWarning>,
+}
+
+pub struct ConfigUsageTransaction<'a> {
+    tracker: &'a ConfigUsageTracker,
+    thread_id: std::thread::ThreadId,
+    completed: bool,
+}
+
+impl ConfigUsageTransaction<'_> {
+    /// Commit the reads and warnings recorded by this transaction.
+    pub fn commit(mut self) {
+        self.tracker.finish_transaction(&self.thread_id, true);
+        self.completed = true;
+    }
+}
+
+impl Drop for ConfigUsageTransaction<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.tracker.finish_transaction(&self.thread_id, false);
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -815,22 +839,65 @@ impl ConfigUsageTracker {
         Self::default()
     }
 
-    /// Capture usage and warning state before invoking a component factory.
-    ///
-    /// Callers that restore a checkpoint must serialize mutations to this tracker
-    /// for the duration of the transaction.
-    pub fn checkpoint(&self) -> ConfigUsageCheckpoint {
-        ConfigUsageCheckpoint {
-            used: self.used.lock().expect("config usage lock poisoned").clone(),
-            warnings: self.warnings.lock().expect("config warning lock poisoned").clone(),
+    /// Begin a thread-scoped usage transaction. Reads and warnings produced on
+    /// this thread remain provisional until commit; dropping the guard rolls
+    /// them back without disturbing concurrent readers on other threads.
+    pub fn begin_transaction(&self) -> ConfigUsageTransaction<'_> {
+        let thread_id = std::thread::current().id();
+        self.transactions
+            .lock()
+            .expect("config usage transaction lock poisoned")
+            .entry(thread_id)
+            .or_default()
+            .push(ConfigUsageDelta::default());
+        ConfigUsageTransaction {
+            tracker: self,
+            thread_id,
+            completed: false,
         }
     }
 
-    /// Restore a checkpoint when a component factory fails, so failed loads do
-    /// not make unread options appear consumed or leave deprecation warnings.
-    pub fn restore(&self, checkpoint: ConfigUsageCheckpoint) {
-        *self.used.lock().expect("config usage lock poisoned") = checkpoint.used;
-        *self.warnings.lock().expect("config warning lock poisoned") = checkpoint.warnings;
+    fn finish_transaction(&self, thread_id: &std::thread::ThreadId, commit: bool) {
+        let delta = {
+            let mut transactions = self
+                .transactions
+                .lock()
+                .expect("config usage transaction lock poisoned");
+            let Some(stack) = transactions.get_mut(thread_id) else {
+                return;
+            };
+            let Some(delta) = stack.pop() else {
+                return;
+            };
+            if commit {
+                if let Some(parent) = stack.last_mut() {
+                    parent.used.extend(delta.used);
+                    for warning in delta.warnings {
+                        if !parent.warnings.contains(&warning) {
+                            parent.warnings.push(warning);
+                        }
+                    }
+                    return;
+                }
+            }
+            if stack.is_empty() {
+                transactions.remove(thread_id);
+            }
+            delta
+        };
+
+        if commit {
+            self.used
+                .lock()
+                .expect("config usage lock poisoned")
+                .extend(delta.used);
+            let mut warnings = self.warnings.lock().expect("config warning lock poisoned");
+            for warning in delta.warnings {
+                if !warnings.contains(&warning) {
+                    warnings.push(warning);
+                }
+            }
+        }
     }
 
     /// Reset access history when a new configuration document is installed.
@@ -842,6 +909,10 @@ impl ConfigUsageTracker {
         self.warnings
             .lock()
             .expect("config warning lock poisoned")
+            .clear();
+        self.transactions
+            .lock()
+            .expect("config usage transaction lock poisoned")
             .clear();
     }
 
@@ -871,6 +942,18 @@ impl ConfigUsageTracker {
             value: value.map(str::to_owned),
             message: message.unwrap_or(&default_message).to_owned(),
         };
+        let thread_id = std::thread::current().id();
+        let mut transactions = self
+            .transactions
+            .lock()
+            .expect("config usage transaction lock poisoned");
+        if let Some(delta) = transactions.get_mut(&thread_id).and_then(|stack| stack.last_mut()) {
+            if !delta.warnings.contains(&warning) {
+                delta.warnings.push(warning);
+            }
+            return;
+        }
+        drop(transactions);
         let mut warnings = self.warnings.lock().expect("config warning lock poisoned");
         if !warnings.contains(&warning) {
             warnings.push(warning);
@@ -895,10 +978,21 @@ impl ConfigUsageTracker {
     }
 
     fn mark_used(&self, section: &str, option: &str) {
+        let key = (section.to_ascii_lowercase(), option.to_ascii_lowercase());
+        let thread_id = std::thread::current().id();
+        let mut transactions = self
+            .transactions
+            .lock()
+            .expect("config usage transaction lock poisoned");
+        if let Some(delta) = transactions.get_mut(&thread_id).and_then(|stack| stack.last_mut()) {
+            delta.used.insert(key);
+            return;
+        }
+        drop(transactions);
         self.used
             .lock()
             .expect("config usage lock poisoned")
-            .insert((section.to_ascii_lowercase(), option.to_ascii_lowercase()));
+            .insert(key);
     }
 
     /// Read an option and mark it as used when it exists.
