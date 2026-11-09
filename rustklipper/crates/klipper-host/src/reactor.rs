@@ -687,6 +687,18 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_completion_rejects_late_result() {
+        let completion = Completion::<u32>::new();
+        assert!(completion.cancel());
+        assert!(!completion.cancel());
+        assert_eq!(completion.complete(5), Err(5));
+        assert_eq!(
+            completion.wait_timeout(Duration::from_millis(1)),
+            Some(Err(CompletionCancelled))
+        );
+    }
+
+    #[test]
     fn completion_is_single_assignment_and_wakes_waiters() {
         let completion = Completion::new();
         let waiter = completion.clone();
