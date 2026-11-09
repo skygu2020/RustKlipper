@@ -36,7 +36,7 @@ pub struct AckResult {
     pub rtt_sample_seconds: Option<f64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetransmitError {
     InvalidTime,
     NonMonotonicTime,
