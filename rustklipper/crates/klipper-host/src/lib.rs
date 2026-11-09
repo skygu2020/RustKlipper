@@ -2366,6 +2366,27 @@ mod tests {
     }
 
     #[test]
+    fn component_factory_panic_rolls_back_owned_gcode_commands() {
+        let printer = Printer::new();
+        printer.install_config(ConfigDocument::parse("[component]\nvalue=1\n").unwrap());
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register("component", |printer, _| {
+                printer
+                    .register_gcode_command("M999", true, None, |_| Ok(Vec::new()))
+                    .map_err(|error| error.to_string())?;
+                panic!("factory panics after command registration");
+            })
+            .unwrap();
+
+        assert!(matches!(
+            printer.load_components(&registry),
+            Err(ComponentError::LoadFailed { .. })
+        ));
+        assert!(!printer.registered_gcode_commands().contains(&"M999".to_owned()));
+    }
+
+    #[test]
     fn component_factory_panic_is_reported_as_load_failure() {
         let printer = Printer::new();
         printer.install_config(ConfigDocument::parse("[fan]\npin=PA0\n").unwrap());
