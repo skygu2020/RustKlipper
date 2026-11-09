@@ -121,6 +121,17 @@ impl McuRegistry {
             .remove(name)
     }
 
+    pub fn clear(&self) -> Vec<String> {
+        let mut sessions = self
+            .sessions
+            .write()
+            .expect("MCU registry lock poisoned");
+        let mut names: Vec<_> = sessions.keys().cloned().collect();
+        names.sort();
+        sessions.clear();
+        names
+    }
+
     pub fn session_names(&self) -> Vec<String> {
         let mut names: Vec<_> = self
             .sessions
@@ -190,6 +201,13 @@ mod tests {
         assert!(registry.remove_session("mcu").is_none());
         assert!(registry.is_disconnected("mcu").is_none());
         assert_eq!(registry.poll_all(), McuPollBatch::default());
+    }
+
+    #[test]
+    fn clear_returns_sorted_session_names_and_empties_registry() {
+        let registry = McuRegistry::new();
+        assert!(registry.clear().is_empty());
+        assert!(registry.session_names().is_empty());
     }
 
     #[test]
