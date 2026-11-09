@@ -196,13 +196,10 @@ impl ComponentRegistry {
         loading: &mut HashSet<String>,
         requested_by: Option<&str>,
     ) -> Result<(), ComponentError> {
-        if loaded_set.contains(name) {
+        if loaded_set.contains(name) || printer.has_object(name) {
             return Ok(());
         }
         let Some(entry) = self.factories.get(name) else {
-            if printer.has_object(name) {
-                return Ok(());
-            }
             return Err(ComponentError::MissingDependency {
                 section: requested_by.unwrap_or(name).to_owned(),
                 dependency: name.to_owned(),
@@ -1501,6 +1498,42 @@ mod tests {
         assert_eq!(
             &*printer.lookup_object::<String>("consumer").unwrap(),
             "ready:provider"
+        );
+    }
+
+    #[test]
+    fn pre_registered_component_object_satisfies_dependency() {
+        let printer = Printer::new();
+        printer.install_config(
+            ConfigDocument::parse("[consumer]\nsource=provider\n[provider]\nvalue=ready\n")
+                .unwrap(),
+        );
+        printer.register_object("provider", "preloaded".to_owned()).unwrap();
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register_with_dependencies(
+                "consumer",
+                vec!["provider".to_owned()],
+                |printer, section| {
+                    let provider = printer
+                        .lookup_object::<String>("provider")
+                        .map_err(|error| error.to_string())?;
+                    printer
+                        .register_object(
+                            "consumer",
+                            format!("{}:{}", provider.as_str(), section.get("source").unwrap()),
+                        )
+                        .map_err(|error| error.to_string())
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            printer.load_components(&registry).unwrap(),
+            vec!["consumer".to_owned()]
+        );
+        assert_eq!(
+            &*printer.lookup_object::<String>("consumer").unwrap(),
+            "preloaded:provider"
         );
     }
 
