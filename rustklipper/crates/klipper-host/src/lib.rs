@@ -1217,6 +1217,10 @@ impl Printer {
         &self.mcus
     }
 
+    pub fn poll_mcus(&self) -> McuPollBatch {
+        self.mcus.poll_all()
+    }
+
     pub fn reactor(&self) -> &Reactor {
         &self.reactor
     }
@@ -1330,6 +1334,7 @@ mod tests {
         let printer = Printer::new();
         assert!(printer.mcus().session_names().is_empty());
         assert_eq!(printer.mcus().poll_all(), McuPollBatch::default());
+        assert_eq!(printer.poll_mcus(), McuPollBatch::default());
     }
 
     #[test]
