@@ -1617,6 +1617,20 @@ mod tests {
     }
 
     #[test]
+    fn lazy_component_load_reports_unknown_component() {
+        let printer = Printer::new();
+        printer.install_config(ConfigDocument::parse("[printer]\nkinematics=cartesian\n").unwrap());
+        let registry = ComponentRegistry::new();
+        assert!(matches!(
+            registry.load_component(&printer, "missing"),
+            Err(ComponentError::MissingDependency {
+                section,
+                dependency,
+            }) if section == "missing" && dependency == "missing"
+        ));
+    }
+
+    #[test]
     fn lazy_component_load_requires_installed_config() {
         let printer = Printer::new();
         let registry = ComponentRegistry::new();
