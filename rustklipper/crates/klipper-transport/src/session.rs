@@ -195,6 +195,19 @@ fn should_send_command(
     )?.is_some_and(|deadline| eventtime >= deadline))
 }
 
+fn estimate_frame_receive_time(
+    eventtime: f64,
+    idle_time: f64,
+    timing: UartTiming,
+    pending_bytes: usize,
+    frame_bytes: usize,
+) -> f64 {
+    let batch_receive = eventtime.max(idle_time)
+        + timing.seconds_for_bytes(pending_bytes.saturating_add(frame_bytes));
+    let observed_receive = timing.idle_until() + timing.seconds_for_bytes(frame_bytes);
+    batch_receive.max(observed_receive)
+}
+
 fn earliest_deadline(send: Option<f64>, retry: Option<f64>) -> Option<f64> {
     match (send, retry) {
         (Some(send), Some(retry)) => Some(send.min(retry)),
@@ -1496,11 +1509,9 @@ impl ReliableSerialSession {
             // the estimated UART completion of each individual frame.
             let sent_at = eventtime;
             let receive_at = self.uart_timing.map_or(eventtime, |timing| {
-                let batch_receive = eventtime.max(idle_time)
-                    + timing.seconds_for_bytes(pending_bytes.saturating_add(frame.bytes.len()));
-                let observed_receive = timing.idle_until()
-                    + timing.seconds_for_bytes(frame.bytes.len());
-                batch_receive.max(observed_receive)
+                estimate_frame_receive_time(
+                    eventtime, idle_time, timing, pending_bytes, frame.bytes.len(),
+                )
             });
             let pending_after = self.transport.bytes_to_write()? as usize;
             let observed_at = self.now();
@@ -1716,6 +1727,33 @@ mod config_handshake_session_tests {
     }
 }
 
+
+#[cfg(test)]
+mod frame_receive_time_tests {
+    use super::estimate_frame_receive_time;
+    use crate::UartTiming;
+
+    #[test]
+    fn frame_receive_time_includes_preceding_batch_bytes() {
+        let mut timing = UartTiming::new(100_000).unwrap();
+        let first = estimate_frame_receive_time(1.0, 0.0, timing, 0, 10);
+        assert!((first - 1.001).abs() < 1e-12);
+        timing.reserve_transmission(1.0, 0, 10);
+
+        let second = estimate_frame_receive_time(1.0, 0.0, timing, 10, 10);
+        assert!((second - 1.002).abs() < 1e-12);
+    }
+
+    #[test]
+    fn frame_receive_time_respects_observed_driver_backlog() {
+        let mut timing = UartTiming::new(100_000).unwrap();
+        timing.reserve_transmission(1.0, 0, 10);
+        timing.observe_pending(1.005, 100);
+
+        let receive = estimate_frame_receive_time(1.0, 0.0, timing, 10, 10);
+        assert!((receive - 1.016).abs() < 1e-12);
+    }
+}
 
 #[cfg(test)]
 mod earliest_deadline_tests {
