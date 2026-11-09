@@ -1751,7 +1751,7 @@ mod tests {
             })
             .unwrap();
 
-        assert!(printer.process_gcode_line("M999", true).unwrap().handler_found);
+        assert!(printer.process_gcode_line("M105", true).unwrap().handler_found);
         assert!(printer.process_gcode_line("M999", true).unwrap().handler_found);
     }
 
