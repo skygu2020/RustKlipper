@@ -62,7 +62,10 @@ impl Reactor {
     where
         F: FnMut() + Send + 'static,
     {
-        self.insert_task(Instant::now(), move |_| { callback(); None })
+        self.insert_task(Instant::now(), move |_| {
+            callback();
+            None
+        })
     }
 
     /// Register a one-shot or periodic timer.
@@ -146,8 +149,8 @@ impl Reactor {
 
     /// Execute all tasks due at the supplied monotonic time.
     ///
-    /// Periodic timers are rescheduled relative to their previous deadline,
-    /// avoiding drift caused by callback execution time.
+    /// Timer callbacks receive the current dispatch time and choose their next
+    /// deadline. This matches Klipper's event-time based timer semantics.
     pub fn run_due(&self, now: Instant) -> usize {
         let mut executed = 0;
         loop {
@@ -166,13 +169,16 @@ impl Reactor {
                 if task.deadline != entry.deadline {
                     continue;
                 }
-                let task = state.tasks.remove(&entry.id).expect("task was just checked");
+                let task = state
+                    .tasks
+                    .remove(&entry.id)
+                    .expect("task was just checked");
                 state.running.insert(entry.id);
                 (entry, task)
             };
 
             let (entry, mut task) = next;
-            let next_deadline = (task.callback)(entry.deadline);
+            let next_deadline = (task.callback)(now);
             executed += 1;
 
             let mut state = self.state.lock().expect("reactor lock poisoned");
@@ -197,7 +203,11 @@ impl Reactor {
         let mut state = self.state.lock().expect("reactor lock poisoned");
         loop {
             let Reverse(entry) = state.queue.peek().copied()?;
-            if state.tasks.get(&entry.id).is_some_and(|task| task.deadline == entry.deadline) {
+            if state
+                .tasks
+                .get(&entry.id)
+                .is_some_and(|task| task.deadline == entry.deadline)
+            {
                 return Some(entry.deadline);
             }
             state.queue.pop();
@@ -281,7 +291,7 @@ mod tests {
     }
 
     #[test]
-    fn periodic_timer_catches_up_from_previous_deadline() {
+    fn periodic_timer_reschedules_from_current_dispatch_time() {
         let reactor = Reactor::new();
         let count = std::sync::Arc::new(AtomicUsize::new(0));
         let observed = count.clone();
@@ -296,8 +306,9 @@ mod tests {
             .unwrap();
 
         let now = Instant::now() + Duration::from_secs(3);
-        assert_eq!(reactor.run_due(now), 4);
-        assert_eq!(count.load(Ordering::SeqCst), 4);
+        assert_eq!(reactor.run_due(now), 1);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert_eq!(reactor.next_deadline(), Some(now + Duration::from_secs(1)));
         assert_eq!(reactor.pending_tasks(), 1);
     }
 
@@ -386,10 +397,11 @@ mod tests {
             let current = observed.fetch_add(1, Ordering::SeqCst);
             if current == 0 { Some(eventtime + Duration::from_secs(5)) } else { None }
         });
-        assert_eq!(reactor.run_due(start + Duration::from_secs(1)), 1);
+        let first_dispatch = start + Duration::from_secs(1);
+        assert_eq!(reactor.run_due(first_dispatch), 1);
         assert_eq!(reactor.pending_tasks(), 1);
-        assert_eq!(reactor.run_due(start + Duration::from_secs(4)), 0);
-        assert_eq!(reactor.run_due(start + Duration::from_secs(6)), 1);
+        assert_eq!(reactor.run_due(start + Duration::from_secs(5)), 0);
+        assert_eq!(reactor.run_due(start + Duration::from_secs(7)), 1);
         assert_eq!(reactor.pending_tasks(), 0);
         assert_eq!(count.load(Ordering::SeqCst), 2);
     }
