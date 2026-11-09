@@ -6,7 +6,7 @@ use serde_json::Value;
 use klipper_protocol::{Frame, IdentifyChunk, IdentifyDictionary};
 
 use crate::{
-    CommandScheduler, ScheduleError, ScheduledCommand, TransportError, UsbSerialTransport,
+    AckTracker, CommandScheduler, ScheduleError, ScheduledCommand, TransportError, UsbSerialTransport,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -17,6 +17,8 @@ pub enum SessionError {
     Schedule(#[from] ScheduleError),
     #[error("serial session is no longer usable after an I/O failure")]
     Disconnected,
+    #[error("notification ID is already registered or could not be bound to a sent frame: {0}")]
+    Notification(u64),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -25,6 +27,7 @@ pub enum SessionEvent {
         frame: Frame,
         result: crate::ReceivedFrameResult,
     },
+    AckedNotify { id: u64, sent_time: f64, receive_time: f64 },
     Sent {
         sequence: u64,
         bytes: usize,
@@ -45,6 +48,7 @@ pub enum SessionEvent {
 pub struct ReliableSerialSession {
     transport: UsbSerialTransport,
     scheduler: CommandScheduler,
+    ack_tracker: AckTracker,
     dictionary: Option<IdentifyDictionary>,
     started: Instant,
     disconnected: bool,
@@ -59,6 +63,7 @@ impl ReliableSerialSession {
         Self {
             transport,
             scheduler: CommandScheduler::new(),
+            ack_tracker: AckTracker::new(),
             dictionary: None,
             started: Instant::now(),
             disconnected: false,
@@ -79,6 +84,12 @@ impl ReliableSerialSession {
     }
 
     pub fn has_dictionary(&self) -> bool { self.dictionary.is_some() }
+
+    /// Register a notification before enqueueing a command carrying this ID.
+    pub fn register_notify(&mut self, id: u64) -> Result<std::sync::mpsc::Receiver<crate::AckEvent>, SessionError> {
+        self.ensure_connected()?;
+        self.ack_tracker.register_notify(id).ok_or(SessionError::Notification(id))
+    }
 
     pub fn scheduler(&self) -> &CommandScheduler { &self.scheduler }
     pub fn scheduler_mut(&mut self) -> &mut CommandScheduler { &mut self.scheduler }
@@ -148,6 +159,15 @@ impl ReliableSerialSession {
             };
             self.write_retry_batch(result.retransmissions.clone(), &mut events)?;
 
+            let receive_time = self.now();
+            for (id, ack) in self.ack_tracker.acknowledge_events(
+                result.receive_sequence, result.has_payload, 0.0, receive_time,
+            ) {
+                events.push(SessionEvent::AckedNotify {
+                    id, sent_time: ack.sent_time, receive_time: ack.receive_time,
+                });
+            }
+
             if !frame.payload.is_empty() {
                 let receive_time = self.now();
                 if let Some(dictionary) = self.dictionary.as_ref() {
@@ -204,6 +224,12 @@ impl ReliableSerialSession {
             if let Err(error) = self.scheduler.mark_frame_sent(&frame, sent_at) {
                 self.disconnected = true;
                 return Err(SessionError::Schedule(error));
+            }
+            for id in &frame.notify_ids {
+                if !self.ack_tracker.mark_sent(*id, frame.send_sequence, sent_at) {
+                    self.disconnected = true;
+                    return Err(SessionError::Notification(*id));
+                }
             }
             events.push(SessionEvent::Sent {
                 sequence: frame.send_sequence,
