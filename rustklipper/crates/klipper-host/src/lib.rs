@@ -334,8 +334,6 @@ impl ComponentRegistry {
     }
 }
 
-type RegisteredObject = (String, Arc<dyn Any + Send + Sync>);
-
 struct ObjectRegistrationTransaction<'a> {
     printer: &'a Printer,
     thread_id: std::thread::ThreadId,
@@ -3149,6 +3147,43 @@ mod tests {
         assert_eq!(unused[0].section, "fan");
         assert_eq!(unused[0].option, "pin");
         assert!(printer.config_warnings().is_empty());
+    }
+
+    #[test]
+    fn failed_component_factory_does_not_remove_concurrent_external_objects() {
+        let printer = Arc::new(Printer::new());
+        printer.install_config(ConfigDocument::parse("[fan]\npin=PA0\n").unwrap());
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let factory_barrier = barrier.clone();
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register("fan", move |printer, section| {
+                printer
+                    .register_object("fan", section.get("pin").unwrap().to_owned())
+                    .map_err(|error| error.to_string())?;
+                factory_barrier.wait();
+                factory_barrier.wait();
+                Err("factory fails after registering its object".to_owned())
+            })
+            .unwrap();
+
+        let loading_printer = printer.clone();
+        let loader = std::thread::spawn(move || {
+            loading_printer.load_components(&registry)
+        });
+        barrier.wait();
+        printer.register_object("external", "owned by another thread").unwrap();
+        barrier.wait();
+        assert!(matches!(
+            loader.join().unwrap(),
+            Err(ComponentError::LoadFailed { .. })
+        ));
+
+        assert!(!printer.has_object("fan"));
+        assert_eq!(
+            &*printer.lookup_object::<&str>("external").unwrap(),
+            &"owned by another thread"
+        );
     }
 
     #[test]
