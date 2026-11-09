@@ -1668,8 +1668,11 @@ mod command_send_timing_tests {
         scheduler.promote_ready(0);
         let timing = UartTiming::new(115_200).unwrap();
 
+        // Within one command_event callback, eventtime is fixed. Once a
+        // previous frame is buffered, its wire time pushes this background
+        // request beyond the current send decision.
         assert!(!should_send_command(&mut scheduler, update(), timing, 10.006, 10.0, 100).unwrap());
-        assert!(should_send_command(&mut scheduler, update(), timing, 10.015, 10.0, 100).unwrap());
+        assert!(should_send_command(&mut scheduler, update(), timing, 10.006, 10.0, 0).unwrap());
     }
 
     #[test]
