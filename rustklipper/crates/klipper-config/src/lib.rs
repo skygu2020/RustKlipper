@@ -172,6 +172,29 @@ impl ConfigDocument {
         Ok(document)
     }
 
+    fn merge_missing(&mut self, other: ConfigDocument) {
+        for incoming in other.sections {
+            let section_index = if let Some(&index) = self.index.get(&incoming.name) {
+                index
+            } else {
+                let index = self.sections.len();
+                self.index.insert(incoming.name.clone(), index);
+                self.sections
+                    .push(ConfigSection::new(incoming.name.clone(), incoming.line));
+                index
+            };
+            for option in incoming.options {
+                if !self.sections[section_index].has_option(&option.name) {
+                    self.sections[section_index].set(
+                        option.name,
+                        option.value,
+                        option.line,
+                    );
+                }
+            }
+        }
+    }
+
     fn merge(&mut self, other: ConfigDocument) {
         for incoming in other.sections {
             let section_index = if let Some(&index) = self.index.get(&incoming.name) {
@@ -322,11 +345,57 @@ pub enum ConfigLoadError {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ConfigFileLoader;
 
+pub const AUTOSAVE_HEADER: &str =
+    "#*# <---------------------- SAVE_CONFIG ---------------------->";
+
 impl ConfigFileLoader {
     pub fn load(path: impl AsRef<std::path::Path>) -> Result<ConfigDocument, ConfigLoadError> {
         let path = path.as_ref();
         let mut visited = std::collections::HashSet::new();
-        Self::load_inner(path, &mut visited)
+        let mut config = Self::load_inner(path, &mut visited)?;
+        if let Some(autosave) = Self::load_autosave(path)? {
+            config.merge_missing(autosave);
+        }
+        Ok(config)
+    }
+
+    fn load_autosave(
+        path: &std::path::Path,
+    ) -> Result<Option<ConfigDocument>, ConfigLoadError> {
+        let data = std::fs::read_to_string(path).map_err(|source| ConfigLoadError::Io {
+            path: path.display().to_string(),
+            source,
+        })?;
+        let Some(marker_index) = data.find(AUTOSAVE_HEADER) else {
+            return Ok(None);
+        };
+        let marker_line = data[..marker_index].lines().count() + 1;
+        let autosave = &data[marker_index + AUTOSAVE_HEADER.len()..];
+        if autosave.contains(AUTOSAVE_HEADER) {
+            return Ok(None);
+        }
+
+        let mut lines = Vec::new();
+        for line in autosave.lines() {
+            if line.trim().is_empty() || line == "#*#" {
+                lines.push(String::new());
+            } else if let Some(content) = line.strip_prefix("#*# ") {
+                lines.push(content.to_owned());
+            } else {
+                // Match Klipper's behavior: a malformed autosave block is
+                // ignored rather than allowing its contents into normal config.
+                return Ok(None);
+            }
+        }
+        if lines.iter().all(|line| line.trim().is_empty()) {
+            return Ok(None);
+        }
+        let parsed = ConfigDocument::parse_named_at(
+            &lines.join("\n"),
+            format!("{} (autosave)", path.display()),
+            marker_line,
+        )?;
+        Ok(Some(parsed))
     }
 
     fn load_inner(
@@ -1144,6 +1213,43 @@ mod tests {
         assert_eq!(config.get("printer", "max_accel"), Some("3000"));
         assert_eq!(config.get("stepper_x", "pin"), Some("PA0"));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn loads_autosave_values_without_overriding_main_config() {
+        use std::fs;
+        let path = std::env::temp_dir().join(format!(
+            "rustklipper-config-autosave-{}.cfg",
+            std::process::id()
+        ));
+        fs::write(
+            &path,
+            "[printer]\nkinematics=cartesian\n#*# <---------------------- SAVE_CONFIG ---------------------->\n#*# [printer]\n#*# kinematics = delta\n#*# max_velocity = 250\n#*#\n#*# [stepper_x]\n#*# position_endstop = 0\n",
+        )
+        .unwrap();
+        let config = ConfigFileLoader::load(&path).unwrap();
+        assert_eq!(config.get("printer", "kinematics"), Some("cartesian"));
+        assert_eq!(config.get("printer", "max_velocity"), Some("250"));
+        assert_eq!(config.get("stepper_x", "position_endstop"), Some("0"));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn ignores_corrupted_autosave_blocks() {
+        use std::fs;
+        let path = std::env::temp_dir().join(format!(
+            "rustklipper-config-autosave-corrupt-{}.cfg",
+            std::process::id()
+        ));
+        fs::write(
+            &path,
+            "[printer]\nkinematics=cartesian\n#*# <---------------------- SAVE_CONFIG ---------------------->\n#*# [printer]\nthis is not autosave data\n",
+        )
+        .unwrap();
+        let config = ConfigFileLoader::load(&path).unwrap();
+        assert_eq!(config.get("printer", "kinematics"), Some("cartesian"));
+        assert!(!config.section("printer").unwrap().has_option("max_velocity"));
+        fs::remove_file(path).unwrap();
     }
 
     #[test]
