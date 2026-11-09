@@ -21,9 +21,10 @@ the compatibility reference and is not modified by the Rust implementation.
 - `klipper-transport`: USB serial transport, command scheduling, ACK tracking,
   retransmission, response routing, MCU clock synchronization, and config
   handshake primitives.
-- `klipper-config`: ordered Klipper-style section/option parsing and typed
-  configuration access. Include-file expansion and printer-object validation
-  are the next layers to be added on top of this parser.
+- `klipper-config`: ordered Klipper-style section/option parsing, typed
+  configuration access, and recursive `[include ...]` expansion with relative
+  paths, sorted glob matches, and recursive-include detection. Autosave blocks,
+  access/deprecation tracking, and printer-object validation remain future work.
 
 The upstream Python implementation remains the behavioral oracle during the
 staged port. Run the Rust workspace tests from this directory with:
