@@ -98,12 +98,12 @@ type ComponentFactory = Arc<
 >;
 
 /// Registry of Rust host components keyed by their Klipper config section.
-#[derive(Default)]
 struct ComponentFactoryEntry {
     dependencies: Vec<String>,
     factory: ComponentFactory,
 }
 
+#[derive(Default)]
 pub struct ComponentRegistry {
     factories: HashMap<String, ComponentFactoryEntry>,
 }
