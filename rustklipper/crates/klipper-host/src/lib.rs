@@ -245,6 +245,18 @@ impl Printer {
         }
     }
 
+    /// Request shutdown from any thread; the transition runs on the reactor.
+    pub fn invoke_async_shutdown(
+        self: &Arc<Self>,
+        reason: impl Into<String>,
+    ) -> TaskId {
+        let printer = Arc::clone(self);
+        let reason = reason.into();
+        self.reactor.register_async_callback(move |_| {
+            printer.invoke_shutdown(reason);
+        })
+    }
+
     pub fn disconnect(&self) {
         *self.state.write().expect("printer state lock poisoned") =
             PrinterState::Disconnected;
@@ -598,6 +610,23 @@ mod tests {
 
         assert_eq!(printer.run_reactor_once(), 1);
         assert_eq!(called.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn async_shutdown_is_dispatched_by_the_reactor() {
+        let printer = Arc::new(Printer::new());
+        let events = Arc::new(AtomicUsize::new(0));
+        let observed = events.clone();
+        printer.register_event_handler(PrinterEventKind::Shutdown, move |_| {
+            observed.fetch_add(1, Ordering::SeqCst);
+        });
+        printer.set_ready();
+        printer.invoke_async_shutdown("async failure");
+        assert_eq!(printer.state(), PrinterState::Ready);
+        assert_eq!(printer.run_reactor_once(), 1);
+        assert_eq!(printer.state(), PrinterState::Shutdown);
+        assert_eq!(printer.state_message(), "async failure");
+        assert_eq!(events.load(Ordering::SeqCst), 1);
     }
 
     #[test]
