@@ -247,7 +247,14 @@ impl IdentifyDictionary {
     }
     pub fn decode_message(&self,body:&[u8])->Result<(String,BTreeMap<String,Value>),DictionaryError>{
         let (id,mut pos)=crate::decode_i32(body)?;
-        let m=self.by_id.get(&id).ok_or_else(||DictionaryError::UnknownMessage(format!("id {id}")))?;
+        let Some(m)=self.by_id.get(&id) else {
+            // Match Klipper's UnknownFormat behavior: preserve the unknown
+            // message id and the complete message body for diagnostics.
+            let mut values=BTreeMap::new();
+            values.insert("#msgid".into(),Value::from(id));
+            values.insert("#msg".into(),Value::Array(body.iter().map(|b|Value::from(*b)).collect()));
+            return Ok(("#unknown".into(),values));
+        };
         if let Some(output)=&m.output {
             let rendered=output.render(body,&mut pos)?;
             if pos!=body.len(){return Err(invalid_field("output",&format!("{} trailing bytes",body.len()-pos)));}
@@ -292,6 +299,13 @@ mod tests{
         let mut body=Vec::new();encode_i32(5,&mut body);encode_u32(16000000,&mut body);encode_i32(-7,&mut body);body.push(2);body.extend_from_slice(b"ok");
         let (name,values)=d.decode_message(&body).unwrap();
         assert_eq!(name,"#output");assert_eq!(values["#msg"],"mcu: clock=16000000 signed=-7 text=b'ok' percent=%");
+    }
+    #[test] fn unknown_message_is_preserved_for_diagnostics(){
+        let d=IdentifyDictionary::from_json(br#"{"commands":{},"responses":{}}"#).unwrap();
+        let mut body=Vec::new();encode_i32(77,&mut body);body.extend_from_slice(&[0xaa,0xbb]);
+        let (name,values)=d.decode_message(&body).unwrap();
+        assert_eq!(name,"#unknown");assert_eq!(values["#msgid"],77);
+        assert_eq!(values["#msg"],serde_json::json!([77,170,187]));
     }
     #[test] fn output_format_rejects_unknown_conversion(){
         let json=r#"{"commands":{},"responses":{},"output":{"bad %q":5}}"#;
