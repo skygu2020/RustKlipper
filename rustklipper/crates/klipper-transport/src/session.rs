@@ -142,8 +142,13 @@ fn command_send_deadline(
     idle_time: f64,
     pending_bytes: usize,
 ) -> Result<Option<f64>, crate::ClockSyncError> {
-    let idletime = eventtime.max(idle_time)
+    let batch_idle_time = eventtime.max(idle_time)
         + timing.seconds_for_bytes(pending_bytes.saturating_add(MESSAGE_MIN));
+    // Include any driver backlog beyond the bytes already accumulated in this
+    // poll batch, without counting those bytes twice.
+    let observed_idle_time = timing.idle_until()
+        + timing.seconds_for_bytes(MESSAGE_MIN);
+    let idletime = batch_idle_time.max(observed_idle_time);
     let ack_clock = update.queue_clock_at(idletime)?;
     scheduler.promote_ready(ack_clock);
 
@@ -1802,6 +1807,22 @@ mod command_send_timing_tests {
 
         assert!(!should_send_command(&mut scheduler, update(), timing, 10.0, 10.0, 0).unwrap());
         assert!(should_send_command(&mut scheduler, update(), timing, 10.006, 10.0, 0).unwrap());
+    }
+
+    #[test]
+    fn observed_driver_backlog_extends_the_command_wakeup_deadline() {
+        let mut scheduler = CommandScheduler::new();
+        scheduler.enqueue(1, ScheduledCommand::new(
+            vec![0x66], 0, BACKGROUND_PRIORITY_CLOCK,
+        )).unwrap();
+        let mut timing = UartTiming::new(115_200).unwrap();
+        timing.reserve_transmission(10.0, 0, 100);
+        timing.observe_pending(10.010, 500);
+
+        let deadline = command_send_deadline(
+            &mut scheduler, update(), timing, 10.006, 10.0, 100,
+        ).unwrap().unwrap();
+        assert!((deadline - 10.0588).abs() < 1e-4);
     }
 
     #[test]
