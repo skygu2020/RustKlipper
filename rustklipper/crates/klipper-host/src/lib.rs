@@ -422,10 +422,6 @@ impl Printer {
 
     /// Install a parsed host configuration and enter the configuring state.
     pub fn install_config(&self, config: ConfigDocument) {
-        let _load_guard = self
-            .component_load_lock
-            .lock()
-            .expect("component load lock poisoned");
         self.config_usage.clear();
         self.connection_initialized.store(false, std::sync::atomic::Ordering::SeqCst);
         self.loaded_components
