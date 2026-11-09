@@ -1457,6 +1457,21 @@ mod tests {
     }
 
     #[test]
+    fn gcode_handler_can_unregister_itself_without_deadlock() {
+        let printer = Arc::new(Printer::new());
+        let handler_printer = printer.clone();
+        printer
+            .register_gcode_command("M999", true, None, move |_| {
+                handler_printer.unregister_gcode_command("M999");
+                Ok(Vec::new())
+            })
+            .unwrap();
+
+        assert!(printer.process_gcode_line("M999", true).unwrap().handler_found);
+        assert!(!printer.process_gcode_line("M999", true).unwrap().handler_found);
+    }
+
+    #[test]
     fn ready_only_gcode_handlers_are_disabled_after_shutdown() {
         let printer = Printer::new();
         printer
