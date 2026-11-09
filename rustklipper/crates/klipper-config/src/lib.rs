@@ -486,6 +486,25 @@ impl<'a> TrackedConfigSection<'a> {
         })
     }
 
+    pub fn get_f64(&self, option: &str) -> Result<f64, ConfigValueError> {
+        let value = self.get_required(option)?;
+        let parsed: f64 = value.parse().map_err(|_| ConfigValueError::Invalid {
+            section: self.section.name.clone(),
+            option: option.to_owned(),
+            value: value.to_owned(),
+            expected: "float",
+        })?;
+        if !parsed.is_finite() {
+            return Err(ConfigValueError::Invalid {
+                section: self.section.name.clone(),
+                option: option.to_owned(),
+                value: value.to_owned(),
+                expected: "finite float",
+            });
+        }
+        Ok(parsed)
+    }
+
     pub fn get_bool(&self, option: &str) -> Result<bool, ConfigValueError> {
         let value = self.get_required(option)?;
         match value.to_ascii_lowercase().as_str() {
@@ -580,6 +599,30 @@ impl ConfigUsageTracker {
             value: value.to_owned(),
             expected: "integer",
         })
+    }
+
+    pub fn get_f64(
+        &self,
+        config: &ConfigDocument,
+        section: &str,
+        option: &str,
+    ) -> Result<f64, ConfigValueError> {
+        let value = self.get_required(config, section, option)?;
+        let parsed: f64 = value.parse().map_err(|_| ConfigValueError::Invalid {
+            section: section.to_owned(),
+            option: option.to_owned(),
+            value: value.to_owned(),
+            expected: "float",
+        })?;
+        if !parsed.is_finite() {
+            return Err(ConfigValueError::Invalid {
+                section: section.to_owned(),
+                option: option.to_owned(),
+                value: value.to_owned(),
+                expected: "finite float",
+            });
+        }
+        Ok(parsed)
     }
 
     pub fn get_bool(
@@ -765,6 +808,15 @@ mod tests {
         let unused = tracker.unused_options(&config);
         assert_eq!(unused.len(), 1);
         assert_eq!(unused[0].option, "control");
+    }
+
+    #[test]
+    fn tracked_section_parses_finite_float_values() {
+        let config = ConfigDocument::parse("[heater]\nmax_power=0.75\n").unwrap();
+        let tracker = ConfigUsageTracker::new();
+        let section = tracker.track_section(config.section("heater").unwrap());
+        assert_eq!(section.get_f64("max_power").unwrap(), 0.75);
+        assert!(tracker.unused_options(&config).is_empty());
     }
 
     #[test]
