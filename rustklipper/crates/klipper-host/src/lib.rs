@@ -478,13 +478,16 @@ impl Printer {
     /// Enter shutdown. Klipper's shutdown event is emitted only if the printer
     /// had reached the ready state.
     pub fn invoke_shutdown(&self, reason: impl Into<String>) {
-        let current_state = self.state();
-        if current_state == PrinterState::Shutdown {
-            return;
-        }
-        let was_ready = current_state == PrinterState::Ready;
+        let was_ready = {
+            let mut state = self.state.write().expect("printer state lock poisoned");
+            if *state == PrinterState::Shutdown {
+                return;
+            }
+            let was_ready = *state == PrinterState::Ready;
+            *state = PrinterState::Shutdown;
+            was_ready
+        };
         let reason = reason.into();
-        *self.state.write().expect("printer state lock poisoned") = PrinterState::Shutdown;
         *self.state_message.write().expect("printer state message lock poisoned") =
             reason.clone();
         self.gcode
