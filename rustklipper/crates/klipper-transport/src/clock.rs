@@ -128,6 +128,22 @@ impl ClockSync {
             .saturating_add(clock32.wrapping_sub(self.last_clock as u32) as u64)
     }
 
+    /// Process one of Klipper's initial clock-calibration samples.
+    ///
+    /// During `ClockSync.connect()`, Klipper resets `last_prediction_time`
+    /// before each of its initial get_clock queries so a large forward sample
+    /// is not rejected by the steady-state outlier guard. Call this for each
+    /// startup calibration response, then use `update()` for periodic samples.
+    pub fn update_initial_sample(
+        &mut self,
+        clock32: u32,
+        sent_time: f64,
+        receive_time: f64,
+    ) -> Result<Option<ClockUpdate>, ClockSyncError> {
+        self.last_prediction_time = -9999.0;
+        self.update(clock32, sent_time, receive_time)
+    }
+
     /// Process a get_clock response with monotonic send and receive timestamps.
     pub fn update(&mut self, clock32: u32, sent_time: f64, receive_time: f64)
         -> Result<Option<ClockUpdate>, ClockSyncError>
@@ -250,6 +266,22 @@ mod tests {
         assert_eq!(sync.last_clock(), 0x0000_0003_89ab_cdef);
         assert_eq!(sync.estimate().sample_time, 12.5);
         assert_eq!(sync.estimate().clock, 0x0000_0003_89ab_cdef as f64);
+    }
+
+    #[test]
+    fn initial_clock_sample_bypasses_steady_state_forward_outlier_guard() {
+        let mut sync = ClockSync::from_uptime(1_000_000.0, 1.0, 0, 1_000_000).unwrap();
+        let update = sync.update_initial_sample(1_150_000, 1.05, 1.052).unwrap().unwrap();
+        assert!(!update.rejected_outlier);
+        assert_eq!(sync.last_clock(), 1_150_000);
+    }
+
+    #[test]
+    fn steady_state_clock_sample_still_rejects_early_forward_outlier() {
+        let mut sync = ClockSync::from_uptime(1_000_000.0, 1.0, 0, 1_000_000).unwrap();
+        let update = sync.update(1_150_000, 1.05, 1.052).unwrap().unwrap();
+        assert!(update.rejected_outlier);
+        assert_eq!(sync.last_clock(), 1_150_000);
     }
 
     #[test]
