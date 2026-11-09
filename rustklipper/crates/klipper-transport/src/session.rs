@@ -142,6 +142,11 @@ fn command_send_deadline(
     idle_time: f64,
     pending_bytes: usize,
 ) -> Result<Option<f64>, crate::ClockSyncError> {
+    // serialqueue.c checks its ACK block and receive-window limits before
+    // promoting upcoming commands or scheduling another send.
+    if !scheduler.can_send_frame() {
+        return Ok(None);
+    }
     let batch_idle_time = eventtime.max(idle_time)
         + timing.seconds_for_bytes(pending_bytes.saturating_add(MESSAGE_MIN));
     // Include any driver backlog beyond the bytes already accumulated in this
@@ -1830,6 +1835,24 @@ mod command_send_timing_tests {
             },
             rejected_outlier: false,
         }
+    }
+
+    #[test]
+    fn blocked_receive_window_does_not_promote_upcoming_commands() {
+        let mut scheduler = CommandScheduler::new();
+        scheduler.enqueue(1, ScheduledCommand::new(vec![0x10], 0, 0)).unwrap();
+        scheduler.promote_ready(0);
+        let first = scheduler.build_frame().unwrap().unwrap();
+        scheduler.mark_frame_sent(&first, 1.0).unwrap();
+        scheduler.set_receive_window(1);
+        scheduler.enqueue(1, ScheduledCommand::new(vec![0x20], 0, 0)).unwrap();
+
+        let timing = UartTiming::new(115_200).unwrap();
+        assert_eq!(
+            command_send_deadline(&mut scheduler, update(), timing, 10.0, 10.0, 0).unwrap(),
+            None,
+        );
+        assert_eq!(scheduler.queued_counts(), (1, 0));
     }
 
     #[test]
