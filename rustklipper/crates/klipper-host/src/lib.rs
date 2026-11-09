@@ -509,6 +509,9 @@ impl Printer {
     }
 
     pub fn disconnect(&self) {
+        if self.state() == PrinterState::Disconnected {
+            return;
+        }
         *self.state.write().expect("printer state lock poisoned") =
             PrinterState::Disconnected;
         *self.state_message.write().expect("printer state message lock poisoned") =
@@ -1238,6 +1241,20 @@ mod tests {
         assert_eq!(printer.run_reactor_once(), 1);
         assert_eq!(printer.state(), PrinterState::Shutdown);
         assert_eq!(printer.state_message(), "async failure");
+        assert_eq!(events.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn repeated_disconnect_emits_one_event() {
+        let printer = Printer::new();
+        let events = Arc::new(AtomicUsize::new(0));
+        let observed = events.clone();
+        printer.register_event_handler(PrinterEventKind::Disconnect, move |_| {
+            observed.fetch_add(1, Ordering::SeqCst);
+        });
+        printer.disconnect();
+        printer.disconnect();
+        assert_eq!(printer.state(), PrinterState::Disconnected);
         assert_eq!(events.load(Ordering::SeqCst), 1);
     }
 
