@@ -1,0 +1,12 @@
+[package]
+name = "klipper-transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Cross-platform USB serial transport primitives for Klipper"
+
+[dependencies]
+klipper-protocol = { path = "../klipper-protocol" }
+thiserror.workspace = true
+serialport = { version = "4.7", default-features = false }
