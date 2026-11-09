@@ -194,6 +194,7 @@ impl ComponentRegistry {
         loaded: &mut Vec<String>,
         loaded_set: &mut HashSet<String>,
         loading: &mut HashSet<String>,
+        requested_by: Option<&str>,
     ) -> Result<(), ComponentError> {
         if loaded_set.contains(name) {
             return Ok(());
@@ -203,7 +204,7 @@ impl ComponentRegistry {
                 return Ok(());
             }
             return Err(ComponentError::MissingDependency {
-                section: loaded.last().cloned().unwrap_or_else(|| name.to_owned()),
+                section: requested_by.unwrap_or(name).to_owned(),
                 dependency: name.to_owned(),
             });
         };
@@ -215,7 +216,7 @@ impl ComponentRegistry {
         let Some(section) = config.section(name) else {
             loading.remove(name);
             return Err(ComponentError::MissingDependency {
-                section: name.to_owned(),
+                section: requested_by.unwrap_or(name).to_owned(),
                 dependency: name.to_owned(),
             });
         };
@@ -228,6 +229,7 @@ impl ComponentRegistry {
                 loaded,
                 loaded_set,
                 loading,
+                Some(name),
             )?;
         }
 
@@ -265,6 +267,7 @@ impl ComponentRegistry {
                     &mut loaded,
                     &mut loaded_set,
                     &mut loading,
+                    None,
                 )?;
             }
         }
@@ -1499,6 +1502,29 @@ mod tests {
             &*printer.lookup_object::<String>("consumer").unwrap(),
             "ready:provider"
         );
+    }
+
+    #[test]
+    fn missing_component_dependency_is_reported_with_requester() {
+        let printer = Printer::new();
+        printer.install_config(
+            ConfigDocument::parse("[consumer]\nsource=missing\n").unwrap(),
+        );
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register_with_dependencies(
+                "consumer",
+                vec!["missing".to_owned()],
+                |_, _| Ok(()),
+            )
+            .unwrap();
+        assert!(matches!(
+            printer.load_components(&registry),
+            Err(ComponentError::MissingDependency {
+                section,
+                dependency,
+            }) if section == "consumer" && dependency == "missing"
+        ));
     }
 
     #[test]
