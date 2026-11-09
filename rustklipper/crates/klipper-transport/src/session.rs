@@ -1492,15 +1492,23 @@ impl ReliableSerialSession {
                 return Err(SessionError::Transport(error));
             }
             // serialqueue.c assigns one eventtime to every frame accumulated
-            // in the same command_event callback.
+            // in the same command_event callback, while receive_time records
+            // the estimated UART completion of each individual frame.
             let sent_at = eventtime;
+            let receive_at = self.uart_timing.map_or(eventtime, |timing| {
+                let batch_receive = eventtime.max(idle_time)
+                    + timing.seconds_for_bytes(pending_bytes.saturating_add(frame.bytes.len()));
+                let observed_receive = timing.idle_until()
+                    + timing.seconds_for_bytes(frame.bytes.len());
+                batch_receive.max(observed_receive)
+            });
             let pending_after = self.transport.bytes_to_write()? as usize;
             let observed_at = self.now();
             if let Some(timing) = &mut self.uart_timing {
                 timing.reserve_transmission(eventtime, pending_bytes, frame.bytes.len());
                 timing.observe_pending(observed_at, pending_after);
             }
-            if let Err(error) = self.scheduler.mark_frame_sent(&frame, sent_at) {
+            if let Err(error) = self.scheduler.mark_frame_sent_with_receive_time(&frame, sent_at, receive_at) {
                 self.disconnected = true;
                 return Err(SessionError::Schedule(error));
             }
