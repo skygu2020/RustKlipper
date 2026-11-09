@@ -262,6 +262,15 @@ impl UartTiming {
         self.idle_until = now;
     }
 
+    /// Extend the estimated idle deadline when the OS reports queued bytes.
+    /// This takes the maximum with the existing reservation so bytes already
+    /// represented by our own frame reservations are not counted twice.
+    pub fn observe_pending(&mut self, now: f64, pending_bytes: usize) {
+        self.idle_until = self.idle_until.max(
+            now + self.seconds_for_bytes(pending_bytes),
+        );
+    }
+
     /// Reserve UART time including bytes already pending in the host driver.
     pub fn reserve_transmission(&mut self, now: f64, pending_bytes: usize, frame_bytes: usize) -> f64 {
         let start = now.max(self.idle_until);
@@ -389,6 +398,18 @@ mod tests {
         let frame_time = uart.seconds_for_bytes(10);
         assert!((first - (1.0 + frame_time)).abs() < 1e-12);
         assert!((second - (first + frame_time)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn observed_driver_backlog_extends_but_never_double_counts_uart_time() {
+        let mut uart = UartTiming::new(100_000).unwrap();
+        let reserved = uart.reserve_transmission(1.0, 0, 100);
+        assert!((reserved - 1.01).abs() < 1e-12);
+
+        uart.observe_pending(1.005, 100);
+        assert!((uart.idle_until() - 1.015).abs() < 1e-12);
+        uart.observe_pending(1.006, 10);
+        assert!((uart.idle_until() - 1.015).abs() < 1e-12);
     }
 
     #[test]
