@@ -374,6 +374,18 @@ mod tests {
     }
 
 
+
+    #[test]
+    fn empty_sent_window_resets_last_receive_sent_timestamp() {
+        let mut state = RetransmitState::new();
+        state.track_sent(1, vec![0x10], 1.0).unwrap();
+        assert_eq!(state.acknowledge(2, 1.1).unwrap().last_receive_sent_time, 1.0);
+
+        // A new advancing sequence with no host frames is the connection
+        // initialization/resynchronization case in serialqueue.c.
+        assert_eq!(state.acknowledge(3, 1.2).unwrap().last_receive_sent_time, 0.0);
+    }
+
     #[test]
     fn acknowledged_timestamp_remains_original_after_retransmission() {
         let mut state = RetransmitState::new();
