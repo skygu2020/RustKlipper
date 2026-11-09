@@ -351,21 +351,25 @@ impl ConfigFileLoader {
             let data = data.replace("\r\n", "\n");
             let mut merged = ConfigDocument::default();
             let mut buffered = Vec::new();
+            let mut buffered_start_line = 1usize;
             let parent = canonical.parent().unwrap_or_else(|| std::path::Path::new("."));
 
-            let flush = |lines: &mut Vec<String>, merged: &mut ConfigDocument| -> Result<(), ConfigLoadError> {
+            let flush = |lines: &mut Vec<String>, start_line: usize, merged: &mut ConfigDocument| -> Result<(), ConfigLoadError> {
                 if lines.iter().all(|line| line.trim().is_empty()) {
                     lines.clear();
                     return Ok(());
                 }
                 let chunk = lines.join("\n");
-                let parsed = ConfigDocument::parse_named_at(&chunk, canonical.display().to_string(), 0)?;
+                let parsed = ConfigDocument::parse_named_at(
+                    &chunk, canonical.display().to_string(), start_line.saturating_sub(1),
+                )?;
                 merged.merge(parsed);
                 lines.clear();
                 Ok(())
             };
 
-            for line in data.lines() {
+            for (line_index, line) in data.lines().enumerate() {
+                let line_number = line_index + 1;
                 let without_comment = strip_hash_comment(line);
                 let trimmed = without_comment.trim();
                 let include_spec = trimmed.strip_prefix('[')
@@ -373,7 +377,8 @@ impl ConfigFileLoader {
                     .and_then(|header| header.strip_prefix("include "))
                     .map(str::trim);
                 if let Some(spec) = include_spec {
-                    flush(&mut buffered, &mut merged)?;
+                    flush(&mut buffered, buffered_start_line, &mut merged)?;
+                    buffered_start_line = line_number + 1;
                     let pattern = parent.join(spec);
                     let pattern_text = pattern.to_string_lossy().into_owned();
                     let mut matches = Vec::new();
@@ -394,10 +399,13 @@ impl ConfigFileLoader {
                         merged.merge(included_doc);
                     }
                 } else {
+                    if buffered.is_empty() {
+                        buffered_start_line = line_number;
+                    }
                     buffered.push(line.to_owned());
                 }
             }
-            flush(&mut buffered, &mut merged)?;
+            flush(&mut buffered, buffered_start_line, &mut merged)?;
             Ok(merged)
         })();
         visited.remove(&canonical);
