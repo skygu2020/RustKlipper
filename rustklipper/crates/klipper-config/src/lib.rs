@@ -387,7 +387,7 @@ impl ConfigFileLoader {
 
         let mut lines = Vec::new();
         for line in autosave.lines() {
-            if line == "#*#" {
+            if line.trim().is_empty() || line == "#*#" {
                 lines.push(String::new());
             } else if let Some(content) = line.strip_prefix("#*# ") {
                 lines.push(content.to_owned());
