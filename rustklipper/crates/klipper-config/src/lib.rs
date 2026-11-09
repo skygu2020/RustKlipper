@@ -1314,7 +1314,7 @@ mod tests {
         ));
         fs::write(
             &path,
-            "[printer]\nkinematics=cartesian\n#*# <---------------------- SAVE_CONFIG ---------------------->\n#*# [printer]\nthis is not autosave data\n",
+            "[printer]\nkinematics=cartesian\n#*# <---------------------- SAVE_CONFIG ---------------------->\n#*# [printer]\n#*# <---------------------- SAVE_CONFIG ---------------------->\n",
         )
         .unwrap();
         let config = ConfigFileLoader::load(&path).unwrap();
