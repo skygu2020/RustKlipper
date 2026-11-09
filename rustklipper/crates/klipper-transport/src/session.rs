@@ -21,6 +21,8 @@ pub enum SessionError {
     Notification(u64),
     #[error("response-tracked command already has a notification ID")]
     CommandAlreadyNotified,
+    #[error("register a response waiter before enqueueing {name} with oid {oid:?}")]
+    MissingResponseWaiter { name: String, oid: Option<u32> },
     #[error("identify requests must use the same scheduler queue")]
     IdentifyQueueMismatch,
     #[error("identify chunk size must be between 1 and 255 bytes")]
@@ -76,7 +78,7 @@ struct PendingRetryRequest {
     command: ScheduledCommand,
     name: String,
     oid: Option<u32>,
-    waiter_id: Option<u64>,
+    waiter_id: u64,
     transaction: RetryTransaction,
 }
 
@@ -358,9 +360,13 @@ impl ReliableSerialSession {
             self.next_retry_transaction_id = self.next_retry_transaction_id.wrapping_add(1).max(1);
         }
         let name = response_name.into();
+        let waiter_id = self.response_router.claim_oldest(&name, oid)
+            .ok_or_else(|| SessionError::MissingResponseWaiter {
+                name: name.clone(),
+                oid,
+            })?;
         let template = command.clone();
         command.notify_id = None;
-        let waiter_id = self.response_router.claim_oldest(&name, oid);
         self.retry_transactions.insert(transaction_id, PendingRetryRequest {
             queue_id,
             command: template,
@@ -377,9 +383,7 @@ impl ReliableSerialSession {
             // initial attempt. Roll that reservation back together with the
             // transaction so a later request cannot inherit a stale FIFO waiter.
             if let Some(pending) = self.retry_transactions.remove(&transaction_id) {
-                if let Some(waiter_id) = pending.waiter_id {
-                    self.response_router.cancel_waiter(&pending.name, pending.oid, waiter_id);
-                }
+                self.response_router.cancel_waiter(&pending.name, pending.oid, pending.waiter_id);
             }
             return Err(error);
         }
@@ -444,9 +448,14 @@ impl ReliableSerialSession {
         let matched = if let Some(index) = pending_index {
             let pending = self.sent_response_requests.remove(index)
                 .expect("located response request must exist");
-            let delivered = self.response_router.dispatch(Response {
+            let response = Response {
                 name: name.clone(), oid, params: params.clone(),
                 sent_time, receive_time,
+            };
+            let waiter_id = self.retry_transactions.get(&pending.transaction_id)
+                .map(|transaction| transaction.waiter_id);
+            let delivered = waiter_id.is_some_and(|waiter_id| {
+                self.response_router.dispatch_to_waiter(response, waiter_id)
             });
             if delivered {
                 if let Some(mut transaction) = self.retry_transactions.remove(&pending.transaction_id) {
@@ -490,9 +499,8 @@ impl ReliableSerialSession {
         let router = self.response_router.clone();
         let abandoned: Vec<u64> = self.retry_transactions.iter()
             .filter_map(|(id, pending)| {
-                let waiter_is_live = pending.waiter_id.map_or_else(
-                    || router.pending_count(&pending.name, pending.oid) > 0,
-                    |waiter_id| router.contains_waiter(&pending.name, pending.oid, waiter_id),
+                let waiter_is_live = router.contains_waiter(
+                    &pending.name, pending.oid, pending.waiter_id,
                 );
                 (!waiter_is_live).then_some(*id)
             }).collect();
@@ -606,9 +614,7 @@ impl ReliableSerialSession {
                         self.sent_response_requests.retain(|entry| entry.transaction_id != transaction_id);
                         // Remove this transaction's exact waiter; other requests
                         // with the same name and OID must retain their FIFO positions.
-                        if let Some(waiter_id) = waiter_id {
-                            self.response_router.cancel_waiter(&name, oid, waiter_id);
-                        }
+                        self.response_router.cancel_waiter(&name, oid, waiter_id);
                         events.push(SessionEvent::RetryExhausted { name, oid });
                     }
                 }
