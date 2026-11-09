@@ -550,9 +550,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rustklipper-config-glob-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("parts")).unwrap();
-        fs::write(dir.join("parts/20.cfg"), "[printer]\\nmax_velocity=200\\n").unwrap();
-        fs::write(dir.join("parts/10.cfg"), "[printer]\\nmax_velocity=100\\n").unwrap();
-        fs::write(dir.join("main.cfg"), "[include parts/*.cfg]\\n").unwrap();
+        fs::write(dir.join("parts/20.cfg"), "[printer]\nmax_velocity=200\n").unwrap();
+        fs::write(dir.join("parts/10.cfg"), "[printer]\nmax_velocity=100\n").unwrap();
+        fs::write(dir.join("main.cfg"), "[include parts/*.cfg]\n").unwrap();
         let config = ConfigFileLoader::load(dir.join("main.cfg")).unwrap();
         assert_eq!(config.get("printer", "max_velocity"), Some("200"));
         let _ = fs::remove_dir_all(&dir);
