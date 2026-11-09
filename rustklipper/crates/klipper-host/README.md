@@ -6,7 +6,7 @@ Implemented:
 - Printer lifecycle states: startup, configuring, ready, shutdown, disconnected.
 - Lifecycle events for config loaded, ready, shutdown, and disconnect.
 - Typed named-object registry with duplicate and type-mismatch checks.
-- Parsed configuration ownership.
+- Parsed configuration ownership and recursive config-file loading.\n- Configuration-ordered component factory registry.
 - Integration with the host G-code dispatcher and its readiness gating.
 
 This crate does not compile, configure, flash, or emulate MCU firmware. MCU
