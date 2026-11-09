@@ -136,10 +136,10 @@ impl RetransmitState {
             return Err(RetransmitError::SequenceNotIncreasing);
         }
         if self.outstanding.is_empty() {
-            // The transport's write_encoded_frame() calls serialport flush(),
-            // which waits for the UART output to drain. This timestamp is
-            // therefore the frame's transmission-completion time.
-            self.retransmit_deadline = Some(now + self.rto);
+            // serialqueue.c starts the initial retry timer after the first
+            // frame's estimated UART wire time, not at write() completion.
+            let wire_time = self.wire_time_per_byte * bytes.len() as f64;
+            self.retransmit_deadline = Some(now + wire_time + self.rto);
         }
         if self.rtt_sample_seq.is_none() {
             self.rtt_sample_seq = Some(sequence);
@@ -237,7 +237,10 @@ impl RetransmitState {
     pub fn retransmit_all(&mut self, now: f64) -> Vec<Retransmission> {
         let mut retries = Vec::with_capacity(self.outstanding.len());
         self.rtt_sample_seq = None;
-        self.retransmit_deadline = Some(now + self.rto);
+        let first_frame_wire_time = self.outstanding.front().map_or(0.0, |entry| {
+            self.wire_time_per_byte * (entry.frame.bytes.len() + 1) as f64
+        });
+        self.retransmit_deadline = Some(now + self.rto + first_frame_wire_time);
         for entry in &mut self.outstanding {
             entry.frame.transmissions = entry.frame.transmissions.saturating_add(1);
             entry.retransmitted = true;
@@ -252,9 +255,9 @@ impl RetransmitState {
         retries
     }
 
-    /// Record completion of a retransmission batch using the actual UART
-    /// drain timestamp. The session writes the entire cached window as one
-    /// sync-prefixed batch, so all entries share this completion timestamp.
+    /// Record a retransmission batch using its shared write-start timestamp.
+    /// The timeout includes the sync byte and first cached frame's wire time,
+    /// matching serialqueue.c's retransmit_event() deadline.
     pub fn mark_retransmission_sent(
         &mut self, sequence: u64, sent_at: f64,
     ) -> Result<(), RetransmitError> {
@@ -269,7 +272,10 @@ impl RetransmitState {
         // The session records the shared completion time after the whole batch
         // has drained, so later entries must not move that deadline.
         if is_oldest {
-            self.retransmit_deadline = Some(sent_at + self.rto);
+            let first_frame_wire_time =
+                self.wire_time_per_byte * (entry.frame.bytes.len() + 1) as f64;
+            self.retransmit_deadline =
+                Some(sent_at + self.rto + first_frame_wire_time);
         }
         Ok(())
     }
@@ -412,11 +418,12 @@ mod tests {
     }
 
     #[test]
-    fn initial_deadline_starts_at_completed_write_timestamp() {
+    fn initial_deadline_includes_first_frame_wire_time() {
         let mut state = RetransmitState::new();
+        state.set_wire_time_per_byte(0.001).unwrap();
         state.track_sent(1, vec![0; 20], 1.0).unwrap();
 
-        let deadline = 1.0 + state.rto();
+        let deadline = 1.0 + state.rto() + 0.020;
         assert!(state.poll_timeout_all(deadline - 0.000_001).unwrap().is_empty());
         assert_eq!(state.poll_timeout_all(deadline).unwrap().len(), 1);
     }
@@ -435,6 +442,19 @@ mod tests {
 
         assert!(state.poll_timeout_all(first_deadline - 0.000_001).unwrap().is_empty());
         assert_eq!(state.poll_timeout_all(first_deadline).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn retransmission_deadline_includes_sync_and_first_frame_wire_time() {
+        let mut state = RetransmitState::new();
+        state.set_wire_time_per_byte(0.001).unwrap();
+        state.track_sent(1, vec![0; 4], 0.0).unwrap();
+        state.retransmit_all(1.0);
+        state.mark_retransmission_sent(1, 1.1).unwrap();
+
+        let deadline = 1.1 + state.rto() + 0.005;
+        assert!(state.poll_timeout_all(deadline - 0.000_001).unwrap().is_empty());
+        assert_eq!(state.poll_timeout_all(deadline).unwrap().len(), 1);
     }
 
     #[test]
