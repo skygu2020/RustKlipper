@@ -1636,6 +1636,38 @@ mod tests {
     }
 
     #[test]
+    fn component_registered_gcode_commands_follow_config_lifecycle() {
+        let printer = Printer::new();
+        printer.install_config(ConfigDocument::parse("[macro]\nname=first\n").unwrap());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register("macro", move |printer, section| {
+                let value = section.get("name").unwrap().to_owned();
+                let observed = observed.clone();
+                printer
+                    .register_gcode_command("M999", true, None, move |_| {
+                        observed.fetch_add(1, Ordering::SeqCst);
+                        Ok(vec![DispatchEvent::Info(value.clone())])
+                    })
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        printer.initialize_components(&registry).unwrap();
+        assert!(printer.process_gcode_line("M999", true).unwrap().handler_found);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        printer.install_config(ConfigDocument::parse("[macro]\nname=second\n").unwrap());
+        printer.initialize_components(&registry).unwrap();
+        let outcome = printer.process_gcode_line("M999", true).unwrap().unwrap();
+        assert!(outcome.handler_found);
+        assert!(outcome.events.contains(&DispatchEvent::Info("second".to_owned())));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
     fn config_reinstall_clears_component_gcode_handlers() {
         let printer = Printer::new();
         {
