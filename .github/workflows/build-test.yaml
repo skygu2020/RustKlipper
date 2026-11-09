@@ -1,27 +1,37 @@
-# Perform continuous integration tests on updates and pull requests
+# CI for the Rust Klipper host implementation only.
+# The original Python host / MCU firmware build is intentionally excluded.
 name: Build test
-on: [push, pull_request]
+
+on:
+  push:
+    paths:
+      - "rustklipper/**"
+      - ".github/workflows/build-test.yaml"
+  pull_request:
+    paths:
+      - "rustklipper/**"
+      - ".github/workflows/build-test.yaml"
 
 jobs:
-  build:
-    runs-on: ubuntu-22.04
+  rust-host:
+    name: Rust host (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
-    - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
 
-    - name: Setup cache
-      uses: actions/cache@v5
-      with:
-        path: ci_cache
-        key: ${{ runner.os }}-build-${{ hashFiles('scripts/ci-install.sh') }}
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
 
-    - name: Prepare tests
-      run: ./scripts/ci-install.sh
+      - name: Check formatting
+        working-directory: rustklipper
+        run: cargo fmt --all -- --check
 
-    - name: Test
-      run: ./scripts/ci-build.sh 2>&1
-
-    - name: Upload micro-controller data dictionaries
-      uses: actions/upload-artifact@v4
-      with:
-        name: data-dict
-        path: ci_build/dict
+      - name: Run Rust host tests
+        working-directory: rustklipper
+        run: cargo test --workspace --all-targets
