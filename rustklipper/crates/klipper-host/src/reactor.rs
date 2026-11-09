@@ -6,7 +6,7 @@
 
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap, HashSet};
-use std::sync::Mutex;
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 pub type TaskId = u64;
@@ -46,6 +46,69 @@ struct ReactorState {
     cancelled: HashSet<TaskId>,
 }
 
+
+/// A thread-safe, single-assignment result used to observe asynchronous work.
+///
+/// Unlike Klipper's greenlet-aware completion, this primitive does not suspend
+/// the reactor. Callers may poll it or wait from a separate host thread.
+pub struct Completion<T> {
+    state: Arc<(Mutex<Option<T>>, Condvar)>,
+}
+
+impl<T> Clone for Completion<T> {
+    fn clone(&self) -> Self {
+        Self { state: Arc::clone(&self.state) }
+    }
+}
+
+impl<T> Default for Completion<T> {
+    fn default() -> Self {
+        Self { state: Arc::new((Mutex::new(None), Condvar::new())) }
+    }
+}
+
+impl<T> Completion<T> {
+    pub fn new() -> Self { Self::default() }
+
+    /// Complete once. A second completion returns the unused result.
+    pub fn complete(&self, result: T) -> Result<(), T> {
+        let (lock, ready) = &*self.state;
+        let mut current = lock.lock().expect("completion lock poisoned");
+        if current.is_some() { return Err(result); }
+        *current = Some(result);
+        ready.notify_all();
+        Ok(())
+    }
+
+    pub fn is_complete(&self) -> bool {
+        self.state.0.lock().expect("completion lock poisoned").is_some()
+    }
+
+    /// Clone the result if it has already been produced.
+    pub fn result(&self) -> Option<T> where T: Clone {
+        self.state.0.lock().expect("completion lock poisoned").clone()
+    }
+
+    /// Wait for completion. Do not call this on the reactor dispatch thread.
+    pub fn wait(&self) -> T where T: Clone {
+        let (lock, ready) = &*self.state;
+        let mut current = lock.lock().expect("completion lock poisoned");
+        while current.is_none() {
+            current = ready.wait(current).expect("completion lock poisoned");
+        }
+        current.as_ref().expect("completion was checked").clone()
+    }
+
+    /// Wait up to the given duration; returns None if no result arrives in time.
+    pub fn wait_timeout(&self, timeout: Duration) -> Option<T> where T: Clone {
+        let (lock, ready) = &*self.state;
+        let current = lock.lock().expect("completion lock poisoned");
+        let (current, _) = ready.wait_timeout_while(current, timeout, Option::is_none)
+            .expect("completion lock poisoned");
+        current.clone()
+    }
+}
+
 /// A lightweight, cooperative scheduler for host callbacks and timers.
 #[derive(Default)]
 pub struct Reactor {
@@ -66,6 +129,29 @@ impl Reactor {
             callback();
             None
         })
+    }
+
+
+    /// Queue a one-shot callback and return a handle for its result.
+    /// The callback runs on the next due dispatch.
+    pub fn register_callback_with_completion<F, T>(
+        &self,
+        callback: F,
+    ) -> (TaskId, Completion<T>)
+    where
+        F: FnOnce(Instant) -> T + Send + 'static,
+        T: Send + 'static,
+    {
+        let completion = Completion::new();
+        let callback_completion = completion.clone();
+        let mut callback = Some(callback);
+        let id = self.insert_task(Instant::now(), move |eventtime| {
+            let callback = callback.take().expect("one-shot callback invoked once");
+            let result = callback(eventtime);
+            let _ = callback_completion.complete(result);
+            None
+        });
+        (id, completion)
     }
 
     /// Register a one-shot or periodic timer.
@@ -421,6 +507,35 @@ mod tests {
         assert_eq!(reactor.run_due(start + Duration::from_secs(3)), 1);
         assert_eq!(count.load(Ordering::SeqCst), 1);
         assert!(!reactor.update_timer(id, start + Duration::from_secs(4)));
+    }
+
+
+    #[test]
+    fn callback_completion_publishes_result() {
+        let reactor = Reactor::new();
+        let (id, completion) = reactor.register_callback_with_completion(|eventtime| {
+            eventtime.elapsed().as_nanos() == 0
+        });
+        assert!(!completion.is_complete());
+        assert_eq!(completion.result(), None);
+        assert_eq!(reactor.run_due(Instant::now() + Duration::from_secs(1)), 1);
+        assert!(completion.is_complete());
+        assert_eq!(completion.result(), Some(false));
+        assert_eq!(completion.wait_timeout(Duration::from_millis(1)), Some(false));
+        assert!(!reactor.unregister(id));
+    }
+
+    #[test]
+    fn completion_is_single_assignment_and_wakes_waiters() {
+        let completion = Completion::new();
+        let waiter = completion.clone();
+        let thread = std::thread::spawn(move || waiter.wait());
+        assert_eq!(completion.complete(String::from("ready")), Ok(()));
+        assert_eq!(thread.join().unwrap(), "ready");
+        assert_eq!(
+            completion.complete(String::from("duplicate")),
+            Err(String::from("duplicate"))
+        );
     }
 
     #[test]
