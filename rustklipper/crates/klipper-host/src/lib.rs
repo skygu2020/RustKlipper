@@ -1462,6 +1462,33 @@ mod tests {
     }
 
     #[test]
+    fn gcode_script_continues_after_a_panicking_handler() {
+        let printer = Printer::new();
+        printer.set_ready();
+        printer
+            .register_gcode_command("PANIC_NOW", false, None, |_| {
+                panic!("script handler panic");
+            })
+            .unwrap();
+        printer
+            .register_gcode_command("AFTER_PANIC", false, None, |_| {
+                Ok(vec![DispatchEvent::Info("continued".to_owned())])
+            })
+            .unwrap();
+
+        let outcomes = printer.process_gcode_script("PANIC_NOW\nAFTER_PANIC");
+        assert_eq!(outcomes.len(), 2);
+        assert!(matches!(
+            outcomes[0].events.first(),
+            Some(DispatchEvent::Error(message)) if message.contains("panicked")
+        ));
+        assert_eq!(
+            outcomes[1].events[0],
+            DispatchEvent::Info("continued".to_owned())
+        );
+    }
+
+    #[test]
     fn script_observes_commands_registered_by_prior_handlers() {
         let printer = Arc::new(Printer::new());
         let registering_printer = printer.clone();
