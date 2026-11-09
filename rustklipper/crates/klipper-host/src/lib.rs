@@ -464,6 +464,9 @@ impl Printer {
             .write()
             .expect("printer object lock poisoned")
             .clear();
+        // Drop every internal registry guard before invoking event handlers.
+        // ConfigLoaded callbacks may register component-owned G-code commands.
+        drop(component_gcode);
         *self.config.write().expect("printer config lock poisoned") = Some(Arc::new(config));
         self.set_configuring();
         // Event handlers may initialize or load components; release the
@@ -2310,6 +2313,26 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
+
+    #[test]
+    fn config_loaded_handler_can_register_component_gcode() {
+        let printer = Arc::new(Printer::new());
+        let callback_printer = printer.clone();
+        printer.register_event_handler(PrinterEventKind::ConfigLoaded, move |_| {
+            callback_printer
+                .register_component_gcode_command(
+                    "probe",
+                    "M999",
+                    true,
+                    None,
+                    |_| Ok(Vec::new()),
+                )
+                .unwrap();
+        });
+
+        printer.install_config(ConfigDocument::parse("[probe]\\nvalue=1\\n").unwrap());
+        assert!(printer.registered_gcode_commands().contains(&"M999".to_owned()));
+    }
 
     #[test]
     fn component_registry_loads_registered_sections_in_config_order() {
