@@ -211,6 +211,10 @@ impl Printer {
         self.state() == PrinterState::Shutdown
     }
 
+    pub fn is_ready(&self) -> bool {
+        self.state() == PrinterState::Ready
+    }
+
     pub fn state_message(&self) -> String {
         self.state_message
             .read()
@@ -745,7 +749,9 @@ mod tests {
         assert_eq!(printer.state_category(), PrinterStateCategory::Startup);
         printer.set_ready();
         assert_eq!(printer.state_category(), PrinterStateCategory::Ready);
+        assert!(printer.is_ready());
         printer.invoke_shutdown("failure");
+        assert!(!printer.is_ready());
         assert_eq!(printer.state_category(), PrinterStateCategory::Shutdown);
         printer.disconnect();
         assert_eq!(printer.state_category(), PrinterStateCategory::Error);
