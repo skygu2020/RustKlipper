@@ -29,7 +29,6 @@ pub struct SerialSettings {
     pub path: String,
     pub baud_rate: u32,
     pub timeout: Duration,
-    pub exclusive: bool,
 }
 
 impl SerialSettings {
@@ -38,7 +37,6 @@ impl SerialSettings {
             path: path.into(),
             baud_rate,
             timeout: Duration::from_millis(20),
-            exclusive: true,
         }
     }
 }
