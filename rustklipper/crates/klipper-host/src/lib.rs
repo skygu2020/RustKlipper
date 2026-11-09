@@ -644,8 +644,9 @@ impl Printer {
         let Some(config) = self.config() else {
             return Ok(());
         };
-        self.config_usage
-            .validate(&config, &self.object_names())
+        let mut valid_sections = self.object_names();
+        valid_sections.extend(self.loaded_component_names());
+        self.config_usage.validate(&config, &valid_sections)
     }
 
     pub fn load_components(
@@ -1220,6 +1221,18 @@ mod tests {
             ConfigDocument::parse("[printer]\nkinematics=corexy\n").unwrap(),
         );
         assert!(printer.config_warnings().is_empty());
+    }
+
+    #[test]
+    fn loaded_component_without_registered_object_validates_its_section() {
+        let printer = Printer::new();
+        printer.install_config(ConfigDocument::parse("[component]\n").unwrap());
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register("component", |_, _| Ok(()))
+            .unwrap();
+        printer.load_components(&registry).unwrap();
+        assert!(printer.validate_config().is_ok());
     }
 
     #[test]
