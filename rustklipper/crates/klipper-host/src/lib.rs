@@ -2159,6 +2159,9 @@ mod tests {
                     .map_err(|error| error.to_string())
             })
             .unwrap();
+        printer
+            .register_gcode_command("M998", true, None, |_| Ok(Vec::new()))
+            .unwrap();
         printer.load_components(&registry).unwrap();
         printer.set_ready();
         for value in ["hotend", "bed"] {
@@ -2174,6 +2177,7 @@ mod tests {
                 .unwrap()
                 .handler_found);
         }
+        assert!(printer.process_gcode_line("M998", true).unwrap().handler_found);
     }
 
     #[test]
