@@ -1686,7 +1686,7 @@ mod tests {
             printer.load_components(&registry),
             Err(ComponentError::LoadFailed { section, .. }) if section == "second"
         ));
-        let outcome = printer.process_gcode_line("M999", true).unwrap().unwrap();
+        let outcome = printer.process_gcode_line("M999", true).unwrap();
         assert_eq!(outcome.events, vec![DispatchEvent::Info("1".to_owned())]);
     }
 
@@ -1716,7 +1716,7 @@ mod tests {
 
         printer.install_config(ConfigDocument::parse("[macro]\nname=second\n").unwrap());
         printer.initialize_components(&registry).unwrap();
-        let outcome = printer.process_gcode_line("M999", true).unwrap().unwrap();
+        let outcome = printer.process_gcode_line("M999", true).unwrap();
         assert!(outcome.handler_found);
         assert!(outcome.events.contains(&DispatchEvent::Info("second".to_owned())));
         assert_eq!(calls.load(Ordering::SeqCst), 2);
