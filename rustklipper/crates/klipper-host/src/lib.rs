@@ -430,6 +430,10 @@ impl Printer {
     pub fn install_config(&self, config: ConfigDocument) {
         self.config_usage.clear();
         self.connection_initialized.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.gcode
+            .lock()
+            .expect("gcode dispatcher lock poisoned")
+            .reset();
         self.loaded_components
             .lock()
             .expect("loaded component lock poisoned")
@@ -1363,6 +1367,29 @@ mod tests {
             vec![0.5, 1.25]
         );
         assert!(printer.unused_config_options().is_empty());
+    }
+
+    #[test]
+    fn config_reinstall_clears_component_gcode_handlers() {
+        let printer = Printer::new();
+        printer
+            .gcode_dispatcher()
+            .lock()
+            .unwrap()
+            .register_command("M105", true, None, |_| Ok(Vec::new()))
+            .unwrap();
+        assert!(printer
+            .gcode_dispatcher()
+            .lock()
+            .unwrap()
+            .registered_commands()
+            .contains(&"M105".to_owned()));
+
+        printer.install_config(ConfigDocument::parse("[printer]\n").unwrap());
+        let dispatcher = printer.gcode_dispatcher();
+        let dispatcher = dispatcher.lock().unwrap();
+        assert!(dispatcher.registered_commands().is_empty());
+        assert!(!dispatcher.is_ready());
     }
 
     #[test]
