@@ -14,6 +14,9 @@ on:
 
 jobs:
   rust-host:
+    # Push builds are intentionally sampled every ten commits. The tenth
+    # commit carries [run ci]; pull requests always run the full Rust host suite.
+    if: github.event_name != 'push' || contains(github.event.head_commit.message, '[run ci]')
     name: Rust host (${{ matrix.os }})
     strategy:
       fail-fast: false
