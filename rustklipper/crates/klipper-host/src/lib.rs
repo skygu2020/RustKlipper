@@ -779,15 +779,21 @@ mod tests {
     #[test]
     fn concurrent_status_reads_observe_matching_state_messages() {
         let printer = Arc::new(Printer::new());
+        let start = Arc::new(std::sync::Barrier::new(2));
         let writer_printer = printer.clone();
+        let writer_start = start.clone();
         let writer = std::thread::spawn(move || {
+            writer_start.wait();
             for _ in 0..500 {
                 writer_printer.set_configuring();
                 writer_printer.set_ready();
+                std::thread::yield_now();
             }
         });
+        start.wait();
         for _ in 0..500 {
             let status = printer.status();
+            std::thread::yield_now();
             match status.state {
                 PrinterState::Startup => {
                     assert_eq!(status.category, PrinterStateCategory::Startup);
