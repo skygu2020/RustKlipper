@@ -383,6 +383,9 @@ impl ReliableSerialSession {
             }
             return Err(error);
         }
+        // Promote the initial attempt just like a retry. Otherwise a command
+        // with min_clock == 0 stays upcoming and poll() cannot build its frame.
+        self.scheduler.promote_ready(0);
         Ok(())
     }
 
