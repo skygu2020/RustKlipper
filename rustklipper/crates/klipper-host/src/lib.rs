@@ -1870,6 +1870,21 @@ mod tests {
     }
 
     #[test]
+    fn printer_exposes_registered_gcode_commands_and_help() {
+        let printer = Printer::new();
+        printer
+            .register_gcode_command("M999", true, Some("Report host status"), |_| {
+                Ok(Vec::new())
+            })
+            .unwrap();
+        assert_eq!(printer.registered_gcode_commands(), vec!["M999"]);
+        assert_eq!(
+            printer.gcode_help().get("M999").map(String::as_str),
+            Some("Report host status")
+        );
+    }
+
+    #[test]
     fn printer_gcode_registration_helpers_manage_commands() {
         let printer = Printer::new();
         printer
