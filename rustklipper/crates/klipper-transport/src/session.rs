@@ -111,8 +111,23 @@ fn advance_ack_clock(last_ack_clock: u64, observed_ack_clock: u64) -> u64 {
 /// delayed across one or more intervals, advance to the first future tick
 /// instead of emitting a burst of catch-up requests.
 fn next_periodic_clock_deadline(due_at: f64, now: f64) -> f64 {
-    let mut next_due = due_at + PERIODIC_CLOCK_INTERVAL_SECONDS;
-    while next_due <= now {
+    let first_due = due_at + PERIODIC_CLOCK_INTERVAL_SECONDS;
+    if first_due > now {
+        return first_due;
+    }
+
+    // Jump directly to the first tick strictly after now. This keeps the
+    // deadline anchored to the original cadence without iterating once per
+    // missed interval after a long pause or debugger stop.
+    let elapsed_intervals =
+        ((now - due_at) / PERIODIC_CLOCK_INTERVAL_SECONDS).floor() + 1.0;
+    let mut next_due =
+        due_at + elapsed_intervals * PERIODIC_CLOCK_INTERVAL_SECONDS;
+
+    // Floating-point rounding at an exact boundary can leave the computed
+    // deadline equal to now; one correction preserves the strict-future
+    // invariant without reintroducing an unbounded loop.
+    if next_due <= now {
         next_due += PERIODIC_CLOCK_INTERVAL_SECONDS;
     }
     next_due
@@ -1501,6 +1516,16 @@ mod periodic_clock_deadline_tests {
         let next = next_periodic_clock_deadline(due_at, now);
         assert!(next > now);
         assert!((next - (due_at + PERIODIC_CLOCK_INTERVAL_SECONDS * 2.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn very_long_pause_is_handled_without_iterating_over_missed_ticks() {
+        let due_at = 10.0;
+        let now = 1_000_000_000.0;
+        let next = next_periodic_clock_deadline(due_at, now);
+        assert!(next > now);
+        assert!((next - (due_at + PERIODIC_CLOCK_INTERVAL_SECONDS
+            * (((now - due_at) / PERIODIC_CLOCK_INTERVAL_SECONDS).floor() + 1.0))).abs() < 1e-6);
     }
 }
 
