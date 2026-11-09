@@ -441,6 +441,14 @@ impl ConfigUsageTracker {
         Self::default()
     }
 
+    /// Reset access history when a new configuration document is installed.
+    pub fn clear(&self) {
+        self.used
+            .lock()
+            .expect("config usage lock poisoned")
+            .clear();
+    }
+
     /// Read an option and mark it as used when it exists.
     pub fn get<'a>(
         &self,
