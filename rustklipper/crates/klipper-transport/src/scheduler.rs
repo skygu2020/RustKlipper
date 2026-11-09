@@ -163,7 +163,6 @@ impl CommandScheduler {
     pub fn acknowledge(&mut self, receive_sequence: u64, acknowledged_frame_bytes: usize) {
         if receive_sequence <= self.receive_sequence { return; }
         self.receive_sequence = receive_sequence;
-        self.last_ack_sequence = receive_sequence;
         let mut last_acked = 0;
         while self.sent_blocks.front().is_some_and(|(seq, _)| *seq < receive_sequence) {
             if let Some((_seq, bytes)) = self.sent_blocks.pop_front() {
@@ -218,6 +217,11 @@ impl CommandScheduler {
             self.acknowledge(receive_sequence, 0);
         }
         let retransmissions = if frame.payload.is_empty() {
+            // serialqueue.c advances last_ack_seq only for empty ACK blocks.
+            // Data frames still leave last_ack_bytes charged in the receive window.
+            if self.last_ack_sequence < receive_sequence {
+                self.last_ack_sequence = receive_sequence;
+            }
             self.retransmit.handle_empty_ack(receive_sequence, self.send_sequence, now)?
         } else { Vec::new() };
         Ok(ReceivedFrameResult {
@@ -364,6 +368,23 @@ mod tests {
             s.handle_received_frame(&invalid, 0.02),
             Err(ScheduleError::InvalidAckSequence { received: 5, sent: 4 })
         ));
+    }
+
+    #[test]
+    fn only_empty_ack_advances_last_ack_sequence_for_window_accounting() {
+        let mut s = CommandScheduler::new();
+        s.enqueue(1, ScheduledCommand::new(vec![0x41], 0, 1)).unwrap();
+        s.promote_ready(0);
+        let sent = s.build_frame().unwrap().unwrap();
+
+        let data = Frame { sequence: 2, payload: vec![0x55] };
+        s.handle_received_frame(&data, 0.01).unwrap();
+        assert_eq!(s.last_ack_sequence, 0);
+        assert_eq!(s.last_ack_bytes, sent.bytes.len());
+
+        let empty_ack = Frame { sequence: 2, payload: vec![] };
+        s.handle_received_frame(&empty_ack, 0.02).unwrap();
+        assert_eq!(s.last_ack_sequence, 2);
     }
 
     #[test]
