@@ -17,7 +17,7 @@ use klipper_config::{
     ConfigDocument, ConfigFileLoader, ConfigLoadError, ConfigUsageTracker,
     ConfigValidationError, ConfigValueError, ConfigWarning, UnusedConfigOption,
 };
-use klipper_gcode::{DispatchOutcome, GCodeDispatcher};
+use klipper_gcode::{DispatchEvent, DispatchOutcome, GCodeCommand, GCodeDispatcher, GCodeError};
 use thiserror::Error;
 
 type EventHandler = Arc<dyn Fn(&PrinterEvent) + Send + Sync>;
@@ -992,6 +992,52 @@ impl Printer {
         self.gcode.lock().expect("gcode dispatcher lock poisoned")
     }
 
+    pub fn register_gcode_command<F>(
+        &self,
+        command: &str,
+        available_before_ready: bool,
+        help: Option<&str>,
+        handler: F,
+    ) -> Result<(), GCodeError>
+    where
+        F: Fn(&GCodeCommand) -> Result<Vec<DispatchEvent>, GCodeError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.gcode
+            .lock()
+            .expect("gcode dispatcher lock poisoned")
+            .register_command(command, available_before_ready, help, handler)
+    }
+
+    pub fn register_mux_gcode_command<F>(
+        &self,
+        command: &str,
+        key: &str,
+        value: Option<&str>,
+        help: Option<&str>,
+        handler: F,
+    ) -> Result<(), GCodeError>
+    where
+        F: Fn(&GCodeCommand) -> Result<Vec<DispatchEvent>, GCodeError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.gcode
+            .lock()
+            .expect("gcode dispatcher lock poisoned")
+            .register_mux_command(command, key, value, help, handler)
+    }
+
+    pub fn unregister_gcode_command(&self, command: &str) -> bool {
+        self.gcode
+            .lock()
+            .expect("gcode dispatcher lock poisoned")
+            .unregister_command(command)
+    }
+
     /// Access the cooperative host event scheduler.
     pub fn reactor(&self) -> &Reactor {
         &self.reactor
@@ -1367,6 +1413,31 @@ mod tests {
             vec![0.5, 1.25]
         );
         assert!(printer.unused_config_options().is_empty());
+    }
+
+    #[test]
+    fn printer_gcode_registration_helpers_manage_commands() {
+        let printer = Printer::new();
+        printer
+            .register_gcode_command("M105", true, Some("Report temperatures"), |_| {
+                Ok(Vec::new())
+            })
+            .unwrap();
+        printer
+            .register_mux_gcode_command(
+                "SET_HEATER",
+                "HEATER",
+                Some("hotend"),
+                None,
+                |_| Ok(Vec::new()),
+            )
+            .unwrap();
+        assert!(printer
+            .gcode_dispatcher()
+            .registered_commands()
+            .contains(&"M105".to_owned()));
+        assert!(printer.unregister_gcode_command("M105"));
+        assert!(!printer.unregister_gcode_command("M105"));
     }
 
     #[test]
