@@ -118,9 +118,11 @@ impl UsbSerialTransport {
         }
     }
 
-    /// Write an already encoded MCU frame without changing its sequence or checksum.
-    /// This is the required path for retransmission: callers pass the exact cached
-    /// bytes returned by ScheduledFrame or Retransmission.
+    /// Queue an already encoded MCU frame without waiting for UART drain or
+    /// changing its sequence/checksum. This matches serialqueue.c's nonblocking
+    /// write model; UartTiming tracks the bytes that remain on the wire.
+    /// Retransmission callers pass the exact cached bytes from ScheduledFrame
+    /// or Retransmission.
     pub fn write_encoded_frame(&mut self, encoded: &[u8]) -> Result<(), TransportError> {
         // Do not call Write::flush here: serialport's POSIX implementation
         // maps it to tcdrain(), which blocks until the UART has transmitted
