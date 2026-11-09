@@ -296,6 +296,54 @@ impl Printer {
         self.config_usage.get_bool(config, section, option)
     }
 
+    pub fn config_list(
+        &self,
+        section: &str,
+        option: &str,
+        separator: char,
+        count: Option<usize>,
+    ) -> Result<Vec<String>, ConfigValueError> {
+        let config = self.config();
+        let config = config.as_deref().ok_or_else(|| ConfigValueError::Missing {
+            section: section.to_owned(),
+            option: option.to_owned(),
+        })?;
+        self.config_usage
+            .get_list(config, section, option, separator, count)
+    }
+
+    pub fn config_i64_list(
+        &self,
+        section: &str,
+        option: &str,
+        separator: char,
+        count: Option<usize>,
+    ) -> Result<Vec<i64>, ConfigValueError> {
+        let config = self.config();
+        let config = config.as_deref().ok_or_else(|| ConfigValueError::Missing {
+            section: section.to_owned(),
+            option: option.to_owned(),
+        })?;
+        self.config_usage
+            .get_i64_list(config, section, option, separator, count)
+    }
+
+    pub fn config_f64_list(
+        &self,
+        section: &str,
+        option: &str,
+        separator: char,
+        count: Option<usize>,
+    ) -> Result<Vec<f64>, ConfigValueError> {
+        let config = self.config();
+        let config = config.as_deref().ok_or_else(|| ConfigValueError::Missing {
+            section: section.to_owned(),
+            option: option.to_owned(),
+        })?;
+        self.config_usage
+            .get_f64_list(config, section, option, separator, count)
+    }
+
     /// Return options that have not yet been consumed by host components.
     pub fn unused_config_options(&self) -> Vec<UnusedConfigOption> {
         let Some(config) = self.config() else {
@@ -715,6 +763,30 @@ mod tests {
         assert_eq!(printer.config_i64("printer", "max_velocity").unwrap(), 300);
         assert_eq!(printer.config_f64("printer", "max_accel").unwrap(), 5000.5);
         assert!(printer.config_bool("printer", "use_pin").unwrap());
+        assert!(printer.unused_config_options().is_empty());
+    }
+
+    #[test]
+    fn printer_list_config_getters_record_access() {
+        let printer = Printer::new();
+        printer.install_config(
+            ConfigDocument::parse(
+                "[stepper_x]\nposition=10,20,30\n[bed_mesh]\nmesh_min=0.5,1.25\n",
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            printer
+                .config_i64_list("stepper_x", "position", ',', Some(3))
+                .unwrap(),
+            vec![10, 20, 30]
+        );
+        assert_eq!(
+            printer
+                .config_f64_list("bed_mesh", "mesh_min", ',', Some(2))
+                .unwrap(),
+            vec![0.5, 1.25]
+        );
         assert!(printer.unused_config_options().is_empty());
     }
 
