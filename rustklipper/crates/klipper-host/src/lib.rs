@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use klipper_config::{
     ConfigDocument, ConfigFileLoader, ConfigLoadError, ConfigUsageTracker,
-    ConfigValidationError, ConfigWarning, UnusedConfigOption,
+    ConfigValidationError, ConfigValueError, ConfigWarning, UnusedConfigOption,
 };
 use klipper_gcode::{DispatchOutcome, GCodeDispatcher};
 use thiserror::Error;
@@ -238,6 +238,62 @@ impl Printer {
         self.config_usage
             .get(&config, section, option)
             .map(str::to_owned)
+    }
+
+    pub fn config_required(
+        &self,
+        section: &str,
+        option: &str,
+    ) -> Result<String, ConfigValueError> {
+        let config = self.config();
+        let value = config
+            .as_deref()
+            .ok_or_else(|| ConfigValueError::Missing {
+                section: section.to_owned(),
+                option: option.to_owned(),
+            })?;
+        self.config_usage
+            .get_required(value, section, option)
+            .map(str::to_owned)
+    }
+
+    pub fn config_i64(
+        &self,
+        section: &str,
+        option: &str,
+    ) -> Result<i64, ConfigValueError> {
+        let config = self.config();
+        let config = config.as_deref().ok_or_else(|| ConfigValueError::Missing {
+            section: section.to_owned(),
+            option: option.to_owned(),
+        })?;
+        self.config_usage.get_i64(config, section, option)
+    }
+
+    pub fn config_f64(
+        &self,
+        section: &str,
+        option: &str,
+    ) -> Result<f64, ConfigValueError> {
+        let config = self.config();
+        let config = config.as_deref().ok_or_else(|| ConfigValueError::Missing {
+            section: section.to_owned(),
+            option: option.to_owned(),
+        })?;
+        self.config_usage.get_f64(config, section, option)
+    }
+
+    pub fn config_bool(
+        &self,
+        section: &str,
+        option: &str,
+    ) -> Result<bool, ConfigValueError> {
+        let config = self.config();
+        let config = config.as_deref().ok_or_else(|| ConfigValueError::Missing {
+            section: section.to_owned(),
+            option: option.to_owned(),
+        })?;
+        self.config_usage.get_bool(config, section, option)
     }
 
     /// Return options that have not yet been consumed by host components.
@@ -645,6 +701,21 @@ mod tests {
                 section: "unknown_section".to_owned(),
             })
         );
+    }
+
+    #[test]
+    fn printer_typed_config_getters_record_access() {
+        let printer = Printer::new();
+        printer.install_config(
+            ConfigDocument::parse(
+                "[printer]\nmax_velocity=300\nmax_accel=5000.5\nuse_pin=true\n",
+            )
+            .unwrap(),
+        );
+        assert_eq!(printer.config_i64("printer", "max_velocity").unwrap(), 300);
+        assert_eq!(printer.config_f64("printer", "max_accel").unwrap(), 5000.5);
+        assert!(printer.config_bool("printer", "use_pin").unwrap());
+        assert!(printer.unused_config_options().is_empty());
     }
 
     #[test]
