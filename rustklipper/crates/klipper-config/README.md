@@ -14,7 +14,8 @@ The initial parser mirrors the common behavior of
 
 This crate is deliberately separate from the upstream Python tree. Include
 expansion, autosave blocks, deprecation tracking, and printer-object-specific
-validation remain follow-up work; the parser does not claim to implement those
+validation remain follow-up work. Error values retain the source filename and
+line number for diagnostics; the parser does not claim to implement those
 features yet.
 
 Run its tests from the Rust workspace:
