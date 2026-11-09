@@ -82,6 +82,19 @@ struct PendingRetryRequest {
     transaction: RetryTransaction,
 }
 
+fn allocate_retry_transaction_id(
+    next_id: &mut u64,
+    in_flight: &HashMap<u64, PendingRetryRequest>,
+) -> u64 {
+    loop {
+        let candidate = (*next_id).max(1);
+        *next_id = candidate.wrapping_add(1).max(1);
+        if !in_flight.contains_key(&candidate) {
+            return candidate;
+        }
+    }
+}
+
 pub struct ReliableSerialSession {
     transport: UsbSerialTransport,
     scheduler: CommandScheduler,
@@ -354,11 +367,10 @@ impl ReliableSerialSession {
         if command.notify_id.is_some() {
             return Err(SessionError::CommandAlreadyNotified);
         }
-        let transaction_id = self.next_retry_transaction_id;
-        self.next_retry_transaction_id = self.next_retry_transaction_id.wrapping_add(1).max(1);
-        while self.retry_transactions.contains_key(&self.next_retry_transaction_id) {
-            self.next_retry_transaction_id = self.next_retry_transaction_id.wrapping_add(1).max(1);
-        }
+        let transaction_id = allocate_retry_transaction_id(
+            &mut self.next_retry_transaction_id,
+            &self.retry_transactions,
+        );
         let name = response_name.into();
         let waiter_id = self.response_router.claim_oldest(&name, oid)
             .ok_or_else(|| SessionError::MissingResponseWaiter {
@@ -738,6 +750,42 @@ impl ReliableSerialSession {
 /// time minus the UART time occupied by the complete encoded frame.
 fn adjusted_receive_time(now: f64, wire_time_per_byte: f64, frame_len: usize) -> f64 {
     (now - wire_time_per_byte * frame_len as f64).max(0.0)
+}
+
+#[cfg(test)]
+mod retry_transaction_id_tests {
+    use super::*;
+
+    fn pending() -> PendingRetryRequest {
+        PendingRetryRequest {
+            queue_id: 7,
+            command: ScheduledCommand::new(vec![0x01], 0, 0),
+            name: "status".into(),
+            oid: Some(3),
+            waiter_id: 11,
+            transaction: RetryTransaction::default(),
+        }
+    }
+
+    #[test]
+    fn allocator_skips_an_in_flight_id_at_wraparound() {
+        let mut in_flight = HashMap::new();
+        in_flight.insert(1, pending());
+        let mut next_id = u64::MAX;
+
+        assert_eq!(allocate_retry_transaction_id(&mut next_id, &in_flight), u64::MAX);
+        assert_eq!(allocate_retry_transaction_id(&mut next_id, &in_flight), 2);
+        assert!(in_flight.contains_key(&1));
+    }
+
+    #[test]
+    fn allocator_skips_zero_and_currently_occupied_candidate() {
+        let mut in_flight = HashMap::new();
+        in_flight.insert(1, pending());
+        let mut next_id = 1;
+
+        assert_eq!(allocate_retry_transaction_id(&mut next_id, &in_flight), 2);
+    }
 }
 
 #[cfg(test)]
