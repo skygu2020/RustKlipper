@@ -86,6 +86,7 @@ impl ConfigDocument {
         let mut document = Self::default();
         let mut current: Option<usize> = None;
         let mut last_option: Option<(usize, usize)> = None;
+        let mut last_option_indent: Option<usize> = None;
 
         for (zero_line, raw) in input.lines().enumerate() {
             let line_no = zero_line + 1;
@@ -116,6 +117,7 @@ impl ConfigDocument {
                 };
                 current = Some(index);
                 last_option = None;
+                last_option_indent = None;
                 continue;
             }
 
@@ -123,8 +125,8 @@ impl ConfigDocument {
                 source: source.clone(), line: line_no,
             })?;
 
-            if line.chars().next().is_some_and(char::is_whitespace)
-                && !trimmed.contains('=') && !trimmed.contains(':') {
+            let indent = line.len() - line.trim_start().len();
+            if last_option_indent.is_some_and(|previous| indent > previous) {
                 let Some((option_section, option_index)) = last_option else {
                     return Err(ConfigParseError::OrphanContinuation {
                         source: source.clone(), line: line_no,
@@ -161,6 +163,7 @@ impl ConfigDocument {
             section.set(name.to_owned(), value, line_no);
             let option_index = *section.index.get(&name.to_ascii_lowercase()).unwrap();
             last_option = Some((section_index, option_index));
+            last_option_indent = Some(indent);
         }
         Ok(document)
     }
