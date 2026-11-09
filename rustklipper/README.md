@@ -31,9 +31,9 @@ the compatibility reference and is not modified by the Rust implementation.
 - `klipper-gcode`: Klipper-style traditional/extended G-code parsing, typed
   parameter access, readiness-aware command dispatch, mux commands, script
   execution, and ACK/response events.
-- `klipper-host`: printer lifecycle and ordered identify/connect events,
-  typed object registry and module-group lookup, tracked configuration reads
-  and pre-connect validation, reactor-driven callbacks, and G-code readiness.
+- `klipper-host`: guarded printer lifecycle and ordered identify/connect
+  events, typed object registry and module-group lookup, tracked configuration
+  reads and pre-connect validation, reactor-driven callbacks, and G-code readiness.
 
 The upstream Python implementation remains the behavioral oracle during the
 staged port. Run the Rust workspace tests from this directory with:
