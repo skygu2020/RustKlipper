@@ -565,6 +565,10 @@ impl ReliableSerialSession {
                     if let Some((name, oid)) = exhausted {
                         self.retry_transactions.remove(&transaction_id);
                         self.sent_response_requests.retain(|entry| entry.transaction_id != transaction_id);
+                        // Remove the corresponding FIFO waiter as well; otherwise
+                        // its abandoned registration could consume the next request's
+                        // response with the same name and OID.
+                        self.response_router.cancel_oldest(&name, oid);
                         events.push(SessionEvent::RetryExhausted { name, oid });
                     }
                 }
@@ -620,9 +624,8 @@ impl ReliableSerialSession {
                 Some(pending) => pending.command.clone(),
                 None => continue,
             };
-            // The first attempt could only have been sent after min_clock was
-            // reached. For later attempts that eligibility has already passed.
-            command.min_clock = 0;
+            // Preserve the original min_clock and req_clock on every retry,
+            // matching SerialRetryCommand's repeated raw_send arguments.
             self.enqueue_retry_attempt(transaction_id, command)?;
             self.scheduler.promote_ready(0);
         }

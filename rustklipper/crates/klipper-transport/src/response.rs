@@ -65,6 +65,21 @@ impl ResponseRouter {
         }
         delivered
     }
+    /// Remove the oldest waiter for an exact response key.
+    ///
+    /// Used when a response-tracked request exhausts its retry budget, so the
+    /// failed waiter cannot consume a later request's FIFO response.
+    pub fn cancel_oldest(&self, name: &str, oid: Option<u32>) -> bool {
+        let key = ResponseKey { name: name.to_owned(), oid };
+        let mut state = self.state.lock().expect("response router poisoned");
+        let Some(queue) = state.pending.get_mut(&key) else { return false; };
+        let removed = queue.pop_front().is_some();
+        if queue.is_empty() {
+            state.pending.remove(&key);
+        }
+        removed
+    }
+
     pub fn pending_count(&self, name: &str, oid: Option<u32>) -> usize {
         self.state.lock().expect("response router poisoned").pending
             .get(&ResponseKey { name: name.into(), oid }).map_or(0, VecDeque::len)
@@ -157,6 +172,18 @@ mod tests {
         assert!(router.dispatch(response("config", Some(9))));
         assert_eq!(live.wait(Duration::from_millis(1)).unwrap().oid, Some(9));
         assert_eq!(router.pending_count("config", Some(9)), 0);
+    }
+
+    #[test]
+    fn cancelling_oldest_waiter_preserves_later_fifo_waiter() {
+        let router = ResponseRouter::new();
+        let failed = router.register("status", Some(4));
+        let next = router.register("status", Some(4));
+        assert!(router.cancel_oldest("status", Some(4)));
+        assert_eq!(failed.wait(Duration::from_millis(1)), Err(WaitError::Disconnected));
+        assert_eq!(router.pending_count("status", Some(4)), 1);
+        assert!(router.dispatch(response("status", Some(4))));
+        assert_eq!(next.wait(Duration::from_millis(1)).unwrap().oid, Some(4));
     }
 
     #[test]
