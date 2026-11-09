@@ -1655,8 +1655,8 @@ mod command_send_timing_tests {
         scheduler.promote_ready(0);
         let timing = UartTiming::new(115_200).unwrap();
 
-        assert!(!should_send_command(&scheduler, update(), timing, 10.0, 10.0, 0).unwrap());
-        assert!(should_send_command(&scheduler, update(), timing, 10.006, 10.0, 0).unwrap());
+        assert!(!should_send_command(&mut scheduler, update(), timing, 10.0, 10.0, 0).unwrap());
+        assert!(should_send_command(&mut scheduler, update(), timing, 10.006, 10.0, 0).unwrap());
     }
 
     #[test]
@@ -1668,8 +1668,8 @@ mod command_send_timing_tests {
         scheduler.promote_ready(0);
         let timing = UartTiming::new(115_200).unwrap();
 
-        assert!(!should_send_command(&scheduler, update(), timing, 10.006, 10.0, 100).unwrap());
-        assert!(should_send_command(&scheduler, update(), timing, 10.015, 10.0, 100).unwrap());
+        assert!(!should_send_command(&mut scheduler, update(), timing, 10.006, 10.0, 100).unwrap());
+        assert!(should_send_command(&mut scheduler, update(), timing, 10.015, 10.0, 100).unwrap());
     }
 
     #[test]
@@ -1681,7 +1681,7 @@ mod command_send_timing_tests {
         scheduler.promote_ready(0);
         let timing = UartTiming::new(115_200).unwrap();
 
-        assert!(should_send_command(&scheduler, update(), timing, 10.0, 10.0, 0).unwrap());
+        assert!(should_send_command(&mut scheduler, update(), timing, 10.0, 10.0, 0).unwrap());
     }
 
     #[test]
@@ -1708,8 +1708,8 @@ mod command_send_timing_tests {
         scheduler.promote_ready(0);
         let timing = UartTiming::new(115_200).unwrap();
 
-        assert!(!should_send_command(&scheduler, update(), timing, 10.0, 10.0, 0).unwrap());
-        assert!(should_send_command(&scheduler, update(), timing, 10.25, 10.0, 0).unwrap());
+        assert!(!should_send_command(&mut scheduler, update(), timing, 10.0, 10.0, 0).unwrap());
+        assert!(should_send_command(&mut scheduler, update(), timing, 10.25, 10.0, 0).unwrap());
     }
 }
 
