@@ -35,8 +35,9 @@ the compatibility reference and is not modified by the Rust implementation.
   parameter access, readiness-aware command dispatch, mux commands, script
   execution, and ACK/response events.
 - `klipper-host`: guarded printer lifecycle and ordered identify/connect
-  events, typed object registry and module-group lookup, dependency-aware and
-  lazy component loading, tracked configuration reads, pre-connect validation,
+  events, typed object registry and module-group lookup, multi-MCU USB serial
+  session registry, dependency-aware/lazy component loading, tracked config
+  reads, pre-connect validation,
   reactor callbacks, G-code handler reset on configuration reload, and
   callback dispatch outside the printer lock with per-line script state refresh,
   panic-contained handlers, component-owned G-code command lifecycle, and
