@@ -1,3 +1,6 @@
+pub mod dictionary;
+pub use dictionary::{DictionaryError, IdentifyDictionary, MessageKind};
+
 //! Klipper MCU wire-protocol primitives.
 //!
 //! This crate intentionally starts with the stable framing and integer
