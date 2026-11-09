@@ -80,6 +80,8 @@ pub enum GCodeError {
     InvalidMuxValue { key: String, value: String, hint: String },
     #[error("Malformed command '{line}'")]
     MalformedCommand { line: String },
+    #[error("G-code command handler for '{command}' panicked")]
+    HandlerPanicked { command: String },
 }
 
 #[derive(Debug, Clone)]
