@@ -396,7 +396,7 @@ mod tests{
         encoder.write_all(json).unwrap();
         let compressed = encoder.finish().unwrap();
         let mut assembler = IdentifyAssembler::new();
-        assert!(assembler.into_dictionary().is_err());
+        assert!(assembler.clone().into_dictionary().is_err());
         let mut offset = 0u32;
         for part in compressed.chunks(7) {
             assert!(!assembler.push(IdentifyChunk { offset, data: part.to_vec() }).unwrap());
