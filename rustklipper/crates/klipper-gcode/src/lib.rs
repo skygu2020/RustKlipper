@@ -191,7 +191,7 @@ pub fn parse_line(input: &str) -> Option<ParsedLine> {
         let number = parts[2].trim().parse::<u32>().ok();
         (parts[3..5].join("").trim().to_owned(), number)
     } else {
-        (parts.iter().take(3).cloned().collect::<String>().trim().to_owned(), None)
+        (parts.iter().take(3).map(String::as_str).collect::<Vec<_>>().join("").trim().to_owned(), None)
     };
 
     let mut parameters = HashMap::new();
