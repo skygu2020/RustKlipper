@@ -30,19 +30,18 @@ pub struct ScheduledFrame {
     pub bytes: Vec<u8>,
     pub notify_ids: Vec<u64>,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ScheduleError {
+    #[error("scheduled command is empty")]
     EmptyCommand,
+    #[error("scheduled command exceeds payload limit: {0} bytes")]
     CommandTooLarge(usize),
-    Frame(ProtocolError),
-    Retransmit(RetransmitError),
+    #[error(transparent)]
+    Frame(#[from] ProtocolError),
+    #[error(transparent)]
+    Retransmit(#[from] RetransmitError),
+    #[error("invalid ACK sequence {received}; highest sent sequence is {sent}")]
     InvalidAckSequence { received: u64, sent: u64 },
-}
-impl From<RetransmitError> for ScheduleError {
-    fn from(value: RetransmitError) -> Self { Self::Retransmit(value) }
-}
-impl From<ProtocolError> for ScheduleError {
-    fn from(value: ProtocolError) -> Self { Self::Frame(value) }
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReceivedFrameResult {

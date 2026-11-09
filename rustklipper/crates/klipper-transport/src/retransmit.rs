@@ -36,12 +36,17 @@ pub struct AckResult {
     pub rtt_sample_seconds: Option<f64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum RetransmitError {
+    #[error("invalid retransmission timestamp")]
     InvalidTime,
+    #[error("retransmission timestamp moved backwards")]
     NonMonotonicTime,
+    #[error("frame sequence is not increasing")]
     SequenceNotIncreasing,
+    #[error("cannot track an empty frame")]
     EmptyFrame,
+    #[error("unknown outstanding frame sequence {0}")]
     UnknownSequence(u64),
 }
 
@@ -180,12 +185,12 @@ impl RetransmitState {
             self.last_ack_seq = receive_seq;
             return Ok(Vec::new());
         }
-        if receive_seq <= self.ignore_nak_seq || self.outstanding.is_empty() {
+        if receive_seq <= self.ignore_nak_sequence || self.outstanding.is_empty() {
             return Ok(Vec::new());
         }
         // State update performed by the retransmit timer after a NAK.
         self.ignore_nak_seq = receive_seq;
-        if receive_seq < self.retransmit_seq {
+        if receive_seq < self.retransmit_sequence {
             self.ignore_nak_seq = self.retransmit_seq;
         }
         self.retransmit_seq = send_seq;
