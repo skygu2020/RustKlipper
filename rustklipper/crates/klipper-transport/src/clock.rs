@@ -272,7 +272,7 @@ mod tests {
         let sync = ClockSync::from_uptime(16_000_000.0, 12.5, 3, 0x89ab_cdef).unwrap();
         assert_eq!(sync.last_clock(), 0x0000_0003_89ab_cdef);
         assert_eq!(sync.estimate().sample_time, 12.5);
-        assert_eq!(sync.estimate().clock, 0x0000_0003_89ab_cdef as f64);
+        assert_eq!(sync.estimate().clock, 0x0000_0003_89ab_cdefu64 as f64);
     }
 
     #[test]
