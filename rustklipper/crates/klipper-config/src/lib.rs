@@ -1269,8 +1269,12 @@ mod tests {
         .unwrap();
         let config = ConfigFileLoader::load(&path).unwrap();
         let tracker = ConfigUsageTracker::new();
+        assert_eq!(
+            tracker.get(&config, "printer", "kinematics"),
+            Some("cartesian")
+        );
         assert!(tracker.unused_options(&config).is_empty());
-        assert!(tracker.validate(&config, &[]).is_ok());
+        assert!(tracker.validate(&config, &["printer".to_owned()]).is_ok());
         fs::remove_file(path).unwrap();
     }
 
