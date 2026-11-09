@@ -988,6 +988,37 @@ mod tests {
     }
 
     #[test]
+    fn connect_handler_panic_is_reported_after_other_handlers_run() {
+        let printer = Printer::new();
+        printer.install_config(ConfigDocument::parse("[fan]\npin=PA0\n").unwrap());
+        let called = Arc::new(AtomicUsize::new(0));
+        let observed = called.clone();
+        printer.register_event_handler(PrinterEventKind::Connect, |_| {
+            panic!("connect handler panic");
+        });
+        printer.register_event_handler(PrinterEventKind::Connect, move |_| {
+            observed.fetch_add(1, Ordering::SeqCst);
+        });
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register("fan", |printer, section| {
+                printer
+                    .register_object("fan", section.get("pin").unwrap().to_owned())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        assert!(matches!(
+            printer.initialize_components(&registry),
+            Err(ComponentError::EventHandlerPanicked {
+                event: PrinterEventKind::Connect,
+                count: 1,
+            })
+        ));
+        assert_eq!(called.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn shutdown_during_identify_prevents_connect_event() {
         let printer = Arc::new(Printer::new());
         printer.install_config(ConfigDocument::parse("[fan]\npin=PA0\n").unwrap());
