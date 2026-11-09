@@ -35,6 +35,24 @@ pub struct ClockUpdate {
     pub rejected_outlier: bool,
 }
 
+impl ClockUpdate {
+    /// Convert a host monotonic timestamp to the conservative MCU clock used
+    /// by the serial command queue. This is intentionally distinct from the
+    /// best-RTT estimate used for timestamp conversion and multi-MCU sync.
+    pub fn queue_clock_at(self, host_time: f64) -> Result<u64, ClockSyncError> {
+        if !host_time.is_finite()
+            || !self.queue_conv_time.is_finite()
+            || !self.queue_frequency.is_finite()
+            || self.queue_frequency <= 0.0
+        {
+            return Err(ClockSyncError::InvalidTimestamp);
+        }
+        let clock = self.queue_conv_clock as f64
+            + (host_time - self.queue_conv_time) * self.queue_frequency;
+        Ok(clock.max(0.0) as u64)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ClockSync {
     mcu_frequency: f64,
@@ -236,6 +254,39 @@ mod tests {
     fn arbitrary_event_clock_can_still_extend_slightly_backward() {
         let sync = ClockSync::new(1_000_000.0, 10.0, 0x1_0000_0010).unwrap();
         assert_eq!(sync.clock32_to_clock64(0xffff_fff0), 0xffff_fff0);
+    }
+
+    #[test]
+    fn queue_clock_conversion_uses_queue_conservative_baseline() {
+        let update = ClockUpdate {
+            queue_frequency: 1_000.0,
+            queue_conv_time: 10.0,
+            queue_conv_clock: 5_000,
+            estimate: ClockEstimate {
+                sample_time: 10.1,
+                clock: 5_100.0,
+                frequency: 1_000.0,
+            },
+            rejected_outlier: false,
+        };
+        assert_eq!(update.queue_clock_at(11.0).unwrap(), 6_000);
+        assert_eq!(update.queue_clock_at(9.0).unwrap(), 4_000);
+    }
+
+    #[test]
+    fn queue_clock_conversion_rejects_invalid_host_time() {
+        let update = ClockUpdate {
+            queue_frequency: 1_000.0,
+            queue_conv_time: 10.0,
+            queue_conv_clock: 5_000,
+            estimate: ClockEstimate {
+                sample_time: 10.0,
+                clock: 5_000.0,
+                frequency: 1_000.0,
+            },
+            rejected_outlier: false,
+        };
+        assert_eq!(update.queue_clock_at(f64::NAN), Err(ClockSyncError::InvalidTimestamp));
     }
 
     #[test]
