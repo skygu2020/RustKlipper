@@ -2330,7 +2330,7 @@ mod tests {
                 .unwrap();
         });
 
-        printer.install_config(ConfigDocument::parse("[probe]\\nvalue=1\\n").unwrap());
+        printer.install_config(ConfigDocument::parse("[probe]\nvalue=1\n").unwrap());
         assert!(printer.registered_gcode_commands().contains(&"M999".to_owned()));
     }
 
