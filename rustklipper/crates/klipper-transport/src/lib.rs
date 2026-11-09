@@ -1,9 +1,12 @@
-//! Cross-platform USB serial transport primitives.
-//!
-//! This first transport layer deliberately provides synchronous, timeout-bounded
-//! I/O and incremental MCU frame extraction. Reactor integration, command
-//! scheduling, ACK notifications, retries, and reconnect policy are separate
-//! layers and are not implied by this crate yet.
+//! Cross-platform USB serial transport and MCU transaction primitives.
+pub mod ack;
+pub mod response;
+pub mod retry;
+
+pub use ack::{AckEvent, AckTracker};
+pub use response::{Response, ResponseRouter, ResponseWaiter, WaitError};
+pub use retry::RetryPolicy;
+
 
 use std::io::{Read, Write};
 use std::time::Duration;
