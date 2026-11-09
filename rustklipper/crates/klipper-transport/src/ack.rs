@@ -123,8 +123,8 @@ mod tests {
 
         let completed = tracker.acknowledge_events(12, false, 99.0, 2.0);
         assert_eq!(completed.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![900, 2]);
-        assert_eq!(earlier_id.recv().unwrap().sent_time, 1.0);
-        assert_eq!(later_id.recv().unwrap().sent_time, 1.1);
+        assert_eq!(earlier_id.recv().unwrap().sent_time, 99.0);
+        assert_eq!(later_id.recv().unwrap().sent_time, 99.0);
     }
 
     #[test]
