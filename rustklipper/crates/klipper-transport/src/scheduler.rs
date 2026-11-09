@@ -3,6 +3,7 @@
 //! UART I/O, ACK/retransmit state, and clock estimation remain separate.
 use std::collections::{BTreeMap, VecDeque};
 use klipper_protocol::{encode_frame, ProtocolError, MESSAGE_MAX, MESSAGE_MIN};
+use crate::retransmit::{AckResult, Retransmission, RetransmitError, RetransmitState};
 
 pub const MAX_PENDING_BLOCKS: u64 = 12;
 pub const BACKGROUND_PRIORITY_CLOCK: u64 = u64::MAX;
@@ -30,7 +31,10 @@ pub struct ScheduledFrame {
     pub notify_ids: Vec<u64>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScheduleError { EmptyCommand, CommandTooLarge(usize), Frame(ProtocolError) }
+pub enum ScheduleError { EmptyCommand, CommandTooLarge(usize), Frame(ProtocolError), Retransmit(RetransmitError) }
+impl From<RetransmitError> for ScheduleError {
+    fn from(value: RetransmitError) -> Self { Self::Retransmit(value) }
+}
 impl From<ProtocolError> for ScheduleError {
     fn from(value: ProtocolError) -> Self { Self::Frame(value) }
 }
@@ -47,11 +51,12 @@ pub struct CommandScheduler {
     last_ack_bytes: usize,
     last_ack_sequence: u64,
     sent_blocks: VecDeque<(u64, usize)>,
+    retransmit: RetransmitState,
 }
 impl Default for CommandScheduler {
     fn default() -> Self {
         Self { queues: BTreeMap::new(), send_sequence: 1, receive_sequence: 1,
-            receive_window: 0, need_ack_bytes: 0, last_ack_bytes: 0, last_ack_sequence: 0, sent_blocks: VecDeque::new() }
+            receive_window: 0, need_ack_bytes: 0, last_ack_bytes: 0, last_ack_sequence: 0, sent_blocks: VecDeque::new(), retransmit: RetransmitState::new() }
     }
 }
 impl CommandScheduler {
@@ -94,8 +99,19 @@ impl CommandScheduler {
         min_stalled
     }
 
-    /// Pack ready commands by lowest req_clock, preserving FIFO within each queue.
+    /// Pack a frame without registering retransmission timing. Prefer build_frame_at
+    /// in a live transport so every transmitted frame is tracked for retry.
     pub fn build_frame(&mut self) -> Result<Option<ScheduledFrame>, ScheduleError> {
+        self.build_frame_inner(None)
+    }
+
+    /// Pack and register a frame at the caller's monotonic host timestamp (seconds).
+    pub fn build_frame_at(&mut self, now: f64) -> Result<Option<ScheduledFrame>, ScheduleError> {
+        self.retransmit.check_time(now)?;
+        self.build_frame_inner(Some(now))
+    }
+
+    fn build_frame_inner(&mut self, now: Option<f64>) -> Result<Option<ScheduledFrame>, ScheduleError> {
         if self.send_sequence.saturating_sub(self.receive_sequence) >= MAX_PENDING_BLOCKS
             && self.receive_sequence != u64::MAX
         { return Ok(None); }
@@ -122,6 +138,9 @@ impl CommandScheduler {
         if payload.is_empty() { return Ok(None); }
         let seq = self.send_sequence;
         let bytes = encode_frame((seq as u8) & 0x0f, &payload)?;
+        if let Some(now) = now {
+            self.retransmit.track_sent(seq, bytes.clone(), now)?;
+        }
         self.send_sequence = self.send_sequence.wrapping_add(1);
         self.need_ack_bytes = self.need_ack_bytes.saturating_add(bytes.len());
         self.sent_blocks.push_back((seq, bytes.len()));
@@ -142,6 +161,28 @@ impl CommandScheduler {
         }
         self.last_ack_bytes = if last_acked == 0 { acknowledged_frame_bytes } else { last_acked };
     }
+
+    /// Apply a cumulative extended ACK to scheduler flow control and retry state.
+    /// Duplicate ACKs are passed to the retry tracker for fast retransmit.
+    pub fn acknowledge_at(
+        &mut self,
+        receive_sequence: u64,
+        acknowledged_frame_bytes: usize,
+        now: f64,
+    ) -> Result<AckResult, ScheduleError> {
+        let retry_result = self.retransmit.acknowledge(receive_sequence, now)?;
+        self.acknowledge(receive_sequence, acknowledged_frame_bytes);
+        Ok(retry_result)
+    }
+
+    /// Poll the oldest unacknowledged frame's retransmission deadline.
+    pub fn poll_retransmission(&mut self, now: f64)
+        -> Result<Option<Retransmission>, ScheduleError>
+    {
+        Ok(self.retransmit.poll_timeout(now)?)
+    }
+
+    pub fn retransmit_state(&self) -> &RetransmitState { &self.retransmit }
 
     pub fn queued_counts(&self) -> (usize, usize) {
         self.queues.values().fold((0, 0), |(up, ready), q| {
@@ -211,6 +252,38 @@ mod tests {
         assert_eq!(s.sent_blocks.len(), 1);
         assert_eq!(s.need_ack_bytes, outstanding - first.bytes.len());
         assert_eq!(s.sent_blocks.front().unwrap().0, second.send_sequence);
+    }
+
+
+    #[test]
+    fn integrated_scheduler_tracks_frames_and_returns_original_bytes_for_retry() {
+        let mut s = CommandScheduler::new();
+        s.enqueue(1, ScheduledCommand::new(vec![0x31, 0x32], 0, 1)).unwrap();
+        s.promote_ready(0);
+        let frame = s.build_frame_at(10.0).unwrap().unwrap();
+        assert_eq!(s.retransmit_state().outstanding_len(), 1);
+        assert!(s.poll_retransmission(10.249).unwrap().is_none());
+        let retry = s.poll_retransmission(10.250).unwrap().unwrap();
+        assert_eq!(retry.sequence, frame.send_sequence);
+        assert_eq!(retry.bytes, frame.bytes);
+        assert_eq!(retry.transmissions, 2);
+        let ack = s.acknowledge_at(frame.send_sequence + 1, frame.bytes.len(), 10.300).unwrap();
+        assert_eq!(ack.acknowledged.len(), 1);
+        assert!(s.retransmit_state().is_empty());
+    }
+
+    #[test]
+    fn duplicate_ack_can_request_fast_retransmit_through_scheduler() {
+        let mut s = CommandScheduler::new();
+        s.enqueue(1, ScheduledCommand::new(vec![0x41], 0, 1)).unwrap();
+        s.promote_ready(0);
+        let frame = s.build_frame_at(1.0).unwrap().unwrap();
+        for t in [1.01, 1.02] {
+            let ack = s.acknowledge_at(frame.send_sequence, 0, t).unwrap();
+            assert!(ack.fast_retransmit.is_none());
+        }
+        let ack = s.acknowledge_at(frame.send_sequence, 0, 1.03).unwrap();
+        assert_eq!(ack.fast_retransmit.unwrap().bytes, frame.bytes);
     }
 
     #[test]
