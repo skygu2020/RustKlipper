@@ -44,7 +44,7 @@ impl From<RetransmitError> for ScheduleError {
 impl From<ProtocolError> for ScheduleError {
     fn from(value: ProtocolError) -> Self { Self::Frame(value) }
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ReceivedFrameResult {
     pub receive_sequence: u64,
     pub has_payload: bool,

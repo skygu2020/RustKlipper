@@ -16,7 +16,7 @@ pub const MESSAGE_SEQ_MASK: u8 = 0x0f;
 pub const MESSAGE_DEST: u8 = 0x10;
 pub const MESSAGE_SYNC: u8 = 0x7e;
 
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
 pub enum ProtocolError {
     #[error("truncated variable-length integer")]
     TruncatedInteger,

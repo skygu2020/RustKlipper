@@ -17,7 +17,7 @@ pub enum SessionError {
     Disconnected,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SessionEvent {
     Received {
         frame: Frame,
