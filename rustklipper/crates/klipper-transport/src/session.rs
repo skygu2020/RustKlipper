@@ -1164,6 +1164,55 @@ impl ReliableSerialSession {
         Ok(())
     }
 
+    /// Match serialqueue.c's check_send_command() timing gate.
+    ///
+    /// The moving background clock is used only to choose the next wake time;
+    /// build_frame() retains raw req_clock ordering. `pending_bytes` is
+    /// the encoded data already accumulated in this poll's outgoing batch.
+    fn command_send_due(
+        &self,
+        eventtime: f64,
+        idle_time: f64,
+        pending_bytes: usize,
+    ) -> Result<bool, SessionError> {
+        let Some(update) = self.queue_clock_update else {
+            return Ok(true);
+        };
+        let Some(timing) = self.uart_timing else {
+            return Ok(true);
+        };
+
+        let idletime = eventtime.max(idle_time)
+            + timing.seconds_for_bytes(pending_bytes.saturating_add(MESSAGE_MIN));
+        let ack_clock = update.queue_clock_at(idletime)?;
+
+        // serialqueue.c sends a full payload immediately, without waiting for
+        // the normal 250ms request-clock margin.
+        if self.scheduler.ready_bytes() >= MESSAGE_MAX - MESSAGE_MIN {
+            return Ok(true);
+        }
+
+        let background_time = if pending_bytes > 0 { idletime } else { idle_time };
+        let background_clock = update.queue_clock_at(
+            background_time + 0.250 + 0.005,
+        )?;
+        let Some(min_ready_clock) =
+            self.scheduler.minimum_ready_request_clock(background_clock)
+        else {
+            return Ok(false);
+        };
+
+        let request_delta = (0.250 * update.queue_frequency).max(0.0) as u64;
+        if min_ready_clock <= ack_clock.saturating_add(request_delta) {
+            return Ok(true);
+        }
+
+        let want_clock = min_ready_clock.saturating_sub(request_delta);
+        let wake_time = idletime
+            + want_clock.saturating_sub(ack_clock) as f64 / update.queue_frequency;
+        Ok(eventtime >= wake_time)
+    }
+
     /// Perform one session iteration, bounded by the configured serial read timeout.
     ///
     /// Reads all available frames, processes ACK/NAK, writes required retries,
@@ -1330,24 +1379,15 @@ impl ReliableSerialSession {
             }
         }
 
-        // Klipper converts BACKGROUND_PRIORITY_CLOCK into a moving request
-        // clock (clock at now + MIN_REQTIME_DELTA + MIN_BACKGROUND_DELTA).
-        // Treating it as u64::MAX would permanently rank background queries
-        // behind every finite future command and can starve periodic get_clock.
-        if let Some(update) = self.queue_clock_update {
-            // serialqueue.c uses its last UART idle deadline when no bytes are
-            // being packed, then includes the in-progress frame bytes plus
-            // MESSAGE_MIN when ranking subsequent commands in that frame.
-            let (idle_until, clock_per_byte) = self.uart_timing
-                .map(|timing| (timing.idle_until(), update.queue_frequency * timing.byte_time()))
-                .unwrap_or((self.now(), 0.0));
-            let background_clock = update.queue_clock_at(idle_until + 0.105)?;
-            self.scheduler.set_background_priority_clock_model(
-                background_clock, clock_per_byte, MESSAGE_MIN,
-            );
-        }
-
+        // Keep eventtime and the pre-batch UART idle deadline fixed while
+        // packing this poll's frames, as command_event() does in serialqueue.c.
+        let eventtime = self.now();
+        let idle_time = self.uart_timing.map_or(eventtime, UartTiming::idle_until);
+        let mut pending_bytes = 0usize;
         loop {
+            if !self.command_send_due(eventtime, idle_time, pending_bytes)? {
+                break;
+            }
             let frame = match self.scheduler.build_frame() {
                 Ok(Some(frame)) => frame,
                 Ok(None) => break,
@@ -1369,6 +1409,7 @@ impl ReliableSerialSession {
                 self.disconnected = true;
                 return Err(SessionError::Schedule(error));
             }
+            pending_bytes = pending_bytes.saturating_add(frame.bytes.len());
             for id in &frame.notify_ids {
                 if !self.ack_tracker.mark_sent(*id, frame.send_sequence, sent_at) {
                     self.disconnected = true;
