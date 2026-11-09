@@ -1,11 +1,11 @@
-pub mod dispatch;
-pub use dispatch::{DispatchEvent, DispatchOutcome, GCodeDispatcher};
-
 //! Klipper host-side G-code parsing primitives.
 //!
 //! The tokenization follows the command/parameter splitting strategy used by
 //! `klippy/gcode.py`. Dispatch, printer lifecycle, and macro evaluation are
 //! intentionally implemented in higher layers.
+
+pub mod dispatch;
+pub use dispatch::{DispatchEvent, DispatchOutcome, GCodeDispatcher};
 
 use regex::Regex;
 use std::collections::HashMap;
