@@ -436,6 +436,32 @@ pub struct UnusedConfigOption {
     pub line: usize,
 }
 
+/// A section view that records option reads against a usage tracker.
+pub struct TrackedConfigSection<'a> {
+    section: &'a ConfigSection,
+    tracker: &'a ConfigUsageTracker,
+}
+
+impl<'a> TrackedConfigSection<'a> {
+    pub fn name(&self) -> &'a str {
+        &self.section.name
+    }
+
+    pub fn line(&self) -> usize {
+        self.section.line
+    }
+
+    pub fn get(&self, option: &str) -> Option<&'a str> {
+        let value = self.section.get(option)?;
+        self.tracker.mark_used(self.section.name(), option);
+        Some(value)
+    }
+
+    pub fn has_option(&self, option: &str) -> bool {
+        self.section.has_option(option)
+    }
+}
+
 impl ConfigUsageTracker {
     pub fn new() -> Self {
         Self::default()
@@ -449,6 +475,23 @@ impl ConfigUsageTracker {
             .clear();
     }
 
+    pub fn track_section<'a>(
+        &'a self,
+        section: &'a ConfigSection,
+    ) -> TrackedConfigSection<'a> {
+        TrackedConfigSection {
+            section,
+            tracker: self,
+        }
+    }
+
+    fn mark_used(&self, section: &str, option: &str) {
+        self.used
+            .lock()
+            .expect("config usage lock poisoned")
+            .insert((section.to_owned(), option.to_ascii_lowercase()));
+    }
+
     /// Read an option and mark it as used when it exists.
     pub fn get<'a>(
         &self,
@@ -457,10 +500,7 @@ impl ConfigUsageTracker {
         option: &str,
     ) -> Option<&'a str> {
         let value = config.get(section, option)?;
-        self.used
-            .lock()
-            .expect("config usage lock poisoned")
-            .insert((section.to_owned(), option.to_ascii_lowercase()));
+        self.mark_used(section, option);
         Some(value)
     }
 
