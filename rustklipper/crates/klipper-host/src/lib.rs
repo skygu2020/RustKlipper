@@ -1729,10 +1729,8 @@ mod tests {
     fn concurrent_component_initialization_runs_once() {
         let printer = Arc::new(Printer::new());
         printer.install_config(ConfigDocument::parse("[fan]\npin=PA0\n").unwrap());
-        let registry = Arc::new(ComponentRegistry::new());
         let calls = Arc::new(AtomicUsize::new(0));
         let observed_calls = calls.clone();
-        Arc::get_mut(&mut registry.clone()).map(|_| ());
         let mut owned_registry = ComponentRegistry::new();
         owned_registry
             .register("fan", move |printer, section| {
