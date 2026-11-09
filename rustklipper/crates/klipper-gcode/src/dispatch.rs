@@ -373,7 +373,7 @@ mod tests {
     fn reset_clears_handlers_muxes_and_ready_state() {
         let mut dispatcher = GCodeDispatcher::new();
         dispatcher
-            .register_command("M105", true, None, |_| Ok(Vec::new()))
+            .register_command("M999", true, None, |_| Ok(Vec::new()))
             .unwrap();
         dispatcher
             .register_mux_command("SET_HEATER", "HEATER", Some("hotend"), None, |_| {
@@ -386,7 +386,7 @@ mod tests {
         assert!(!dispatcher.is_ready());
         assert!(dispatcher.registered_commands().is_empty());
         assert!(dispatcher.command_help().is_empty());
-        assert!(!dispatcher.process_line("M105", true).unwrap().handler_found);
+        assert!(!dispatcher.process_line("M999", true).unwrap().handler_found);
     }
 
     #[test]
