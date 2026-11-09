@@ -153,6 +153,15 @@ impl GCodeDispatcher {
         Some(self.dispatch(parsed, need_ack))
     }
 
+    /// Execute a multi-line script in order without per-line ACKs, matching
+    /// Klipper's `run_script` / `run_script_from_command` behavior.
+    pub fn process_script(&self, script: &str) -> Vec<DispatchOutcome> {
+        script
+            .split('\\n')
+            .filter_map(|line| self.process_line(line, false))
+            .collect()
+    }
+
     pub fn dispatch(
         &self,
         parsed: crate::ParsedLine,
@@ -346,6 +355,29 @@ mod tests {
         let result = dispatcher.process_line("G1 X10", false).unwrap();
         assert_eq!(result.events, vec![DispatchEvent::Info("move queued".to_owned())]);
         assert!(!result.acknowledged);
+    }
+
+
+    #[test]
+    fn script_processes_each_nonempty_line_in_order_without_ack() {
+        let mut dispatcher = GCodeDispatcher::new();
+        dispatcher.set_ready();
+        dispatcher
+            .register_command("G1", false, None, |command| {
+                Ok(vec![DispatchEvent::Info(command.commandline().to_owned())])
+            })
+            .unwrap();
+        dispatcher
+            .register_command("M400", false, None, |command| {
+                Ok(vec![DispatchEvent::Info(command.commandline().to_owned())])
+            })
+            .unwrap();
+
+        let results = dispatcher.process_script("G1 X1\\n\\nM400 ; wait\\n");
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].command, "G1");
+        assert_eq!(results[1].command, "M400");
+        assert!(results.iter().all(|result| !result.acknowledged));
     }
 
     #[test]
