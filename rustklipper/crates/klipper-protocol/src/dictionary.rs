@@ -241,8 +241,8 @@ mod tests{
 
     #[test] fn identify_and_enum_codec(){
         let d=IdentifyDictionary::from_json(JSON.as_bytes()).unwrap();assert_eq!(d.version(),"test-fw");assert_eq!(d.constant_i64("CLOCK_FREQ"),Some(16_000_000));
-        let mut p=BTreeMap::new();p.insert("oid".into(),Value::from(3));p.insert("pin".into(),Value::from(42));p.insert("value".into(),Value::from(1));p.insert("mode".into(),Value::from("MODE_B"));
-        let bytes=d.encode_command("set_pin",&p).unwrap();let (n,v)=d.decode_message(&bytes).unwrap();assert_eq!(n,"set_pin");assert_eq!(v["mode"],"MODE_B");assert_eq!(v["pin"],42);
+        let mut p=BTreeMap::new();p.insert("oid".into(),Value::from(3));p.insert("pin".into(),Value::from("PA1"));p.insert("value".into(),Value::from(1));p.insert("mode".into(),Value::from("MODE_B"));
+        let bytes=d.encode_command("set_pin",&p).unwrap();let (n,v)=d.decode_message(&bytes).unwrap();assert_eq!(n,"set_pin");assert_eq!(v["mode"],"MODE_B");assert_eq!(v["pin"],"PA1");
     }
     #[test] fn dynamic_buffer_codec(){
         let d=IdentifyDictionary::from_json(JSON.as_bytes()).unwrap();let mut p=BTreeMap::new();p.insert("data".into(),Value::from("00a1ff"));
