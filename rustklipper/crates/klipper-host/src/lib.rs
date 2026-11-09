@@ -874,6 +874,10 @@ impl Printer {
             .is_some()
     }
 
+    /// Invalidate one component's load cache entry.
+    ///
+    /// Callers are responsible for removing its objects and unloading any
+    /// dependent components before requesting a reload.
     pub fn unload_component(&self, section: &str) -> bool {
         self.loaded_components
             .lock()
