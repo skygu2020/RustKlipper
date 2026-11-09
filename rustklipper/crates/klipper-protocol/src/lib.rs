@@ -1,11 +1,10 @@
-pub mod dictionary;
-pub use dictionary::{DictionaryError, IdentifyDictionary, MessageKind};
-
 //! Klipper MCU wire-protocol primitives.
 //!
-//! This crate intentionally starts with the stable framing and integer
-//! encoding layer. Dynamic message dictionaries are loaded from the MCU's
-//! compressed identify response in a later implementation stage.
+//! This crate contains the framing and integer encoding layer, plus the
+//! firmware-provided identify dictionary codec.
+
+pub mod dictionary;
+pub use dictionary::{DictionaryError, IdentifyDictionary, MessageKind};
 
 use thiserror::Error;
 
@@ -126,6 +125,67 @@ pub fn encode_frame(sequence: u8, payload: &[u8]) -> Result<Vec<u8>, ProtocolErr
     Ok(frame)
 }
 
+/// One validated MCU frame, excluding the two-byte header and three-byte trailer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Frame {
+    pub sequence: u8,
+    pub payload: Vec<u8>,
+}
+
+/// Incremental decoder for an arbitrary serial byte stream.
+///
+/// It tolerates split frames and attempts to recover synchronization after
+/// malformed bytes. Each call returns every complete valid frame currently
+/// buffered; invalid candidate frames are discarded one byte at a time.
+#[derive(Debug, Default)]
+pub struct FrameDecoder {
+    buffer: Vec<u8>,
+    discarded_bytes: u64,
+    rejected_frames: u64,
+}
+
+impl FrameDecoder {
+    pub fn new() -> Self { Self::default() }
+
+    pub fn discarded_bytes(&self) -> u64 { self.discarded_bytes }
+    pub fn rejected_frames(&self) -> u64 { self.rejected_frames }
+    pub fn buffered_len(&self) -> usize { self.buffer.len() }
+
+    pub fn push(&mut self, bytes: &[u8]) -> Vec<Frame> {
+        self.buffer.extend_from_slice(bytes);
+        let mut frames = Vec::new();
+        loop {
+            if self.buffer.len() < MESSAGE_HEADER_SIZE { break; }
+            let len = self.buffer[0] as usize;
+            if !(MESSAGE_MIN..=MESSAGE_MAX).contains(&len) {
+                self.buffer.remove(0);
+                self.discarded_bytes += 1;
+                self.rejected_frames += 1;
+                continue;
+            }
+            if self.buffer.len() < len { break; }
+            match check_frame(&self.buffer[..len]) {
+                Ok(_) => {
+                    let sequence = self.buffer[1] & MESSAGE_SEQ_MASK;
+                    let payload = self.buffer[MESSAGE_HEADER_SIZE..len - MESSAGE_TRAILER_SIZE].to_vec();
+                    self.buffer.drain(..len);
+                    frames.push(Frame { sequence, payload });
+                }
+                Err(_) => {
+                    self.buffer.remove(0);
+                    self.discarded_bytes += 1;
+                    self.rejected_frames += 1;
+                }
+            }
+        }
+        frames
+    }
+
+    pub fn clear(&mut self) {
+        self.buffer.clear();
+    }
+}
+
 /// Validate a complete frame. Returns its declared length.
 pub fn check_frame(frame: &[u8]) -> Result<usize, ProtocolError> {
     if frame.len() < MESSAGE_MIN {
@@ -192,6 +252,36 @@ mod tests {
         let mut damaged = frame;
         damaged[2] ^= 1;
         assert!(matches!(check_frame(&damaged), Err(ProtocolError::CrcMismatch { .. })));
+    }
+
+    #[test]
+    fn stream_decoder_handles_fragmented_and_concatenated_frames() {
+        let a = encode_frame(2, &[1, 2, 3]).unwrap();
+        let b = encode_frame(3, &[4, 5]).unwrap();
+        let mut decoder = FrameDecoder::new();
+        assert!(decoder.push(&a[..2]).is_empty());
+        let mut rest = a[2..].to_vec();
+        rest.extend_from_slice(&b);
+        let frames = decoder.push(&rest);
+        assert_eq!(frames, vec![
+            Frame { sequence: 2, payload: vec![1, 2, 3] },
+            Frame { sequence: 3, payload: vec![4, 5] },
+        ]);
+        assert_eq!(decoder.buffered_len(), 0);
+    }
+
+    #[test]
+    fn stream_decoder_resynchronizes_after_garbage_and_bad_crc() {
+        let good = encode_frame(4, &[9, 8]).unwrap();
+        let mut bad = encode_frame(1, &[7]).unwrap();
+        bad[2] ^= 0x40;
+        let mut decoder = FrameDecoder::new();
+        let mut input = vec![0xff, 0x00, 0x01];
+        input.extend_from_slice(&bad);
+        input.extend_from_slice(&good);
+        let frames = decoder.push(&input);
+        assert_eq!(frames, vec![Frame { sequence: 4, payload: vec![9, 8] }]);
+        assert!(decoder.discarded_bytes() >= 3);
     }
 
     #[test]
