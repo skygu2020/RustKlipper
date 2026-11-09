@@ -1,0 +1,11 @@
+[package]
+name = "klipper-gcode"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Klipper host G-code parsing primitives"
+
+[dependencies]
+regex = "1"
+thiserror.workspace = true
