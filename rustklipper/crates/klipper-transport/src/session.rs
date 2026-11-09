@@ -136,6 +136,8 @@ pub struct ReliableSerialSession {
     sent_response_requests: VecDeque<PendingResponseSend>,
     next_response_notify_id: u64,
     dictionary: Option<IdentifyDictionary>,
+    clock_sync: Option<crate::ClockSync>,
+    clock_calibration_remaining: u8,
     identify_assembler: IdentifyAssembler,
     identify_queue_id: Option<u64>,
     identify_chunk_count: Option<u8>,
@@ -172,6 +174,8 @@ impl ReliableSerialSession {
             sent_response_requests: VecDeque::new(),
             next_response_notify_id: u64::MAX,
             dictionary: None,
+            clock_sync: None,
+            clock_calibration_remaining: 0,
             identify_assembler: IdentifyAssembler::new(),
             identify_queue_id: None,
             identify_chunk_count: None,
@@ -386,6 +390,122 @@ impl ReliableSerialSession {
         Ok(crate::ClockSync::from_uptime(frequency, response.sent_time, high, clock)?)
     }
 
+    /// Begin Klipper-compatible startup clock calibration from the uptime response.
+    /// This queues the first of eight get_clock requests; each subsequent request
+    /// is queued only after the previous response has been processed.
+    pub fn begin_clock_calibration(
+        &mut self,
+        queue_id: u64,
+        uptime_response: Response,
+    ) -> Result<ResponseWaiter, SessionError> {
+        if self.clock_calibration_remaining != 0 {
+            return Err(SessionError::Dictionary(DictionaryError::InvalidField {
+                field: "clock_calibration".into(),
+                reason: "startup clock calibration is already in progress".into(),
+            }));
+        }
+        let clock_sync = self.clock_sync_from_uptime_response(uptime_response)?;
+        self.clock_sync = Some(clock_sync);
+        self.clock_calibration_remaining = 8;
+        match self.request_get_clock(queue_id) {
+            Ok(waiter) => Ok(waiter),
+            Err(error) => {
+                self.clock_calibration_remaining = 0;
+                self.clock_sync = None;
+                Err(error)
+            }
+        }
+    }
+
+    /// Process one of the eight sequential startup get_clock responses.
+    /// Returns the next response waiter, or None once all eight samples are done.
+    pub fn handle_clock_calibration_response(
+        &mut self,
+        queue_id: u64,
+        response: Response,
+    ) -> Result<Option<ResponseWaiter>, SessionError> {
+        self.ensure_connected()?;
+        if self.clock_calibration_remaining == 0 {
+            return Err(SessionError::Dictionary(DictionaryError::InvalidField {
+                field: "clock_calibration".into(),
+                reason: "no startup clock sample is currently expected".into(),
+            }));
+        }
+        let clock_sync = self.clock_sync.as_mut().ok_or_else(|| {
+            SessionError::Dictionary(DictionaryError::InvalidField {
+                field: "clock_calibration".into(),
+                reason: "clock sync was not initialized from uptime".into(),
+            })
+        })?;
+        if response.name != "clock" || response.oid.is_some() {
+            return Err(SessionError::Dictionary(DictionaryError::InvalidField {
+                field: "clock".into(),
+                reason: format!("expected unscoped clock response, received {} with oid {:?}", response.name, response.oid),
+            }));
+        }
+        let clock = response.params.get("clock").and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or_else(|| DictionaryError::InvalidField {
+                field: "clock.clock".into(),
+                reason: "missing or out-of-range u32 value".into(),
+            })?;
+        let update = clock_sync.update_initial_sample(clock, response.sent_time, response.receive_time)?;
+        self.clock_calibration_remaining -= 1;
+        if let Some(update) = update {
+            self.apply_clock_update(update, response.receive_time)?;
+        }
+        if self.clock_calibration_remaining == 0 {
+            return Ok(None);
+        }
+        self.request_get_clock(queue_id).map(Some)
+    }
+
+    /// Current MCU clock synchronizer, available after uptime initialization.
+    pub fn clock_sync(&self) -> Option<&crate::ClockSync> {
+        self.clock_sync.as_ref()
+    }
+
+    /// Number of initial get_clock samples still expected (out of eight).
+    pub fn clock_calibration_remaining(&self) -> u8 {
+        self.clock_calibration_remaining
+    }
+
+    /// Process a periodic get_clock response after startup calibration.
+    pub fn handle_periodic_clock_response(
+        &mut self,
+        response: Response,
+    ) -> Result<Option<u64>, SessionError> {
+        self.ensure_connected()?;
+        if self.clock_calibration_remaining != 0 {
+            return Err(SessionError::Dictionary(DictionaryError::InvalidField {
+                field: "clock_calibration".into(),
+                reason: "periodic clock update received before startup calibration completed".into(),
+            }));
+        }
+        let clock_sync = self.clock_sync.as_mut().ok_or_else(|| {
+            SessionError::Dictionary(DictionaryError::InvalidField {
+                field: "clock_sync".into(),
+                reason: "clock sync has not been initialized".into(),
+            })
+        })?;
+        if response.name != "clock" || response.oid.is_some() {
+            return Err(SessionError::Dictionary(DictionaryError::InvalidField {
+                field: "clock".into(),
+                reason: format!("expected unscoped clock response, received {} with oid {:?}", response.name, response.oid),
+            }));
+        }
+        let clock = response.params.get("clock").and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or_else(|| DictionaryError::InvalidField {
+                field: "clock.clock".into(),
+                reason: "missing or out-of-range u32 value".into(),
+            })?;
+        let update = clock_sync.update(clock, response.sent_time, response.receive_time)?;
+        match update {
+            Some(update) => self.apply_clock_update(update, response.receive_time),
+            None => Ok(None),
+        }
+    }
     /// Start the first half of the two-query MCU configuration handshake.
     pub fn begin_config_handshake(
         &mut self,
