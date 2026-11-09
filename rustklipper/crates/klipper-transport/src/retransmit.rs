@@ -161,6 +161,7 @@ impl RetransmitState {
             return Ok(AckResult { acknowledged: Vec::new(), last_receive_sent_time: self.last_receive_sent_time, fast_retransmit: None, rtt_sample_seconds: None });
         }
 
+        let had_outstanding = !self.outstanding.is_empty();
         let mut acknowledged = Vec::new();
         let mut last_receive_sent_time = None;
         let mut last_frame_retransmitted = false;
@@ -175,6 +176,10 @@ impl RetransmitState {
         // completion time of the block immediately preceding the received seq.
         if let Some(sent_time) = last_receive_sent_time {
             self.last_receive_sent_time = sent_time;
+        } else if !had_outstanding {
+            // serialqueue resets this value when an advancing sequence arrives
+            // while its sent queue is empty (connection/sequence resynchronization).
+            self.last_receive_sent_time = 0.0;
         }
 
         let rtt_sample_seconds = if self.rtt_sample_seq.is_some_and(|seq| ack_sequence > seq) {

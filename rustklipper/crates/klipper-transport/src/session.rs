@@ -380,8 +380,8 @@ impl ReliableSerialSession {
         // Keep response_requests until the command is actually written. A
         // waiter may be dropped while its command is still queued; deleting
         // this entry early would orphan its reserved ACK notification and
-        // prevent the successful-write timestamp from being associated with
-        // the eventual response. Once sent, the entry moves to
+        // prevent the response request from being associated with its eventual
+        // response. Once sent, the entry moves to
         // sent_response_requests and can be pruned normally.
         let router = self.response_router.clone();
         self.sent_response_requests.retain(|pending| {
