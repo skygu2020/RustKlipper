@@ -7,7 +7,7 @@ Implemented:
 - Leading `N...` line number extraction.
 - Original command-line preservation and raw parameter extraction.
 - Extended `KEY=value` parameter parsing with quoted values.
-- Typed integer/finite-float getters and range checks.
+- Typed integer/finite-float getters and range checks.\n- Readiness-aware command registration and dispatch, base commands, extended parameter decoding, handler responses, and automatic/explicit ACK handling.
 
 Not yet implemented: command registration and dispatch, printer-ready/shutdown
 gating, output/ack handling, mux commands, G-code macro/Jinja execution, and
