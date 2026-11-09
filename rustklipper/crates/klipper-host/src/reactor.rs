@@ -822,6 +822,31 @@ mod tests {
     }
 
     #[test]
+    fn panicking_completion_callback_cancels_waiters_and_cleans_task() {
+        let reactor = Reactor::new();
+        let (id, completion) =
+            reactor.register_callback_with_completion::<_, ()>(|_| panic!("callback failed"));
+
+        let panic = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            reactor.run_due(Instant::now() + Duration::from_secs(1));
+        }));
+        assert!(panic.is_err());
+        assert!(completion.is_complete());
+        assert!(completion.is_cancelled());
+        assert_eq!(completion.wait(), Err(CompletionCancelled));
+        assert_eq!(reactor.pending_tasks(), 0);
+        assert!(!reactor.unregister(id));
+
+        let count = Arc::new(AtomicUsize::new(0));
+        let observed = count.clone();
+        reactor.register_callback(move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+        });
+        assert_eq!(reactor.run_due(Instant::now() + Duration::from_secs(1)), 1);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn zero_periodic_interval_is_rejected() {
         let reactor = Reactor::new();
         let result = reactor.register_timer(
