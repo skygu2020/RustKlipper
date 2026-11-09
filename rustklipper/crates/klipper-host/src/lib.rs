@@ -1769,6 +1769,34 @@ mod tests {
     }
 
     #[test]
+    fn failed_component_factory_is_retried_on_next_initialization() {
+        let printer = Printer::new();
+        printer.install_config(ConfigDocument::parse("[fan]\npin=PA0\n").unwrap());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed_calls = calls.clone();
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register("fan", move |printer, section| {
+                let call = observed_calls.fetch_add(1, Ordering::SeqCst);
+                if call == 0 {
+                    return Err("temporary factory failure".to_owned());
+                }
+                printer
+                    .register_object("fan", section.get("pin").unwrap().to_owned())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        assert!(matches!(
+            printer.initialize_components(&registry),
+            Err(ComponentError::LoadFailed { .. })
+        ));
+        assert_eq!(printer.initialize_components(&registry).unwrap(), vec!["fan"]);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert!(printer.has_object("fan"));
+    }
+
+    #[test]
     fn initialization_can_retry_after_connect_handler_panic() {
         let printer = Printer::new();
         printer.install_config(ConfigDocument::parse("[fan]\npin=PA0\n").unwrap());
