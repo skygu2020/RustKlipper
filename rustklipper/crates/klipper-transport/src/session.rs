@@ -1139,11 +1139,15 @@ impl ReliableSerialSession {
         if retries.is_empty() {
             return Ok(());
         }
+        let batch_bytes = 1 + retries.iter().map(|retry| retry.bytes.len()).sum::<usize>();
         if let Err(error) = self.transport.write_retransmission_batch(&retries) {
             self.disconnected = true;
             return Err(SessionError::Transport(error));
         }
         let sent_at = self.now();
+        if let Some(timing) = &mut self.uart_timing {
+            timing.reserve_transmission(sent_at, 0, batch_bytes);
+        }
         for retry in retries {
             if let Err(error) = self.scheduler.retransmit_state_mut()
                 .mark_retransmission_sent(retry.sequence, sent_at)
@@ -1351,14 +1355,13 @@ impl ReliableSerialSession {
                     return Err(SessionError::Schedule(error));
                 }
             };
-            let pending_bytes = self.transport.bytes_to_write()? as usize;
             if let Err(error) = self.transport.write_scheduled_frame(&frame) {
                 self.disconnected = true;
                 return Err(SessionError::Transport(error));
             }
             let sent_at = self.now();
             if let Some(timing) = &mut self.uart_timing {
-                timing.reserve_transmission(sent_at, pending_bytes, frame.bytes.len());
+                timing.reserve_transmission(sent_at, 0, frame.bytes.len());
             }
             if let Err(error) = self.scheduler.mark_frame_sent(&frame, sent_at) {
                 self.disconnected = true;
