@@ -213,6 +213,39 @@ impl ConfigDocument {
         Ok(parsed)
     }
 
+    /// Parse a comma-separated option, trimming whitespace around each item.
+    pub fn get_list(&self, section: &str, option: &str, separator: char, count: Option<usize>)
+        -> Result<Vec<String>, ConfigValueError>
+    {
+        let value = self.get_required(section, option)?;
+        let values: Vec<String> = if value.trim().is_empty() {
+            Vec::new()
+        } else {
+            value.split(separator).map(str::trim).map(str::to_owned).collect()
+        };
+        if let Some(expected) = count {
+            if values.len() != expected {
+                return Err(ConfigValueError::ElementCount {
+                    section: section.to_owned(), option: option.to_owned(),
+                    expected, actual: values.len(),
+                });
+            }
+        }
+        Ok(values)
+    }
+
+    pub fn get_i64_list(&self, section: &str, option: &str, separator: char, count: Option<usize>)
+        -> Result<Vec<i64>, ConfigValueError>
+    {
+        self.get_list(section, option, separator, count)?
+            .into_iter()
+            .map(|value| value.parse().map_err(|_| ConfigValueError::Invalid {
+                section: section.to_owned(), option: option.to_owned(),
+                value, expected: "integer list",
+            }))
+            .collect()
+    }
+
     pub fn get_bool(&self, section: &str, option: &str) -> Result<bool, ConfigValueError> {
         let value = self.get_required(section, option)?;
         match value.to_ascii_lowercase().as_str() {
@@ -232,6 +265,8 @@ pub enum ConfigValueError {
     Missing { section: String, option: String },
     #[error("option '{option}' in section '{section}' has invalid value '{value}' (expected {expected})")]
     Invalid { section: String, option: String, value: String, expected: &'static str },
+    #[error("option '{option}' in section '{section}' must contain {expected} elements, got {actual}")]
+    ElementCount { section: String, option: String, expected: usize, actual: usize },
 }
 
 fn strip_hash_comment(line: &str) -> &str {
@@ -294,6 +329,23 @@ mod tests {
         assert_eq!(config.get_f64("printer", "max_accel").unwrap(), 5000.0);
         assert!(config.get_bool("printer", "use_pin").unwrap());
         assert!(config.get_bool("printer", "missing").is_err());
+    }
+
+    #[test]
+    fn parses_string_and_integer_lists_with_optional_element_count() {
+        let config = ConfigDocument::parse("[stepper_x]\\nposition=10, 20,30\\n").unwrap();
+        assert_eq!(
+            config.get_list("stepper_x", "position", ',', Some(3)).unwrap(),
+            vec!["10", "20", "30"],
+        );
+        assert_eq!(
+            config.get_i64_list("stepper_x", "position", ',', Some(3)).unwrap(),
+            vec![10, 20, 30],
+        );
+        assert!(matches!(
+            config.get_list("stepper_x", "position", ',', Some(2)),
+            Err(ConfigValueError::ElementCount { expected: 2, actual: 3, .. })
+        ));
     }
 
     #[test]
