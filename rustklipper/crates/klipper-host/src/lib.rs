@@ -1,12 +1,12 @@
-pub mod reactor;
-pub use reactor::{Reactor, ReactorError, TaskId};
-
 //! Core Rust Klipper host runtime.
 //!
 //! This crate owns printer lifecycle, typed object registration, configuration
 //! ownership, and the host-side G-code dispatcher. MCU firmware is outside the
 //! scope of this crate; communication is delegated to the protocol/transport
 //! layers.
+
+pub mod reactor;
+pub use reactor::{Reactor, ReactorError, TaskId};
 
 use std::any::Any;
 use std::collections::HashMap;
