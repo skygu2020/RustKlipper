@@ -518,6 +518,30 @@ impl ReliableSerialSession {
         }
     }
 
+    /// Select the scheduler queue used by automatic periodic get_clock queries.
+    ///
+    /// Klipper allocates a dedicated command queue for ClockSync so background
+    /// clock sampling is not held behind configuration or application commands
+    /// in another queue. Call this before the eighth startup sample completes
+    /// (normally before clock calibration starts). The caller must choose an ID
+    /// distinct from every queue used for application/configuration traffic.
+    /// If unset, the queue passed to begin_clock_calibration() is retained for
+    /// backwards compatibility.
+    pub fn set_periodic_clock_queue_id(&mut self, queue_id: u64) -> Result<(), SessionError> {
+        self.ensure_connected()?;
+        if self.periodic_clock_in_flight || self.next_periodic_clock_at.is_some()
+            || matches!(self.startup_stage, McuStartupStage::ClockReady
+                | McuStartupStage::Configuring | McuStartupStage::Ready)
+        {
+            return Err(SessionError::StartupOrder {
+                expected: "before periodic clock scheduling begins",
+                actual: self.startup_stage,
+            });
+        }
+        self.periodic_clock_queue_id = Some(queue_id);
+        Ok(())
+    }
+
     /// Process one of the eight sequential startup get_clock responses.
     /// Returns the next response waiter, or None once all eight samples are done.
     pub fn handle_clock_calibration_response(
@@ -545,7 +569,7 @@ impl ReliableSerialSession {
         self.clock_calibration_remaining -= 1;
         if self.clock_calibration_remaining == 0 {
             self.startup_stage = McuStartupStage::ClockReady;
-            self.periodic_clock_queue_id = Some(queue_id);
+            self.periodic_clock_queue_id.get_or_insert(queue_id);
             self.next_periodic_clock_at = Some(response.receive_time);
             return Ok(None);
         }
