@@ -55,6 +55,7 @@ pub enum RetransmitError {
 #[derive(Debug, Clone)]
 struct OutstandingFrame {
     frame: TrackedFrame,
+    first_sent_at: f64,
     last_sent_at: f64,
     retransmitted: bool,
 }
@@ -145,6 +146,7 @@ impl RetransmitState {
         }
         self.outstanding.push_back(OutstandingFrame {
             frame: TrackedFrame { sequence, bytes, transmissions: 1 },
+            first_sent_at: now,
             last_sent_at: now,
             retransmitted: false,
         });
@@ -167,7 +169,8 @@ impl RetransmitState {
         let mut last_frame_retransmitted = false;
         while self.outstanding.front().is_some_and(|entry| entry.frame.sequence < ack_sequence) {
             let entry = self.outstanding.pop_front().expect("front checked");
-            last_receive_sent_time = Some(entry.last_sent_at);
+            // serialqueue retains the original queue_message.receive_time across retries.
+            last_receive_sent_time = Some(entry.first_sent_at);
             last_frame_retransmitted = entry.retransmitted;
             acknowledged.push(entry.frame);
         }
@@ -368,6 +371,19 @@ mod tests {
         assert!(state.poll_timeout_all(0.749).unwrap().is_empty());
         assert_eq!(state.poll_timeout_all(0.750).unwrap().len(), 1);
         assert_eq!(state.rto(), 1.0);
+    }
+
+
+    #[test]
+    fn acknowledged_timestamp_remains_original_after_retransmission() {
+        let mut state = RetransmitState::new();
+        state.track_sent(1, vec![0x10, 0x20], 1.0).unwrap();
+        let retry = state.retransmit_all(1.3);
+        assert_eq!(retry.len(), 1);
+        state.mark_retransmission_sent(1, 1.4).unwrap();
+
+        let ack = state.acknowledge(2, 1.5).unwrap();
+        assert_eq!(ack.last_receive_sent_time, 1.0);
     }
 
     #[test]
