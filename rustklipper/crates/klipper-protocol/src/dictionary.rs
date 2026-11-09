@@ -291,7 +291,7 @@ mod tests{
         let d=IdentifyDictionary::from_json(json.as_bytes()).unwrap();
         let mut body=Vec::new();encode_i32(5,&mut body);encode_u32(16000000,&mut body);encode_i32(-7,&mut body);body.push(2);body.extend_from_slice(b"ok");
         let (name,values)=d.decode_message(&body).unwrap();
-        assert_eq!(name,"#output");assert_eq!(values["#msg"],"mcu: clock=16000000 signed=-7 text=b'\\x6fk' percent=%");
+        assert_eq!(name,"#output");assert_eq!(values["#msg"],"mcu: clock=16000000 signed=-7 text=b'ok' percent=%");
     }
     #[test] fn output_format_rejects_unknown_conversion(){
         let json=r#"{"commands":{},"responses":{},"output":{"bad %q":5}}"#;
