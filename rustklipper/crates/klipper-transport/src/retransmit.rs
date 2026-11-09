@@ -482,6 +482,16 @@ mod tests {
     }
 
     #[test]
+    fn initial_retry_deadline_uses_explicit_batch_completion_time() {
+        let mut state = RetransmitState::new();
+        state.track_sent_with_receive_time(1, vec![0; 10], 1.0, 1.030).unwrap();
+
+        let deadline = 1.030 + state.rto();
+        assert!(state.poll_timeout_all(deadline - 0.000_001).unwrap().is_empty());
+        assert_eq!(state.poll_timeout_all(deadline).unwrap().len(), 1);
+    }
+
+    #[test]
     fn initial_deadline_includes_first_frame_wire_time() {
         let mut state = RetransmitState::new();
         state.set_wire_time_per_byte(0.001).unwrap();
