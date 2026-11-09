@@ -133,7 +133,50 @@ fn next_periodic_clock_deadline(due_at: f64, now: f64) -> f64 {
     next_due
 }
 
-/// Pure form of serialqueue.c's request-clock send decision.
+/// Compute the next serialqueue.c command wake deadline.
+fn command_send_deadline(
+    scheduler: &mut CommandScheduler,
+    update: ClockUpdate,
+    timing: UartTiming,
+    eventtime: f64,
+    idle_time: f64,
+    pending_bytes: usize,
+) -> Result<Option<f64>, crate::ClockSyncError> {
+    let idletime = eventtime.max(idle_time)
+        + timing.seconds_for_bytes(pending_bytes.saturating_add(MESSAGE_MIN));
+    let ack_clock = update.queue_clock_at(idletime)?;
+    scheduler.promote_ready(ack_clock);
+
+    if scheduler.ready_bytes() >= MESSAGE_MAX - MESSAGE_MIN {
+        return Ok(Some(eventtime));
+    }
+
+    let background_time = if pending_bytes > 0 { idletime } else { idle_time };
+    let background_clock = update.queue_clock_at(background_time + 0.255)?;
+    let min_ready_clock = scheduler.minimum_ready_request_clock(background_clock);
+    let min_stalled_clock = scheduler.minimum_upcoming_min_clock();
+    let request_delta = (0.250 * update.queue_frequency).max(0.0) as u64;
+
+    let mut want_clock = match min_ready_clock {
+        Some(clock) if clock <= ack_clock.saturating_add(request_delta) => {
+            return Ok(Some(eventtime));
+        }
+        Some(clock) => clock.saturating_sub(request_delta),
+        None => u64::MAX,
+    };
+    if let Some(stalled_clock) = min_stalled_clock {
+        want_clock = want_clock.min(stalled_clock);
+    }
+    if want_clock == u64::MAX {
+        return Ok(None);
+    }
+
+    let wake_time = idletime
+        + want_clock.saturating_sub(ack_clock) as f64 / update.queue_frequency;
+    Ok(Some(wake_time))
+}
+
+/// Boolean convenience wrapper used by deterministic scheduling tests.
 fn should_send_command(
     scheduler: &mut CommandScheduler,
     update: ClockUpdate,
@@ -142,34 +185,9 @@ fn should_send_command(
     idle_time: f64,
     pending_bytes: usize,
 ) -> Result<bool, crate::ClockSyncError> {
-    let idletime = eventtime.max(idle_time)
-        + timing.seconds_for_bytes(pending_bytes.saturating_add(MESSAGE_MIN));
-    let ack_clock = update.queue_clock_at(idletime)?;
-    // serialqueue.c promotes upcoming messages against the estimated clock
-    // at the UART's next idle point, not only against the last received ACK.
-    scheduler.promote_ready(ack_clock);
-
-    if scheduler.ready_bytes() >= MESSAGE_MAX - MESSAGE_MIN {
-        return Ok(true);
-    }
-
-    let background_time = if pending_bytes > 0 { idletime } else { idle_time };
-    let background_clock = update.queue_clock_at(background_time + 0.255)?;
-    let Some(min_ready_clock) =
-        scheduler.minimum_ready_request_clock(background_clock)
-    else {
-        return Ok(false);
-    };
-
-    let request_delta = (0.250 * update.queue_frequency).max(0.0) as u64;
-    if min_ready_clock <= ack_clock.saturating_add(request_delta) {
-        return Ok(true);
-    }
-
-    let want_clock = min_ready_clock.saturating_sub(request_delta);
-    let wake_time = idletime
-        + want_clock.saturating_sub(ack_clock) as f64 / update.queue_frequency;
-    Ok(eventtime >= wake_time)
+    Ok(command_send_deadline(
+        scheduler, update, timing, eventtime, idle_time, pending_bytes,
+    )?.is_some_and(|deadline| eventtime >= deadline))
 }
 
 fn allocate_retry_transaction_id(
@@ -235,6 +253,7 @@ pub struct ReliableSerialSession {
     uart_timing: Option<UartTiming>,
     last_ack_clock: u64,
     queue_clock_update: Option<ClockUpdate>,
+    next_send_at: Option<f64>,
     disconnected: bool,
 }
 
@@ -281,6 +300,7 @@ impl ReliableSerialSession {
             uart_timing: None,
             last_ack_clock: 0,
             queue_clock_update: None,
+            next_send_at: None,
             disconnected: false,
         }
     }
@@ -291,6 +311,12 @@ impl ReliableSerialSession {
     /// `ClockSync::update`, and `ReliableSerialSession::apply_clock_update`.
     /// Its origin is the construction of this session (not the system boot
     /// time), matching the timestamps emitted in `SessionEvent`.
+    /// Next host-monotonic deadline at which scheduled command state should
+    /// be polled again. None means there is no clock-gated pending command.
+    pub fn next_send_at(&self) -> Option<f64> {
+        self.next_send_at
+    }
+
     pub fn monotonic_time(&self) -> f64 {
         self.started.elapsed().as_secs_f64()
     }
@@ -1219,15 +1245,19 @@ impl ReliableSerialSession {
         pending_bytes: usize,
     ) -> Result<bool, SessionError> {
         let Some(update) = self.queue_clock_update else {
+            self.next_send_at = None;
             return Ok(true);
         };
         let Some(timing) = self.uart_timing else {
+            self.next_send_at = None;
             return Ok(true);
         };
 
-        Ok(should_send_command(
+        let deadline = command_send_deadline(
             &mut self.scheduler, update, timing, eventtime, idle_time, pending_bytes,
-        )?)
+        )?;
+        self.next_send_at = deadline.filter(|deadline| *deadline > eventtime);
+        Ok(deadline.is_some_and(|deadline| eventtime >= deadline))
     }
 
     /// Perform one session iteration, bounded by the configured serial read timeout.
@@ -1692,6 +1722,19 @@ mod command_send_timing_tests {
         let timing = UartTiming::new(115_200).unwrap();
 
         assert!(should_send_command(&mut scheduler, update(), timing, 10.0, 10.0, 0).unwrap());
+    }
+
+    #[test]
+    fn stalled_min_clock_contributes_an_earlier_wakeup_deadline() {
+        let mut scheduler = CommandScheduler::new();
+        scheduler.enqueue(1, ScheduledCommand::new(
+            vec![0x55], 10_200, 10_500,
+        )).unwrap();
+        let timing = UartTiming::new(115_200).unwrap();
+        let deadline = command_send_deadline(
+            &mut scheduler, update(), timing, 10.0, 10.0, 0,
+        ).unwrap().unwrap();
+        assert!((deadline - 10.200434).abs() < 1e-6);
     }
 
     #[test]
