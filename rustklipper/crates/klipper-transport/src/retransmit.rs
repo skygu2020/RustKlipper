@@ -47,7 +47,6 @@ pub enum RetransmitError {
 #[derive(Debug, Clone)]
 struct OutstandingFrame {
     frame: TrackedFrame,
-    first_sent_at: f64,
     last_sent_at: f64,
     retransmitted: bool,
 }
@@ -120,7 +119,6 @@ impl RetransmitState {
         }
         self.outstanding.push_back(OutstandingFrame {
             frame: TrackedFrame { sequence, bytes, transmissions: 1 },
-            first_sent_at: now,
             last_sent_at: now,
             retransmitted: false,
         });
@@ -305,14 +303,14 @@ mod tests {
     }
 
     #[test]
-    fn multi_frame_cumulative_ack_does_not_make_ambiguous_rtt_sample() {
+    fn multi_frame_cumulative_ack_samples_last_acked_block_in_rtt_window() {
         let mut state = RetransmitState::new();
         state.track_sent(1, vec![1], 1.0).unwrap();
         state.track_sent(2, vec![2], 1.01).unwrap();
         let ack = state.acknowledge(3, 1.05).unwrap();
         assert_eq!(ack.acknowledged.len(), 2);
-        assert_eq!(ack.rtt_sample_seconds, None);
-        assert_eq!(state.srtt(), None);
+        assert!((ack.rtt_sample_seconds.unwrap() - 0.04).abs() < 1e-9);
+        assert!((state.srtt().unwrap() - 0.4).abs() < 1e-9);
     }
 
     #[test]
@@ -355,21 +353,17 @@ mod tests {
         let mut state = RetransmitState::new();
         state.track_sent(10, vec![0x10], 0.0).unwrap();
         state.track_sent(11, vec![0x11], 0.001).unwrap();
-        state.acknowledge(10, 0.010).unwrap();
+        assert!(state.handle_empty_ack(10, 12, 0.010).unwrap().is_empty());
         let retries = state.handle_empty_ack(10, 12, 0.011).unwrap();
         assert_eq!(retries.len(), 2);
         assert_eq!(retries[0].bytes, vec![0x10]);
         assert_eq!(retries[1].bytes, vec![0x11]);
         assert!(state.handle_empty_ack(10, 12, 0.012).unwrap().is_empty());
-        state.acknowledge(11, 0.013).unwrap();
-        assert!(state.handle_empty_ack(11, 12, 0.014).unwrap().is_empty());
-        state.track_sent(12, vec![0x12], 0.015).unwrap();
-        state.acknowledge(12, 0.016).unwrap();
-        state.track_sent(13, vec![0x13], 0.017).unwrap();
-        state.acknowledge(13, 0.018).unwrap();
-        let next_nak = state.handle_empty_ack(13, 14, 0.019).unwrap();
+        assert!(state.handle_empty_ack(11, 12, 0.013).unwrap().is_empty());
+        let next_nak = state.handle_empty_ack(11, 12, 0.014).unwrap();
         assert_eq!(next_nak.len(), 1);
-        assert_eq!(next_nak[0].sequence, 13);
+        assert_eq!(next_nak[0].sequence, 11);
+        assert!(state.handle_empty_ack(11, 12, 0.015).unwrap().is_empty());
     }
 
     #[test]
