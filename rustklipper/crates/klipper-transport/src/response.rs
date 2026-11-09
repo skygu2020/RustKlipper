@@ -91,6 +91,15 @@ impl ResponseRouter {
         removed
     }
 
+    /// Check whether one exact waiter is still registered. Group counts are
+    /// insufficient when multiple requests share the same response key.
+    pub fn contains_waiter(&self, name: &str, oid: Option<u32>, id: u64) -> bool {
+        let key = ResponseKey { name: name.to_owned(), oid };
+        self.state.lock().expect("response router poisoned").pending
+            .get(&key)
+            .is_some_and(|queue| queue.iter().any(|waiter| waiter.id == id))
+    }
+
     pub fn pending_count(&self, name: &str, oid: Option<u32>) -> usize {
         self.state.lock().expect("response router poisoned").pending
             .get(&ResponseKey { name: name.into(), oid }).map_or(0, VecDeque::len)
@@ -198,6 +207,22 @@ mod tests {
         assert_eq!(router.pending_count("status", Some(4)), 1);
         assert!(router.dispatch(response("status", Some(4))));
         assert_eq!(next.wait(Duration::from_millis(1)).unwrap().oid, Some(4));
+    }
+
+    #[test]
+    fn exact_waiter_presence_is_independent_of_same_key_waiters() {
+        let router = ResponseRouter::new();
+        let first = router.register("status", Some(4));
+        let second = router.register("status", Some(4));
+        let first_id = router.claim_oldest("status", Some(4)).unwrap();
+        let second_id = router.claim_oldest("status", Some(4)).unwrap();
+
+        assert!(router.contains_waiter("status", Some(4), first_id));
+        drop(first);
+        assert!(!router.contains_waiter("status", Some(4), first_id));
+        assert!(router.contains_waiter("status", Some(4), second_id));
+        assert_eq!(router.pending_count("status", Some(4)), 1);
+        drop(second);
     }
 
     #[test]

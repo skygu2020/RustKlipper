@@ -466,7 +466,11 @@ impl ReliableSerialSession {
         let router = self.response_router.clone();
         let abandoned: Vec<u64> = self.retry_transactions.iter()
             .filter_map(|(id, pending)| {
-                (router.pending_count(&pending.name, pending.oid) == 0).then_some(*id)
+                let waiter_is_live = pending.waiter_id.map_or_else(
+                    || router.pending_count(&pending.name, pending.oid) > 0,
+                    |waiter_id| router.contains_waiter(&pending.name, pending.oid, waiter_id),
+                );
+                (!waiter_is_live).then_some(*id)
             }).collect();
         for id in abandoned {
             self.retry_transactions.remove(&id);
@@ -489,7 +493,7 @@ impl ReliableSerialSession {
             }
         }
         self.sent_response_requests.retain(|pending| {
-            router.pending_count(&pending.name, pending.oid) > 0
+            self.retry_transactions.contains_key(&pending.transaction_id)
         });
     }
 
