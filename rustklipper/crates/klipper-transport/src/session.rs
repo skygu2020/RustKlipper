@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::time::Instant;
 
 use serde_json::Value;
-use klipper_protocol::{DictionaryError, Frame, IdentifyAssembler, IdentifyChunk, IdentifyDictionary};
+use klipper_protocol::{encode_identify_request, DictionaryError, Frame, IdentifyAssembler, IdentifyChunk, IdentifyDictionary};
 
 use crate::{
     AckEvent, AckTracker, CommandScheduler, Response, ResponseRouter, ResponseWaiter, ScheduleError, ScheduledCommand, TransportError, UsbSerialTransport,
@@ -149,6 +149,26 @@ impl ReliableSerialSession {
     }
 
     pub fn response_router(&self) -> ResponseRouter { self.response_router.clone() }
+
+    /// Queue a bootstrap identify request. The protocol's built-in message ID
+    /// is available before the dynamic dictionary has been downloaded.
+    pub fn request_identify_chunk(
+        &mut self, queue_id: u64, offset: u32, count: u8,
+    ) -> Result<(), SessionError> {
+        self.ensure_connected()?;
+        if self.dictionary.is_some() {
+            return Err(SessionError::Dictionary(DictionaryError::InvalidField {
+                field: "identify".into(),
+                reason: "dictionary is already installed".into(),
+            }));
+        }
+        let bytes = encode_identify_request(offset, count);
+        self.scheduler.enqueue(queue_id, ScheduledCommand::new(
+            bytes, 0, crate::BACKGROUND_PRIORITY_CLOCK,
+        ))?;
+        self.scheduler.promote_ready(0);
+        Ok(())
+    }
 
     /// Enqueue a command and associate its eventual response with the command's
     /// actual successful UART-write timestamp. The command must not already carry
