@@ -1295,6 +1295,30 @@ mod tests {
     }
 
     #[test]
+    fn shutdown_then_disconnect_emits_both_lifecycle_events() {
+        let printer = Printer::new();
+        let shutdowns = Arc::new(AtomicUsize::new(0));
+        let disconnects = Arc::new(AtomicUsize::new(0));
+        let observed_shutdowns = shutdowns.clone();
+        let observed_disconnects = disconnects.clone();
+        printer.register_event_handler(PrinterEventKind::Shutdown, move |_| {
+            observed_shutdowns.fetch_add(1, Ordering::SeqCst);
+        });
+        printer.register_event_handler(PrinterEventKind::Disconnect, move |_| {
+            observed_disconnects.fetch_add(1, Ordering::SeqCst);
+        });
+
+        printer.set_ready();
+        printer.invoke_shutdown("runtime failure");
+        printer.disconnect();
+        printer.disconnect();
+
+        assert_eq!(shutdowns.load(Ordering::SeqCst), 1);
+        assert_eq!(disconnects.load(Ordering::SeqCst), 1);
+        assert_eq!(printer.state(), PrinterState::Disconnected);
+    }
+
+    #[test]
     fn repeated_disconnect_emits_one_event() {
         let printer = Printer::new();
         let events = Arc::new(AtomicUsize::new(0));
