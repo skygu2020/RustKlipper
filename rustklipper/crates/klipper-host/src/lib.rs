@@ -262,7 +262,7 @@ impl Printer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use klipper_gcode::{DispatchEvent, GCodeError};
+    use klipper_gcode::DispatchEvent;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
