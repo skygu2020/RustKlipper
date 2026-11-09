@@ -174,9 +174,10 @@ impl McuRegistry {
     /// A failed MCU is reported independently; other sessions are still polled.
     pub fn poll_all(&self) -> McuPollBatch {
         let mut sessions: Vec<_> = self
-            .sessions
-            .read()
+            .state
+            .lock()
             .expect("MCU registry lock poisoned")
+            .sessions
             .iter()
             .map(|(name, session)| (name.clone(), session.clone()))
             .collect();
@@ -268,5 +269,6 @@ mod tests {
             Err(McuRegistryError::OpenFailed { name, .. }) if name == "mcu"
         ));
         assert!(registry.session_names().is_empty());
+        assert!(registry.state.lock().unwrap().opening.is_empty());
     }
 }
