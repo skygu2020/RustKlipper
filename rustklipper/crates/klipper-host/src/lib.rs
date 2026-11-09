@@ -261,6 +261,12 @@ impl ComponentRegistry {
         Ok(())
     }
 
+    pub fn registered_sections(&self) -> Vec<String> {
+        let mut names: Vec<_> = self.factories.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
     /// Lazily load one component and its dependencies.
     pub fn load_component(
         &self,
@@ -2110,6 +2116,22 @@ mod tests {
         );
         assert_eq!(*order.lock().unwrap(), vec!["identify", "connect"]);
         assert_eq!(&*printer.lookup_object::<String>("fan").unwrap(), "PA0");
+    }
+
+    #[test]
+    fn component_registry_lists_registered_sections_in_sorted_order() {
+        let mut registry = ComponentRegistry::new();
+        registry.register("z_stepper", |_, _| Ok(())).unwrap();
+        registry.register("fan", |_, _| Ok(())).unwrap();
+        registry.register("heater", |_, _| Ok(())).unwrap();
+        assert_eq!(
+            registry.registered_sections(),
+            vec![
+                "fan".to_owned(),
+                "heater".to_owned(),
+                "z_stepper".to_owned()
+            ]
+        );
     }
 
     #[test]
