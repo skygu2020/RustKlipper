@@ -12,7 +12,9 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
-use klipper_config::{ConfigDocument, ConfigFileLoader, ConfigLoadError};
+use klipper_config::{
+    ConfigDocument, ConfigFileLoader, ConfigLoadError, ConfigUsageTracker, UnusedConfigOption,
+};
 use klipper_gcode::{DispatchOutcome, GCodeDispatcher};
 use thiserror::Error;
 
@@ -143,6 +145,7 @@ pub struct Printer {
     state: RwLock<PrinterState>,
     state_message: RwLock<String>,
     config: RwLock<Option<Arc<ConfigDocument>>>,
+    config_usage: ConfigUsageTracker,
     objects: RwLock<HashMap<String, Arc<dyn Any + Send + Sync>>>,
     event_handlers: Mutex<HashMap<PrinterEventKind, Vec<EventHandler>>>,
     gcode: Mutex<GCodeDispatcher>,
@@ -161,6 +164,7 @@ impl Printer {
             state: RwLock::new(PrinterState::Startup),
             state_message: RwLock::new("Printer is not ready".to_owned()),
             config: RwLock::new(None),
+            config_usage: ConfigUsageTracker::new(),
             objects: RwLock::new(HashMap::new()),
             event_handlers: Mutex::new(HashMap::new()),
             gcode: Mutex::new(GCodeDispatcher::new()),
@@ -214,6 +218,22 @@ impl Printer {
             .read()
             .expect("printer config lock poisoned")
             .clone()
+    }
+
+    /// Read a config option and record that the host consumed it.
+    pub fn config_value(&self, section: &str, option: &str) -> Option<String> {
+        let config = self.config()?;
+        self.config_usage
+            .get(&config, section, option)
+            .map(str::to_owned)
+    }
+
+    /// Return options that have not yet been consumed by host components.
+    pub fn unused_config_options(&self) -> Vec<UnusedConfigOption> {
+        let Some(config) = self.config() else {
+            return Vec::new();
+        };
+        self.config_usage.unused_options(&config)
     }
 
     pub fn load_components(
@@ -568,6 +588,22 @@ mod tests {
         );
     }
 
+
+    #[test]
+    fn printer_tracks_consumed_config_options() {
+        let printer = Printer::new();
+        printer.install_config(
+            ConfigDocument::parse("[printer]\nkinematics=cartesian\nmax_velocity=300\n")
+                .unwrap(),
+        );
+        assert_eq!(
+            printer.config_value("printer", "KINEMATICS").as_deref(),
+            Some("cartesian")
+        );
+        let unused = printer.unused_config_options();
+        assert_eq!(unused.len(), 1);
+        assert_eq!(unused[0].option, "max_velocity");
+    }
 
     #[test]
     fn config_file_loading_uses_recursive_config_loader() {
