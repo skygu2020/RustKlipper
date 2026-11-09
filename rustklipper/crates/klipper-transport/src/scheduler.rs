@@ -311,16 +311,19 @@ mod tests {
     #[test]
     fn cancelling_notify_removes_upcoming_and_ready_commands_only() {
         let mut scheduler = CommandScheduler::new();
-        scheduler.enqueue(1, ScheduledCommand::new(vec![1], 0, 1).with_notify(10)).unwrap();
+        scheduler.enqueue(1, ScheduledCommand::new(vec![1], 100, 1).with_notify(10)).unwrap();
         scheduler.enqueue(1, ScheduledCommand::new(vec![2], 0, 2).with_notify(11)).unwrap();
+        scheduler.enqueue(1, ScheduledCommand::new(vec![3], 0, 3).with_notify(12)).unwrap();
         scheduler.promote_ready(0);
 
-        assert!(scheduler.cancel_notify(10));
+        assert_eq!(scheduler.queued_counts(), (1, 2));
+        assert!(scheduler.cancel_notify(10)); // upcoming
+        assert!(scheduler.cancel_notify(11)); // ready
         assert!(!scheduler.cancel_notify(10));
         assert_eq!(scheduler.queued_counts(), (0, 1));
         let frame = scheduler.build_frame().unwrap().unwrap();
-        assert_eq!(frame.notify_ids, vec![11]);
-        assert_eq!(frame.bytes.len() > 0, true);
+        assert_eq!(frame.notify_ids, vec![12]);
+        assert!(!frame.bytes.is_empty());
     }
 
     #[test]
