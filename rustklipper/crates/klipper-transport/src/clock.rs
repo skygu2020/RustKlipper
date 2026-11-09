@@ -362,6 +362,16 @@ mod tests {
         assert!(second > first && second > 1.0);
     }
     #[test]
+    fn uart_reservations_serialize_frames_without_recounting_driver_bytes() {
+        let mut uart = UartTiming::new(115_200).unwrap();
+        let first = uart.reserve_transmission(1.0, 0, 10);
+        let second = uart.reserve_transmission(1.001, 0, 10);
+        let frame_time = uart.seconds_for_bytes(10);
+        assert!((first - (1.0 + frame_time)).abs() < 1e-12);
+        assert!((second - (first + frame_time)).abs() < 1e-12);
+    }
+
+    #[test]
     fn clock_sync_converges_on_constant_frequency() {
         let mut sync = ClockSync::new(1_000_000.0, 1.0, 1_000_000).unwrap();
         for i in 1..=12 {
