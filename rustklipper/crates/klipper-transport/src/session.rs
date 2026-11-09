@@ -1213,7 +1213,7 @@ impl ReliableSerialSession {
     /// build_frame() retains raw req_clock ordering. `pending_bytes` is
     /// the encoded data already accumulated in this poll's outgoing batch.
     fn command_send_due(
-        &self,
+        &mut self,
         eventtime: f64,
         idle_time: f64,
         pending_bytes: usize,
@@ -1226,7 +1226,7 @@ impl ReliableSerialSession {
         };
 
         Ok(should_send_command(
-            &self.scheduler, update, timing, eventtime, idle_time, pending_bytes,
+            &mut self.scheduler, update, timing, eventtime, idle_time, pending_bytes,
         )?)
     }
 
