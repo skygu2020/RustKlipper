@@ -155,4 +155,36 @@ mod tests {
         assert_eq!(transaction.attempt_acked(1.0), AckRetryDecision::Exhausted);
         assert!(transaction.is_complete());
     }
+    #[test]
+    fn response_before_first_ack_prevents_any_application_retry() {
+        let mut transaction = RetryTransaction::default();
+        transaction.response_received();
+
+        assert_eq!(transaction.attempt_acked(1.0), AckRetryDecision::Complete);
+        assert_eq!(transaction.retry_deadline(), None);
+        assert!(!transaction.take_due_retry(100.0));
+    }
+
+    #[test]
+    fn zero_retry_policy_exhausts_after_the_initial_attempt_ack() {
+        let mut transaction = RetryTransaction::new(0, Duration::from_millis(10));
+
+        assert_eq!(transaction.attempt_acked(4.0), AckRetryDecision::Exhausted);
+        assert!(transaction.is_complete());
+        assert_eq!(transaction.retries_remaining(), 0);
+        assert_eq!(transaction.retry_deadline(), None);
+        assert!(!transaction.take_due_retry(100.0));
+    }
+
+    #[test]
+    fn response_during_retry_delay_cancels_the_due_attempt() {
+        let mut transaction = RetryTransaction::default();
+        assert_eq!(transaction.attempt_acked(5.0), AckRetryDecision::RetryAfter(Duration::from_millis(10)));
+
+        transaction.response_received();
+
+        assert!(!transaction.take_due_retry(5.010));
+        assert_eq!(transaction.attempt_acked(5.010), AckRetryDecision::Complete);
+    }
+
 }
