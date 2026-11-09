@@ -420,6 +420,7 @@ mod tests {
                 panic!("mux handler panic");
             })
             .unwrap();
+        dispatcher.set_ready();
         let outcome = dispatcher
             .process_line("SET_HEATER HEATER=hotend", true)
             .unwrap();
