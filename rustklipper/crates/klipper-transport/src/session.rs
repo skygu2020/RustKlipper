@@ -451,12 +451,33 @@ impl ReliableSerialSession {
             if delivered {
                 if let Some(mut transaction) = self.retry_transactions.remove(&pending.transaction_id) {
                     transaction.transaction.response_received();
+                    self.cancel_retry_attempts(pending.transaction_id);
                 }
             }
             delivered
         } else { false };
         events.push(SessionEvent::DecodedMessage { name: name.clone(), params, receive_time });
         events.push(SessionEvent::ResponseRouted { name, oid, matched });
+    }
+
+    /// Retire all per-attempt scheduler and ACK state after a logical
+    /// response transaction completes or its waiter is abandoned. Commands
+    /// already written cannot be recalled, but queued attempts must not leak
+    /// into a later poll and stale ACKs must not schedule further retries.
+    fn cancel_retry_attempts(&mut self, transaction_id: u64) {
+        let notify_ids: Vec<u64> = self.response_requests.iter()
+            .filter_map(|(notify_id, id)| (*id == transaction_id).then_some(*notify_id))
+            .chain(self.retry_attempts.iter()
+                .filter_map(|(notify_id, id)| (*id == transaction_id).then_some(*notify_id)))
+            .collect();
+
+        for notify_id in notify_ids {
+            self.scheduler.cancel_notify(notify_id);
+            self.ack_tracker.cancel_notify(notify_id);
+            self.response_ack_receivers.remove(&notify_id);
+            self.response_requests.remove(&notify_id);
+            self.retry_attempts.remove(&notify_id);
+        }
     }
 
     fn prune_abandoned_response_requests(&mut self) {
@@ -479,21 +500,8 @@ impl ReliableSerialSession {
             self.retry_transactions.remove(&id);
             self.sent_response_requests.retain(|pending| pending.transaction_id != id);
 
-            // Cancel every attempt still waiting in a scheduler queue or for
-            // an ACK. A command already packed into a frame cannot be unsent,
-            // but its ACK bookkeeping can still be safely retired.
-            let notify_ids: Vec<u64> = self.response_requests.iter()
-                .filter_map(|(notify_id, transaction_id)| (*transaction_id == id).then_some(*notify_id))
-                .chain(self.retry_attempts.iter()
-                    .filter_map(|(notify_id, transaction_id)| (*transaction_id == id).then_some(*notify_id)))
-                .collect();
-            for notify_id in notify_ids {
-                self.scheduler.cancel_notify(notify_id);
-                self.ack_tracker.cancel_notify(notify_id);
-                self.response_ack_receivers.remove(&notify_id);
-                self.response_requests.remove(&notify_id);
-                self.retry_attempts.remove(&notify_id);
-            }
+            // Cancel queued attempts and retire their ACK bookkeeping.
+            self.cancel_retry_attempts(id);
         }
         self.sent_response_requests.retain(|pending| {
             self.retry_transactions.contains_key(&pending.transaction_id)
