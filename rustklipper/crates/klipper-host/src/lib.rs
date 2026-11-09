@@ -420,7 +420,7 @@ mod tests {
             "klipper-host-config-{}.cfg",
             std::process::id()
         ));
-        std::fs::write(&path, "[printer]\\nkinematics: cartesian\\n").unwrap();
+        std::fs::write(&path, "[printer]\nkinematics: cartesian\n").unwrap();
 
         let printer = Printer::new();
         printer.load_config_file(&path).unwrap();
@@ -439,7 +439,7 @@ mod tests {
         let printer = Printer::new();
         printer.install_config(
             ConfigDocument::parse(
-                "[fan]\\npin: PA0\\n[heater_generic hotend]\\nmax_temp: 250\\n",
+                "[fan]\npin: PA0\n[heater_generic hotend]\nmax_temp: 250\n",
             )
             .unwrap(),
         );
@@ -461,7 +461,7 @@ mod tests {
             .unwrap();
 
         let loaded = printer.load_components(&registry).unwrap();
-        assert_eq!(loaded, vec!["fan", "heater_generic hotend"]);
+        assert_eq!(loaded, vec!["fan".to_owned(), "heater_generic hotend".to_owned()]);
         assert_eq!(&*printer.lookup_object::<String>("fan_pin").unwrap(), "PA0");
         assert_eq!(
             &*printer.lookup_object::<String>("hotend_max_temp").unwrap(),
