@@ -273,8 +273,9 @@ impl UartTiming {
 
     /// Reserve UART time including bytes already pending in the host driver.
     pub fn reserve_transmission(&mut self, now: f64, pending_bytes: usize, frame_bytes: usize) -> f64 {
-        let start = now.max(self.idle_until);
-        self.idle_until = start + self.seconds_for_bytes(pending_bytes + frame_bytes);
+        let pending_until = now + self.seconds_for_bytes(pending_bytes);
+        let start = now.max(self.idle_until).max(pending_until);
+        self.idle_until = start + self.seconds_for_bytes(frame_bytes);
         self.idle_until
     }
 }
@@ -390,6 +391,15 @@ mod tests {
         let second = uart.reserve_transmission(1.001, 5, 10);
         assert!(second > first && second > 1.0);
     }
+    #[test]
+    fn uart_reservation_does_not_double_count_observed_pending_bytes() {
+        let mut uart = UartTiming::new(100_000).unwrap();
+        let first = uart.reserve_transmission(1.0, 0, 100);
+        let second = uart.reserve_transmission(1.001, 100, 10);
+        assert!((first - 1.01).abs() < 1e-12);
+        assert!((second - 1.012).abs() < 1e-12);
+    }
+
     #[test]
     fn uart_reservations_serialize_frames_without_recounting_driver_bytes() {
         let mut uart = UartTiming::new(115_200).unwrap();
