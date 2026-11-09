@@ -1513,6 +1513,24 @@ mod tests {
     }
 
     #[test]
+    fn gcode_script_continues_after_a_handler_panic() {
+        let printer = Printer::new();
+        printer
+            .register_gcode_command("M999", true, None, |_| {
+                panic!("first command panics");
+            })
+            .unwrap();
+        printer
+            .register_gcode_command("M998", true, None, |_| Ok(Vec::new()))
+            .unwrap();
+
+        let outcomes = printer.process_gcode_script("M999\nM998");
+        assert_eq!(outcomes.len(), 2);
+        assert!(matches!(outcomes[0].events.first(), Some(DispatchEvent::Error(_))));
+        assert!(outcomes[1].handler_found);
+    }
+
+    #[test]
     fn gcode_script_dispatches_without_per_line_acknowledgements() {
         let printer = Printer::new();
         printer
