@@ -230,35 +230,6 @@ impl RetransmitState {
         Ok(self.retransmit_all(now))
     }
 
-    /// Return a retransmission when the oldest outstanding frame's RTO expires.
-    /// Timeout backoff doubles the current RTO, capped at five seconds.
-    pub fn poll_timeout(&mut self, now: f64)
-        -> Result<Option<Retransmission>, RetransmitError>
-    {
-        self.validate_time(now)?;
-        if self.outstanding.is_empty() { return Ok(None); }
-        if self.retransmit_deadline.is_some_and(|deadline| now < deadline) {
-            return Ok(None);
-        }
-        self.rto = (self.rto * 2.0).min(MAX_RTO_SECONDS);
-        self.retransmit_deadline = Some(now + self.rto);
-        self.rtt_sample_seq = None;
-        Ok(self.retransmit_front(now))
-    }
-
-    fn retransmit_front(&mut self, now: f64) -> Option<Retransmission> {
-        let entry = self.outstanding.front_mut()?;
-        entry.frame.transmissions = entry.frame.transmissions.saturating_add(1);
-        entry.retransmitted = true;
-        entry.last_sent_at = now;
-        Some(Retransmission {
-            sequence: entry.frame.sequence,
-            bytes: entry.frame.bytes.clone(),
-            transmissions: entry.frame.transmissions,
-            timeout_seconds: self.rto,
-        })
-    }
-
     fn update_rtt(&mut self, sample: f64) {
         match (self.srtt, self.rttvar) {
             (None, _) => {
@@ -328,13 +299,14 @@ mod tests {
     fn timeout_retransmits_oldest_and_exponentially_backs_off() {
         let mut state = RetransmitState::new();
         state.track_sent(7, vec![0xaa], 0.0).unwrap();
-        assert!(state.poll_timeout(0.249).unwrap().is_none());
-        let retry = state.poll_timeout(0.250).unwrap().unwrap();
-        assert_eq!(retry.sequence, 7);
-        assert_eq!(retry.transmissions, 2);
+        assert!(state.poll_timeout_all(0.249).unwrap().is_empty());
+        let retry = state.poll_timeout_all(0.250).unwrap();
+        assert_eq!(retry.len(), 1);
+        assert_eq!(retry[0].sequence, 7);
+        assert_eq!(retry[0].transmissions, 2);
         assert_eq!(state.rto(), 0.5);
-        assert!(state.poll_timeout(0.749).unwrap().is_none());
-        assert!(state.poll_timeout(0.750).unwrap().is_some());
+        assert!(state.poll_timeout_all(0.749).unwrap().is_empty());
+        assert_eq!(state.poll_timeout_all(0.750).unwrap().len(), 1);
         assert_eq!(state.rto(), 1.0);
     }
 
@@ -342,7 +314,7 @@ mod tests {
     fn retransmitted_frame_does_not_contribute_rtt_sample_karns_rule() {
         let mut state = RetransmitState::new();
         state.track_sent(1, vec![1], 0.0).unwrap();
-        state.poll_timeout(0.250).unwrap();
+        state.poll_timeout_all(0.250).unwrap();
         let ack = state.acknowledge(2, 0.300).unwrap();
         assert_eq!(ack.rtt_sample_seconds, None);
         assert_eq!(state.srtt(), None);

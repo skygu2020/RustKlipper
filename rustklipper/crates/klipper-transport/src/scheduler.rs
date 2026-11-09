@@ -113,19 +113,12 @@ impl CommandScheduler {
         min_stalled
     }
 
-    /// Pack a frame without registering retransmission timing. Prefer build_frame_at
-    /// in a live transport so every transmitted frame is tracked for retry.
+    /// Pack a frame. Call mark_frame_sent only after the UART write succeeds.
     pub fn build_frame(&mut self) -> Result<Option<ScheduledFrame>, ScheduleError> {
-        self.build_frame_inner(None)
+        self.build_frame_inner()
     }
 
-    /// Pack and register a frame at the caller's monotonic host timestamp (seconds).
-    pub fn build_frame_at(&mut self, now: f64) -> Result<Option<ScheduledFrame>, ScheduleError> {
-        self.retransmit.check_time(now)?;
-        self.build_frame_inner(Some(now))
-    }
-
-    fn build_frame_inner(&mut self, now: Option<f64>) -> Result<Option<ScheduledFrame>, ScheduleError> {
+    fn build_frame_inner(&mut self) -> Result<Option<ScheduledFrame>, ScheduleError> {
         if self.send_sequence.saturating_sub(self.receive_sequence) >= MAX_PENDING_BLOCKS
             && self.receive_sequence != u64::MAX
         { return Ok(None); }
@@ -152,13 +145,19 @@ impl CommandScheduler {
         if payload.is_empty() { return Ok(None); }
         let seq = self.send_sequence;
         let bytes = encode_frame((seq as u8) & 0x0f, &payload)?;
-        if let Some(now) = now {
-            self.retransmit.track_sent(seq, bytes.clone(), now)?;
-        }
         self.send_sequence = self.send_sequence.wrapping_add(1);
         self.need_ack_bytes = self.need_ack_bytes.saturating_add(bytes.len());
         self.sent_blocks.push_back((seq, bytes.len()));
         Ok(Some(ScheduledFrame { send_sequence: seq, bytes, notify_ids }))
+    }
+
+    /// Register a frame after its complete encoded bytes were successfully
+    /// written to the serial device. This starts its retransmission timer.
+    pub fn mark_frame_sent(
+        &mut self, frame: &ScheduledFrame, sent_at: f64,
+    ) -> Result<(), ScheduleError> {
+        self.retransmit.track_sent(frame.send_sequence, frame.bytes.clone(), sent_at)?;
+        Ok(())
     }
 
     /// Update state after the caller extends an MCU four-bit sequence.
@@ -227,13 +226,6 @@ impl CommandScheduler {
         -> Result<Vec<Retransmission>, ScheduleError>
     {
         Ok(self.retransmit.poll_timeout_all(now)?)
-    }
-
-    /// Poll the oldest unacknowledged frame's retransmission deadline.
-    pub fn poll_retransmission(&mut self, now: f64)
-        -> Result<Option<Retransmission>, ScheduleError>
-    {
-        Ok(self.retransmit.poll_timeout(now)?)
     }
 
     pub fn retransmit_state(&self) -> &RetransmitState { &self.retransmit }
@@ -315,13 +307,15 @@ mod tests {
         let mut s = CommandScheduler::new();
         s.enqueue(1, ScheduledCommand::new(vec![0x31, 0x32], 0, 1)).unwrap();
         s.promote_ready(0);
-        let frame = s.build_frame_at(10.0).unwrap().unwrap();
+        let frame = s.build_frame().unwrap().unwrap();
+        s.mark_frame_sent(&frame, 10.0).unwrap();
         assert_eq!(s.retransmit_state().outstanding_len(), 1);
-        assert!(s.poll_retransmission(10.249).unwrap().is_none());
-        let retry = s.poll_retransmission(10.250).unwrap().unwrap();
-        assert_eq!(retry.sequence, frame.send_sequence);
-        assert_eq!(retry.bytes, frame.bytes);
-        assert_eq!(retry.transmissions, 2);
+        assert!(s.poll_retransmissions(10.249).unwrap().is_empty());
+        let retries = s.poll_retransmissions(10.250).unwrap();
+        assert_eq!(retries.len(), 1);
+        assert_eq!(retries[0].sequence, frame.send_sequence);
+        assert_eq!(retries[0].bytes, frame.bytes);
+        assert_eq!(retries[0].transmissions, 2);
         let ack = s.acknowledge_at(frame.send_sequence + 1, frame.bytes.len(), 10.300).unwrap();
         assert_eq!(ack.acknowledged.len(), 1);
         assert!(s.retransmit_state().is_empty());
@@ -332,7 +326,7 @@ mod tests {
         let mut s = CommandScheduler::new();
         s.enqueue(1, ScheduledCommand::new(vec![0x41], 0, 1)).unwrap();
         s.promote_ready(0);
-        let sent = s.build_frame_at(1.0).unwrap().unwrap();
+        let sent = s.build_frame().unwrap().unwrap();
         let ack = Frame { sequence: 1, payload: vec![] };
         let first = s.handle_received_frame(&ack, 1.01).unwrap();
         assert!(first.retransmissions.is_empty());
