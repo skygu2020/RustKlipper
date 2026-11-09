@@ -335,8 +335,8 @@ impl ReliableSerialSession {
         self.started.elapsed().as_secs_f64()
     }
 
-    /// Next host-monotonic deadline at which scheduled command state should
-    /// be polled again. None means there is no clock-gated pending command.
+    /// Next host-monotonic deadline at which a queued command may be sent.
+    /// Use next_poll_deadline() to include the retransmission timer as well.
     pub fn next_send_at(&self) -> Option<f64> {
         self.next_send_at
     }
