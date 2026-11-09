@@ -496,7 +496,7 @@ impl ReliableSerialSession {
         self.clock_calibration_remaining -= 1;
         if self.clock_calibration_remaining == 0 {
             self.startup_stage = McuStartupStage::ClockReady;
-            self.next_periodic_clock_at = Some(response.receive_time + PERIODIC_CLOCK_INTERVAL_SECONDS);
+            self.next_periodic_clock_at = Some(response.receive_time);
             return Ok(None);
         }
         self.startup_stage = McuStartupStage::CalibratingClock {
@@ -545,9 +545,6 @@ impl ReliableSerialSession {
         };
         if result.is_ok() {
             self.periodic_clock_in_flight = false;
-            self.next_periodic_clock_at = Some(
-                response.receive_time + PERIODIC_CLOCK_INTERVAL_SECONDS,
-            );
         }
         result
     }
@@ -571,7 +568,6 @@ impl ReliableSerialSession {
         }
         let waiter = self.request_get_clock(queue_id)?;
         self.periodic_clock_in_flight = true;
-        self.next_periodic_clock_at = None;
         Ok(waiter)
     }
 
@@ -595,10 +591,20 @@ impl ReliableSerialSession {
             Some(due_at) => due_at,
             None => return Ok(None),
         };
-        if self.now() < due_at {
+        let now = self.now();
+        if now < due_at {
             return Ok(None);
         }
-        self.request_periodic_clock(queue_id).map(Some)
+        // Keep the reactor-style cadence anchored to the previous scheduled
+        // event, not to response latency. Skip missed ticks rather than
+        // issuing a burst of catch-up queries after a slow response.
+        let mut next_due = due_at + PERIODIC_CLOCK_INTERVAL_SECONDS;
+        while next_due <= now {
+            next_due += PERIODIC_CLOCK_INTERVAL_SECONDS;
+        }
+        let waiter = self.request_periodic_clock(queue_id)?;
+        self.next_periodic_clock_at = Some(next_due);
+        Ok(Some(waiter))
     }
 
     /// Next periodic query deadline in this session's monotonic time base.
