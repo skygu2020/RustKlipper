@@ -6,7 +6,7 @@
 //! layers.
 
 pub mod reactor;
-pub use reactor::{Completion, Reactor, ReactorError, TaskId};
+pub use reactor::{Completion, CompletionCancelled, Reactor, ReactorError, TaskId};
 
 use std::any::Any;
 use std::collections::HashMap;
