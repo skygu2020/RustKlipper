@@ -1745,6 +1745,16 @@ mod command_send_timing_tests {
     }
 
     #[test]
+    fn empty_scheduler_has_no_command_wakeup_deadline() {
+        let mut scheduler = CommandScheduler::new();
+        let timing = UartTiming::new(115_200).unwrap();
+        assert_eq!(
+            command_send_deadline(&mut scheduler, update(), timing, 10.0, 10.0, 0).unwrap(),
+            None,
+        );
+    }
+
+    #[test]
     fn background_command_uses_255ms_wakeup_offset() {
         let mut scheduler = CommandScheduler::new();
         scheduler.enqueue(1, ScheduledCommand::new(
