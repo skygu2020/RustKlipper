@@ -182,8 +182,18 @@ impl ReliableSerialSession {
         }
     }
 
-    fn now(&self) -> f64 {
+    /// Return this session's monotonic host timestamp in seconds.
+    ///
+    /// Use this clock for every timestamp passed to `ClockSync::new`,
+    /// `ClockSync::update`, and `ReliableSerialSession::apply_clock_update`.
+    /// Its origin is the construction of this session (not the system boot
+    /// time), matching the timestamps emitted in `SessionEvent`.
+    pub fn monotonic_time(&self) -> f64 {
         self.started.elapsed().as_secs_f64()
+    }
+
+    fn now(&self) -> f64 {
+        self.monotonic_time()
     }
 
     fn ensure_connected(&self) -> Result<(), SessionError> {
