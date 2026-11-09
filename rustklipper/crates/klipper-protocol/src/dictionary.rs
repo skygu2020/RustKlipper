@@ -4,7 +4,7 @@ use std::io::Read;
 use flate2::read::ZlibDecoder;
 use serde_json::Value;
 use thiserror::Error;
-use crate::{decode_i32, encode_i32, ProtocolError};
+use crate::{decode_i32, encode_i32, encode_u32, ProtocolError};
 
 #[derive(Debug, Error)]
 pub enum DictionaryError {
@@ -133,7 +133,27 @@ impl IdentifyDictionary {
             let raw=if let Some(en)=&p.enumeration{
                 let key=v.as_str().ok_or_else(||invalid_param(&p.name,"expected enum name"))?;
                 *self.enums.get(en).and_then(|e|e.names.get(key)).ok_or_else(||invalid_param(&p.name,&format!("unknown enum value {key}")))?
-            }else{i32::try_from(v.as_i64().ok_or_else(||invalid_param(&p.name,"expected integer"))?).map_err(|_|invalid_param(&p.name,"integer outside i32"))?};
+            }else{
+                let n=v.as_i64().ok_or_else(||invalid_param(&p.name,"expected integer"))?;
+                match p.kind {
+                    ParamKind::U32 => {
+                        let n=u32::try_from(n).map_err(|_|invalid_param(&p.name,"expected u32 range"))?;
+                        encode_u32(n,&mut out);
+                        continue;
+                    }
+                    ParamKind::U16 => {
+                        let n=u16::try_from(n).map_err(|_|invalid_param(&p.name,"expected u16 range"))?;
+                        i32::from(n)
+                    }
+                    ParamKind::Byte => {
+                        let n=u8::try_from(n).map_err(|_|invalid_param(&p.name,"expected byte range"))?;
+                        i32::from(n)
+                    }
+                    ParamKind::I16 => i16::try_from(n).map_err(|_|invalid_param(&p.name,"expected i16 range"))? as i32,
+                    ParamKind::I32 => i32::try_from(n).map_err(|_|invalid_param(&p.name,"expected i32 range"))?,
+                    _ => return Err(invalid_param(&p.name,"unexpected parameter kind")),
+                }
+            };
             encode_i32(raw,&mut out);
         } Ok(out)
     }
@@ -185,6 +205,6 @@ mod tests{
         let v=serde_json::json!({"PIN0":[10,3]});let e=Enumeration::from_json(&v,"pin").unwrap();assert_eq!(e.names["PIN2"],12);
     }
     #[test] fn exact_command_format_checked(){
-        let d=IdentifyDictionary::from_json(JSON.as_bytes()).unwrap();assert_eq!(d.verify_command_format("set_pin oid=%c pin=%u value=%c mode=%mode").unwrap(),17);assert!(d.verify_command_format("set_pin oid=%u").is_err());
+        let d=IdentifyDictionary::from_json(JSON.as_bytes()).unwrap();assert_eq!(d.verify_command_format("set_pin oid=%c pin=%u value=%c mode=%c").unwrap(),17);assert!(d.verify_command_format("set_pin oid=%u").is_err());
     }
 }
