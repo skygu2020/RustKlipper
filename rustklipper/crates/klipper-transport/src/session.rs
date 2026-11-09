@@ -1223,7 +1223,9 @@ impl ReliableSerialSession {
     pub fn promote_ready(&mut self, ack_clock: u64) -> Result<Option<u64>, SessionError> {
         self.ensure_connected()?;
         self.last_ack_clock = advance_ack_clock(self.last_ack_clock, ack_clock);
-        Ok(self.scheduler.promote_ready(self.last_ack_clock))
+        let promoted = self.scheduler.promote_ready(self.last_ack_clock);
+        self.kick_scheduler();
+        Ok(promoted)
     }
 
     /// Apply a ClockSync update to the scheduler using the conservative queue
