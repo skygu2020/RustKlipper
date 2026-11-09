@@ -383,6 +383,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn command_handler_errors_are_returned_as_dispatch_events() {
+        let mut dispatcher = GCodeDispatcher::new();
+        dispatcher
+            .register_command("M999", true, None, |_| {
+                Err(GCodeError::MalformedCommand {
+                    line: "invalid command arguments".to_owned(),
+                })
+            })
+            .unwrap();
+        let outcome = dispatcher.process_line("M999", true).unwrap();
+        assert!(outcome.handler_found);
+        assert!(matches!(outcome.events.first(), Some(DispatchEvent::Error(_))));
+        assert!(outcome.acknowledged);
+    }
+
+    #[test]
     fn command_handler_panics_are_reported_as_dispatch_errors() {
         let mut dispatcher = GCodeDispatcher::new();
         dispatcher
