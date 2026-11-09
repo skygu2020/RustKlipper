@@ -272,6 +272,66 @@ impl ReliableSerialSession {
         Ok(waiter)
     }
 
+    /// Queue Klipper's initial uptime query after identify has installed the dictionary.
+    /// The returned response carries the actual UART-write timestamp used to
+    /// establish the initial host/MCU clock correspondence.
+    pub fn request_get_uptime(&mut self, queue_id: u64) -> Result<ResponseWaiter, SessionError> {
+        self.ensure_connected()?;
+        let dictionary = self.dictionary.as_ref().ok_or_else(|| {
+            SessionError::Dictionary(DictionaryError::UnknownMessage("get_uptime".into()))
+        })?;
+        let command = dictionary.encode_command("get_uptime", &BTreeMap::new())?;
+        let waiter = self.response_router.register("uptime", None);
+        self.enqueue_request(
+            queue_id,
+            ScheduledCommand::new(command, 0, crate::BACKGROUND_PRIORITY_CLOCK),
+            "uptime",
+            None,
+        )?;
+        self.scheduler.promote_ready(self.last_ack_clock);
+        Ok(waiter)
+    }
+
+    /// Build ClockSync from the response to request_get_uptime().
+    ///
+    /// This deliberately uses Response.sent_time (the timestamp of the
+    /// successful request write), not receive_time or the time the caller
+    /// happens to consume the waiter. CLOCK_FREQ comes from the identified MCU.
+    pub fn clock_sync_from_uptime_response(
+        &self,
+        response: Response,
+    ) -> Result<crate::ClockSync, SessionError> {
+        self.ensure_connected()?;
+        if response.name != "uptime" || response.oid.is_some() {
+            return Err(SessionError::Dictionary(DictionaryError::InvalidField {
+                field: "uptime".into(),
+                reason: format!("expected unscoped uptime response, received {} with oid {:?}", response.name, response.oid),
+            }));
+        }
+        let dictionary = self.dictionary.as_ref().ok_or_else(|| {
+            SessionError::Dictionary(DictionaryError::UnknownMessage("uptime".into()))
+        })?;
+        let frequency = dictionary.constant_f64("CLOCK_FREQ").ok_or_else(|| {
+            DictionaryError::InvalidField {
+                field: "CLOCK_FREQ".into(),
+                reason: "missing or invalid MCU clock frequency".into(),
+            }
+        })?;
+        let high = response.params.get("high").and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or_else(|| DictionaryError::InvalidField {
+                field: "uptime.high".into(),
+                reason: "missing or out-of-range u32 value".into(),
+            })?;
+        let clock = response.params.get("clock").and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or_else(|| DictionaryError::InvalidField {
+                field: "uptime.clock".into(),
+                reason: "missing or out-of-range u32 value".into(),
+            })?;
+        Ok(crate::ClockSync::from_uptime(frequency, response.sent_time, high, clock)?)
+    }
+
     /// Start the first half of the two-query MCU configuration handshake.
     pub fn begin_config_handshake(
         &mut self,
