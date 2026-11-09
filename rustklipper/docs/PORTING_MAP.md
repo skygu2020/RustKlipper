@@ -43,3 +43,20 @@ but the Rust host will not implement those paths.
   It is not yet a drop-in replacement for Klipper's C `serialqueue`.
 - Linux and Windows GitHub Actions tests are configured under
   `.github/workflows/rustklipper.yml`.
+
+
+### Serial transaction primitives (initial implementation)
+
+- `response::ResponseRouter`: FIFO waiters keyed by message name and optional
+  object id; response dispatch preserves sent/receive timestamps and decoded
+  parameter values.
+- `ack::AckTracker`: notification IDs, extended four-bit sequence handling,
+  and the serialqueue wake-sequence rule (empty ACK: receive sequence minus
+  one; data response: minus two).
+- `retry::RetryPolicy`: the upstream `SerialRetryCommand` retry schedule:
+  five retries after the initial attempt, with exponential delays beginning
+  at 10ms.
+- These are tested primitives, not yet connected to a live serial background
+  reader or a clock-aware scheduler. In particular, the transport does not
+  yet implement retransmission of lost wire frames, RTT/RTO estimation,
+  receive-window limits, command batching, or minclock/reqclock scheduling.
