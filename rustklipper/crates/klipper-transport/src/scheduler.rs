@@ -305,6 +305,9 @@ impl CommandScheduler {
     }
 
     pub fn retransmit_state(&self) -> &RetransmitState { &self.retransmit }
+    pub fn next_retransmit_at(&self) -> Option<f64> {
+        self.retransmit.retransmit_deadline()
+    }
     pub(crate) fn retransmit_state_mut(&mut self) -> &mut RetransmitState { &mut self.retransmit }
 
     /// Total bytes currently eligible for frame construction.
