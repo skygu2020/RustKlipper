@@ -430,15 +430,16 @@ mod tests {
     }
 
     #[test]
-    fn retransmit_window_deadline_uses_oldest_frame_completion() {
+    fn retransmit_window_deadline_uses_oldest_frame_and_sync_wire_time() {
         let mut state = RetransmitState::new();
+        state.set_wire_time_per_byte(0.001).unwrap();
         state.track_sent(1, vec![1], 0.0).unwrap();
         state.track_sent(2, vec![2], 0.001).unwrap();
-        let retries = state.poll_timeout_all(0.250).unwrap();
+        let retries = state.poll_timeout_all(0.251).unwrap();
         assert_eq!(retries.len(), 2);
 
         state.mark_retransmission_sent(1, 0.260).unwrap();
-        let first_deadline = 0.260 + state.rto();
+        let first_deadline = 0.260 + state.rto() + 0.002;
         state.mark_retransmission_sent(2, 0.300).unwrap();
 
         assert!(state.poll_timeout_all(first_deadline - 0.000_001).unwrap().is_empty());
