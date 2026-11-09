@@ -1326,6 +1326,13 @@ mod tests {
     }
 
     #[test]
+    fn printer_owns_an_empty_mcu_registry_at_startup() {
+        let printer = Printer::new();
+        assert!(printer.mcus().session_names().is_empty());
+        assert_eq!(printer.mcus().poll_all(), McuPollBatch::default());
+    }
+
+    #[test]
     fn printer_state_category_tracks_lifecycle() {
         let printer = Printer::new();
         assert_eq!(printer.state_category(), PrinterStateCategory::Startup);
