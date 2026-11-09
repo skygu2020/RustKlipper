@@ -524,6 +524,34 @@ impl<'a> TrackedConfigSection<'a> {
         Ok(values)
     }
 
+    pub fn get_f64_list(
+        &self,
+        option: &str,
+        separator: char,
+        count: Option<usize>,
+    ) -> Result<Vec<f64>, ConfigValueError> {
+        self.get_list(option, separator, count)?
+            .into_iter()
+            .map(|value| {
+                let parsed: f64 = value.parse().map_err(|_| ConfigValueError::Invalid {
+                    section: self.section.name.clone(),
+                    option: option.to_owned(),
+                    value: value.clone(),
+                    expected: "float list",
+                })?;
+                if !parsed.is_finite() {
+                    return Err(ConfigValueError::Invalid {
+                        section: self.section.name.clone(),
+                        option: option.to_owned(),
+                        value,
+                        expected: "finite float list",
+                    });
+                }
+                Ok(parsed)
+            })
+            .collect()
+    }
+
     pub fn get_i64_list(
         &self,
         option: &str,
@@ -912,6 +940,17 @@ mod tests {
         let unused = tracker.unused_options(&config);
         assert_eq!(unused.len(), 1);
         assert_eq!(unused[0].option, "control");
+    }
+
+    #[test]
+    fn tracked_section_parses_finite_float_lists() {
+        let config = ConfigDocument::parse("[bed_mesh]\nmesh_min=0.5, 1.25\n").unwrap();
+        let tracker = ConfigUsageTracker::new();
+        let section = tracker.track_section(config.section("bed_mesh").unwrap());
+        assert_eq!(
+            section.get_f64_list("mesh_min", ',', Some(2)).unwrap(),
+            vec![0.5, 1.25]
+        );
     }
 
     #[test]
