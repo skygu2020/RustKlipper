@@ -867,19 +867,18 @@ impl Printer {
     }
 
     pub fn remove_object(&self, name: &str) -> bool {
-        let removed = self
-            .objects
+        self.objects
             .write()
             .expect("printer object lock poisoned")
             .remove(name)
-            .is_some();
-        if removed {
-            self.loaded_components
-                .lock()
-                .expect("loaded component lock poisoned")
-                .remove(name);
-        }
-        removed
+            .is_some()
+    }
+
+    pub fn unload_component(&self, section: &str) -> bool {
+        self.loaded_components
+            .lock()
+            .expect("loaded component lock poisoned")
+            .remove(section)
     }
 
     pub fn object_names(&self) -> Vec<String> {
@@ -1641,6 +1640,7 @@ mod tests {
             .unwrap();
         printer.load_components(&registry).unwrap();
         assert!(printer.remove_object("fan"));
+        assert!(printer.unload_component("fan"));
         assert_eq!(printer.load_components(&registry).unwrap(), vec!["fan"]);
         assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
