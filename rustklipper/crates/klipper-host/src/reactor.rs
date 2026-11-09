@@ -216,6 +216,22 @@ mod tests {
         assert_eq!(reactor.pending_tasks(), 0);
     }
 
+
+    #[test]
+    fn callbacks_with_the_same_deadline_run_in_registration_order() {
+        let reactor = Reactor::new();
+        let order = std::sync::Arc::new(Mutex::new(Vec::new()));
+        for value in 0..3 {
+            let order = order.clone();
+            reactor.register_callback(move || {
+                order.lock().unwrap().push(value);
+            });
+        }
+
+        reactor.run_due(Instant::now() + Duration::from_secs(1));
+        assert_eq!(*order.lock().unwrap(), vec![0, 1, 2]);
+    }
+
     #[test]
     fn delayed_timer_waits_until_its_deadline() {
         let reactor = Reactor::new();
