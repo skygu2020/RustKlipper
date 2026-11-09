@@ -8,3 +8,4 @@ description = "Klipper host configuration parsing and validation"
 
 [dependencies]
 thiserror.workspace = true
+glob = "0.3"
