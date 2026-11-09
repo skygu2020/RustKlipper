@@ -197,8 +197,22 @@ impl FrameDecoder {
                     frames.push(Frame { sequence, payload });
                 }
                 Err(_) => {
-                    self.buffer.remove(0);
-                    self.discarded_bytes += 1;
+                    // If the declared frame boundary is followed by a complete
+                    // valid frame, discard the corrupt candidate as one unit.
+                    // Otherwise advance one byte and continue searching.
+                    let next = len;
+                    let next_len = self.buffer.get(next).copied().unwrap_or(0) as usize;
+                    let next_end = next.saturating_add(next_len);
+                    if (MESSAGE_MIN..=MESSAGE_MAX).contains(&next_len)
+                        && next_end <= self.buffer.len()
+                        && check_frame(&self.buffer[next..next_end]).is_ok()
+                    {
+                        self.buffer.drain(..len);
+                        self.discarded_bytes += len as u64;
+                    } else {
+                        self.buffer.remove(0);
+                        self.discarded_bytes += 1;
+                    }
                     self.rejected_frames += 1;
                 }
             }
