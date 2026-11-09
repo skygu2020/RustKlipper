@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/klipper-protocol",
     "crates/klipper-transport",
+    "crates/klipper-config",
 ]
 
 [workspace.package]
