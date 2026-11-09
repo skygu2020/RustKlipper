@@ -64,16 +64,16 @@ pub struct ConfigDocument {
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ConfigParseError {
-    #[error("{source}:{line}: option appears before the first section")]
-    MissingSection { source: String, line: usize },
-    #[error("{source}:{line}: malformed section header")]
-    InvalidSection { source: String, line: usize },
-    #[error("{source}:{line}: expected key=value option")]
-    InvalidOption { source: String, line: usize },
-    #[error("{source}:{line}: empty option name")]
-    EmptyOption { source: String, line: usize },
-    #[error("{source}:{line}: continuation without an option")]
-    OrphanContinuation { source: String, line: usize },
+    #[error("{filename}:{line}: option appears before the first section")]
+    MissingSection { filename: String, line: usize },
+    #[error("{filename}:{line}: malformed section header")]
+    InvalidSection { filename: String, line: usize },
+    #[error("{filename}:{line}: expected key=value option")]
+    InvalidOption { filename: String, line: usize },
+    #[error("{filename}:{line}: empty option name")]
+    EmptyOption { filename: String, line: usize },
+    #[error("{filename}:{line}: continuation without an option")]
+    OrphanContinuation { filename: String, line: usize },
 }
 
 impl ConfigDocument {
@@ -100,11 +100,11 @@ impl ConfigDocument {
 
             if trimmed.starts_with('[') {
                 let Some(name) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')) else {
-                    return Err(ConfigParseError::InvalidSection { source, line: line_no });
+                    return Err(ConfigParseError::InvalidSection { filename: source, line: line_no });
                 };
                 let name = name.trim();
                 if name.is_empty() || name.contains('[') || name.contains(']') {
-                    return Err(ConfigParseError::InvalidSection { source, line: line_no });
+                    return Err(ConfigParseError::InvalidSection { filename: source, line: line_no });
                 }
                 let key = name.to_owned();
                 let index = if let Some(&index) = document.index.get(&key) {
@@ -122,14 +122,14 @@ impl ConfigDocument {
             }
 
             let section_index = current.ok_or_else(|| ConfigParseError::MissingSection {
-                source: source.clone(), line: line_no,
+                filename: source.clone(), line: line_no,
             })?;
 
             let indent = line.len() - line.trim_start().len();
             if last_option_indent.is_some_and(|previous| indent > previous) {
                 let Some((option_section, option_index)) = last_option else {
                     return Err(ConfigParseError::OrphanContinuation {
-                        source: source.clone(), line: line_no,
+                        filename: source.clone(), line: line_no,
                     });
                 };
                 if option_section == section_index {
@@ -147,7 +147,7 @@ impl ConfigDocument {
             let option_text = strip_inline_comment(trimmed);
             let Some(delimiter) = option_text.find(|ch| ch == '=' || ch == ':') else {
                 return Err(ConfigParseError::InvalidOption {
-                    source: source.clone(), line: line_no,
+                    filename: source.clone(), line: line_no,
                 });
             };
             let name = &option_text[..delimiter];
@@ -155,7 +155,7 @@ impl ConfigDocument {
             let name = name.trim();
             if name.is_empty() {
                 return Err(ConfigParseError::EmptyOption {
-                    source: source.clone(), line: line_no,
+                    filename: source.clone(), line: line_no,
                 });
             }
             let value = value.trim().to_owned();
