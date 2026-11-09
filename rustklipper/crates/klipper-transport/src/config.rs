@@ -64,6 +64,8 @@ pub enum ConfigError {
     OidExhausted,
     #[error("OID name already allocated: {0}")]
     DuplicateOidName(String),
+    #[error("invalid MCU configuration handshake stage: expected {expected}, got {actual}")]
+    UnexpectedHandshakeStage { expected: &'static str, actual: &'static str },
     #[error(transparent)]
     Dictionary(#[from] klipper_protocol::DictionaryError),
 }
@@ -187,6 +189,77 @@ impl McuConfigPlan {
         reported.checked_sub(reserved_slots).ok_or(ConfigError::TooFewMoves {
             reported, reserved: reserved_slots,
         })
+    }
+}
+
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigHandshakeStage {
+    AwaitingInitialResponse,
+    AwaitingFinalResponse,
+    Complete { usable_move_count: u16 },
+}
+
+/// Stateful two-query MCU configuration handshake.
+///
+/// The caller sends get_config, passes its decoded response to
+/// handle_initial_response, enqueues the returned action, then sends get_config
+/// again and passes that response to handle_final_response.
+#[derive(Debug, Clone)]
+pub struct McuConfigHandshake {
+    plan: McuConfigPlan,
+    reserved_move_slots: u16,
+    stage: ConfigHandshakeStage,
+}
+
+impl McuConfigHandshake {
+    pub fn new(plan: McuConfigPlan, reserved_move_slots: u16) -> Self {
+        Self {
+            plan,
+            reserved_move_slots,
+            stage: ConfigHandshakeStage::AwaitingInitialResponse,
+        }
+    }
+
+    pub fn stage(&self) -> ConfigHandshakeStage { self.stage }
+
+    pub fn handle_initial_response(
+        &mut self,
+        response: ConfigResponse,
+        firmware_restart: bool,
+    ) -> Result<ConfigAction, ConfigError> {
+        if self.stage != ConfigHandshakeStage::AwaitingInitialResponse {
+            return Err(ConfigError::UnexpectedHandshakeStage {
+                expected: "awaiting initial get_config response",
+                actual: self.stage_name(),
+            });
+        }
+        let action = self.plan.initial_action(response, firmware_restart)?;
+        self.stage = ConfigHandshakeStage::AwaitingFinalResponse;
+        Ok(action)
+    }
+
+    pub fn handle_final_response(
+        &mut self,
+        response: ConfigResponse,
+    ) -> Result<u16, ConfigError> {
+        if self.stage != ConfigHandshakeStage::AwaitingFinalResponse {
+            return Err(ConfigError::UnexpectedHandshakeStage {
+                expected: "awaiting final get_config response",
+                actual: self.stage_name(),
+            });
+        }
+        let usable = self.plan.usable_move_count(response, self.reserved_move_slots)?;
+        self.stage = ConfigHandshakeStage::Complete { usable_move_count: usable };
+        Ok(usable)
+    }
+
+    fn stage_name(&self) -> &'static str {
+        match self.stage {
+            ConfigHandshakeStage::AwaitingInitialResponse => "awaiting initial response",
+            ConfigHandshakeStage::AwaitingFinalResponse => "awaiting final response",
+            ConfigHandshakeStage::Complete { .. } => "complete",
+        }
     }
 }
 
@@ -325,6 +398,34 @@ mod tests {
         assert!(matches!(
             plan.usable_move_count(response(1, 123, 0, 4), 8),
             Err(ConfigError::TooFewMoves { reported: 4, reserved: 8 })
+        ));
+    }
+
+
+    #[test]
+    fn config_handshake_requires_initial_then_final_query_responses() {
+        let plan = McuConfigPlan::new(
+            &dictionary(), 0, &[], vec![], vec![], vec![],
+        ).unwrap();
+        let mut handshake = McuConfigHandshake::new(plan.clone(), 8);
+        assert_eq!(handshake.stage(), ConfigHandshakeStage::AwaitingInitialResponse);
+        let action = handshake.handle_initial_response(
+            response(0, 0, 0, 64), false,
+        ).unwrap();
+        assert!(matches!(action, ConfigAction::SendFullConfig { .. }));
+        assert_eq!(handshake.stage(), ConfigHandshakeStage::AwaitingFinalResponse);
+        assert!(matches!(
+            handshake.handle_initial_response(response(0, 0, 0, 64), false),
+            Err(ConfigError::UnexpectedHandshakeStage { .. })
+        ));
+        assert_eq!(handshake.handle_final_response(response(1, 0, 0, 64)).unwrap(), 56);
+        assert_eq!(
+            handshake.stage(),
+            ConfigHandshakeStage::Complete { usable_move_count: 56 },
+        );
+        assert!(matches!(
+            handshake.handle_final_response(response(1, 0, 0, 64)),
+            Err(ConfigError::UnexpectedHandshakeStage { .. })
         ));
     }
 
