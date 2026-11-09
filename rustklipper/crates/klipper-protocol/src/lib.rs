@@ -64,7 +64,19 @@ pub fn encode_i32(value: i32, out: &mut Vec<u8>) {
 
 /// Encode an unsigned 32-bit value using the same wire representation.
 pub fn encode_u32(value: u32, out: &mut Vec<u8>) {
-    encode_i32(value as i32, out);
+    if value >= 0x0c00_0000 {
+        out.push(((value >> 28) as u8 & 0x7f) | 0x80);
+    }
+    if value >= 0x0018_0000 {
+        out.push(((value >> 21) as u8 & 0x7f) | 0x80);
+    }
+    if value >= 0x0000_3000 {
+        out.push(((value >> 14) as u8 & 0x7f) | 0x80);
+    }
+    if value >= 0x0000_0060 {
+        out.push(((value >> 7) as u8 & 0x7f) | 0x80);
+    }
+    out.push((value & 0x7f) as u8);
 }
 
 /// Decode a signed Klipper base-128 integer, returning (value, bytes_used).
