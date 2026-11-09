@@ -69,6 +69,20 @@ pub struct ClockSync {
 }
 
 impl ClockSync {
+    /// Initialize clock tracking from Klipper's `uptime high=%u clock=%u`
+    /// response. `sent_time` is the host timestamp recorded when the
+    /// `get_uptime` request was transmitted; `high` and `clock` form the
+    /// upper and lower 32-bit halves of the MCU's 64-bit clock.
+    pub fn from_uptime(
+        mcu_frequency: f64,
+        sent_time: f64,
+        high: u32,
+        clock: u32,
+    ) -> Result<Self, ClockSyncError> {
+        let initial_clock = (u64::from(high) << 32) | u64::from(clock);
+        Self::new(mcu_frequency, sent_time, initial_clock)
+    }
+
     pub fn new(mcu_frequency: f64, initial_host_time: f64, initial_clock: u64)
         -> Result<Self, ClockSyncError>
     {
@@ -230,6 +244,14 @@ impl UartTiming {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn uptime_initialization_combines_high_and_low_clock_words() {
+        let sync = ClockSync::from_uptime(16_000_000.0, 12.5, 3, 0x89ab_cdef).unwrap();
+        assert_eq!(sync.last_clock(), 0x0000_0003_89ab_cdef);
+        assert_eq!(sync.estimate().sample_time, 12.5);
+        assert_eq!(sync.estimate().clock, 0x0000_0003_89ab_cdef as f64);
+    }
+
     #[test]
     fn clock32_wrap_extends_forward() {
         let sync = ClockSync::new(1_000_000.0, 10.0, 0xffff_fff0).unwrap();
