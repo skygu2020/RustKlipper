@@ -163,7 +163,32 @@ impl FrameDecoder {
                 self.rejected_frames += 1;
                 continue;
             }
-            if self.buffer.len() < len { break; }
+            if self.buffer.len() < len {
+                // A corrupt length byte can look plausible and make the head
+                // candidate wait forever. Prefer a later complete CRC-valid
+                // frame if one is already present in the buffered stream.
+                let mut recovered = None;
+                for offset in 1..=self.buffer.len().saturating_sub(MESSAGE_MIN) {
+                    let candidate_len = self.buffer[offset] as usize;
+                    if !(MESSAGE_MIN..=MESSAGE_MAX).contains(&candidate_len) {
+                        continue;
+                    }
+                    let end = offset + candidate_len;
+                    if end <= self.buffer.len()
+                        && check_frame(&self.buffer[offset..end]).is_ok()
+                    {
+                        recovered = Some(offset);
+                        break;
+                    }
+                }
+                if let Some(discard) = recovered {
+                    self.buffer.drain(..discard);
+                    self.discarded_bytes += discard as u64;
+                    self.rejected_frames += 1;
+                    continue;
+                }
+                break;
+            }
             match check_frame(&self.buffer[..len]) {
                 Ok(_) => {
                     let sequence = self.buffer[1] & MESSAGE_SEQ_MASK;
