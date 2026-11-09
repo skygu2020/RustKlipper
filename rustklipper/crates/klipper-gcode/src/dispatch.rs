@@ -206,7 +206,10 @@ impl GCodeDispatcher {
             }
         }
 
-        if !need_ack {\n            events.retain(|event| !matches!(event, DispatchEvent::Ack(_)));\n        }\n        let explicit_ack = events.iter().any(|event| matches!(event, DispatchEvent::Ack(_)));
+        if !need_ack {
+            events.retain(|event| !matches!(event, DispatchEvent::Ack(_)));
+        }
+        let explicit_ack = events.iter().any(|event| matches!(event, DispatchEvent::Ack(_)));
         if need_ack && !explicit_ack {
             events.push(DispatchEvent::Ack(None));
         }
@@ -260,7 +263,7 @@ mod tests {
         assert!(dispatcher.process_line("M115", true).unwrap().handler_found);
         let blocked = dispatcher.process_line("G1 X1", true).unwrap();
         assert!(!blocked.handler_found);
-        assert!(matches!(blocked.events[0], DispatchEvent::Error(_)));
+        assert!(matches!(blocked.events.first(), Some(DispatchEvent::Error(_))));
 
         dispatcher.set_ready();
         assert!(dispatcher.process_line("G1 X1", true).unwrap().handler_found);
@@ -299,6 +302,50 @@ mod tests {
             result.events,
             vec![DispatchEvent::Ack(Some("FIRMWARE_NAME:Klipper".to_owned()))]
         );
+    }
+
+
+    #[test]
+    fn pre_ready_temperature_query_only_acks_when_ack_is_requested() {
+        let dispatcher = GCodeDispatcher::new();
+        let interactive = dispatcher.process_line("M105", true).unwrap();
+        assert_eq!(
+            interactive.events,
+            vec![DispatchEvent::Ack(Some("T:0".to_owned()))]
+        );
+
+        let script = dispatcher.process_line("M105", false).unwrap();
+        assert!(script.events.is_empty());
+        assert!(!script.acknowledged);
+    }
+
+    #[test]
+    fn rejects_invalid_and_duplicate_registration_names() {
+        let mut dispatcher = GCodeDispatcher::new();
+        assert!(dispatcher
+            .register_command("bad_name", false, None, |_| Ok(Vec::new()))
+            .is_err());
+        dispatcher
+            .register_command("STATUS", true, None, |_| Ok(Vec::new()))
+            .unwrap();
+        assert!(dispatcher
+            .register_command("STATUS", false, None, |_| Ok(Vec::new()))
+            .is_err());
+    }
+
+    #[test]
+    fn script_dispatch_does_not_emit_automatic_ack() {
+        let mut dispatcher = GCodeDispatcher::new();
+        dispatcher.set_ready();
+        dispatcher
+            .register_command("G1", false, None, |_| {
+                Ok(vec![DispatchEvent::Info("move queued".to_owned())])
+            })
+            .unwrap();
+
+        let result = dispatcher.process_line("G1 X10", false).unwrap();
+        assert_eq!(result.events, vec![DispatchEvent::Info("move queued".to_owned())]);
+        assert!(!result.acknowledged);
     }
 
     #[test]
