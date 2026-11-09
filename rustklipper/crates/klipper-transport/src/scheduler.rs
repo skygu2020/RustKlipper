@@ -351,6 +351,25 @@ mod tests {
     }
 
     #[test]
+    fn background_priority_uses_the_current_clock_instead_of_max_u64() {
+        let mut scheduler = CommandScheduler::new();
+        scheduler.set_background_priority_clock(100);
+        scheduler.enqueue(1, ScheduledCommand::new(
+            vec![0xA1], 0, BACKGROUND_PRIORITY_CLOCK,
+        )).unwrap();
+        scheduler.enqueue(2, ScheduledCommand::new(
+            vec![0xB2], 0, 500,
+        )).unwrap();
+        scheduler.promote_ready(0);
+
+        let frame = scheduler.build_frame().unwrap().unwrap();
+        let mut decoder = FrameDecoder::new();
+        let parsed = decoder.push(&frame.bytes);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].payload, vec![0xA1, 0xB2]);
+    }
+
+    #[test]
     fn frame_contains_notifications_for_commands_packed_into_it() {
         let mut s = CommandScheduler::new();
         s.enqueue(4, ScheduledCommand::new(vec![0x22], 0, 1).with_notify(99)).unwrap();
