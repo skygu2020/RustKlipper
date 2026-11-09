@@ -1372,12 +1372,18 @@ mod tests {
     #[test]
     fn config_reinstall_clears_component_gcode_handlers() {
         let printer = Printer::new();
-        printer
-            .gcode_dispatcher()
-            .lock()
-            .unwrap()
-            .register_command("M105", true, None, |_| Ok(Vec::new()))
-            .unwrap();
+        {
+            let dispatcher = printer.gcode_dispatcher();
+            let mut dispatcher = dispatcher.lock().unwrap();
+            dispatcher
+                .register_command("M105", true, None, |_| Ok(Vec::new()))
+                .unwrap();
+            dispatcher
+                .register_mux_command("SET_HEATER", "HEATER", Some("hotend"), None, |_| {
+                    Ok(Vec::new())
+                })
+                .unwrap();
+        }
         assert!(printer
             .gcode_dispatcher()
             .lock()
