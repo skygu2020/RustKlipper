@@ -623,32 +623,41 @@ impl Printer {
         &self,
         registry: &ComponentRegistry,
     ) -> Result<Vec<String>, ComponentError> {
-        if self.connection_initialized.load(Ordering::SeqCst)
-            || self.state() != PrinterState::Configuring
+        if self.state() != PrinterState::Configuring
+            || self
+                .connection_initialized
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_err()
         {
             return Ok(Vec::new());
         }
-        let loaded = self.load_components(registry)?;
-        self.validate_config()?;
-        let identify_panics = self.send_event(PrinterEvent::McuIdentify);
-        if identify_panics > 0 {
-            return Err(ComponentError::EventHandlerPanicked {
-                event: PrinterEventKind::McuIdentify,
-                count: identify_panics,
-            });
+
+        let result = (|| {
+            let loaded = self.load_components(registry)?;
+            self.validate_config()?;
+            let identify_panics = self.send_event(PrinterEvent::McuIdentify);
+            if identify_panics > 0 {
+                return Err(ComponentError::EventHandlerPanicked {
+                    event: PrinterEventKind::McuIdentify,
+                    count: identify_panics,
+                });
+            }
+            if self.state() != PrinterState::Configuring {
+                return Ok(loaded);
+            }
+            let connect_panics = self.send_event(PrinterEvent::Connect);
+            if connect_panics > 0 {
+                return Err(ComponentError::EventHandlerPanicked {
+                    event: PrinterEventKind::Connect,
+                    count: connect_panics,
+                });
+            }
+            Ok(loaded)
+        })();
+        if result.is_err() {
+            self.connection_initialized.store(false, Ordering::SeqCst);
         }
-        if self.state() != PrinterState::Configuring {
-            return Ok(loaded);
-        }
-        let connect_panics = self.send_event(PrinterEvent::Connect);
-        if connect_panics > 0 {
-            return Err(ComponentError::EventHandlerPanicked {
-                event: PrinterEventKind::Connect,
-                count: connect_panics,
-            });
-        }
-        self.connection_initialized.store(true, Ordering::SeqCst);
-        Ok(loaded)
+        result
     }
 
     pub fn set_configuring(&self) {
