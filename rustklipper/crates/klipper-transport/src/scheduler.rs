@@ -390,6 +390,32 @@ mod tests {
     }
 
     #[test]
+    fn data_ack_keeps_last_frame_charged_until_empty_ack_releases_window() {
+        let mut s = CommandScheduler::new();
+        s.enqueue(1, ScheduledCommand::new(vec![0x41], 0, 1)).unwrap();
+        s.promote_ready(0);
+        let first = s.build_frame().unwrap().unwrap();
+
+        s.enqueue(1, ScheduledCommand::new(vec![0x42], 0, 2)).unwrap();
+        s.promote_ready(0);
+        let second = s.build_frame().unwrap().unwrap();
+
+        s.set_receive_window(MESSAGE_MAX + second.bytes.len());
+
+        let data_ack = Frame { sequence: 2, payload: vec![0x55] };
+        s.handle_received_frame(&data_ack, 0.01).unwrap();
+        assert_eq!(s.need_ack_bytes, second.bytes.len());
+        assert_eq!(s.last_ack_bytes, first.bytes.len());
+        assert_eq!(s.last_ack_sequence, 0);
+        assert!(s.build_frame().unwrap().is_none());
+
+        let empty_ack = Frame { sequence: 2, payload: Vec::new() };
+        s.handle_received_frame(&empty_ack, 0.02).unwrap();
+        assert_eq!(s.last_ack_sequence, 2);
+        assert!(s.build_frame().unwrap().is_some());
+    }
+
+    #[test]
     fn pending_block_limit_stops_additional_transmission() {
         let mut s = CommandScheduler::new();
         s.send_sequence = 13; s.receive_sequence = 1;
