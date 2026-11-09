@@ -1038,6 +1038,16 @@ impl Printer {
             .unregister_command(command)
     }
 
+    /// Return the sorted command names currently active for this printer state.
+    pub fn registered_gcode_commands(&self) -> Vec<String> {
+        self.gcode_dispatcher().registered_commands()
+    }
+
+    /// Return help text for commands currently active for this printer state.
+    pub fn gcode_help(&self) -> HashMap<String, String> {
+        self.gcode_dispatcher().command_help()
+    }
+
     /// Access the cooperative host event scheduler.
     pub fn reactor(&self) -> &Reactor {
         &self.reactor
@@ -1458,6 +1468,57 @@ mod tests {
         assert!(!printer.process_gcode_line("M105", true).unwrap().handler_found);
         printer.disconnect();
         assert!(!printer.process_gcode_line("M105", true).unwrap().handler_found);
+    }
+
+    #[test]
+    fn printer_gcode_introspection_tracks_active_state_and_help() {
+        let printer = Printer::new();
+        printer
+            .register_gcode_command("STATUS", true, Some("Report status"), |_| {
+                Ok(Vec::new())
+            })
+            .unwrap();
+        printer
+            .register_gcode_command("MOVE", false, Some("Move toolhead"), |_| {
+                Ok(Vec::new())
+            })
+            .unwrap();
+
+        assert_eq!(printer.registered_gcode_commands(), vec!["STATUS"]);
+        assert_eq!(
+            printer.gcode_help(),
+            HashMap::from([("STATUS".to_owned(), "Report status".to_owned())])
+        );
+
+        printer.set_ready();
+        assert_eq!(
+            printer.registered_gcode_commands(),
+            vec!["MOVE".to_owned(), "STATUS".to_owned()]
+        );
+        assert_eq!(printer.gcode_help().len(), 2);
+    }
+
+    #[test]
+    fn gcode_handler_can_register_another_command_without_reentrant_locking() {
+        let printer = Arc::new(Printer::new());
+        let callback_printer = printer.clone();
+        printer
+            .register_gcode_command("REGISTER_NEXT", true, None, move |_| {
+                callback_printer
+                    .register_gcode_command("NEXT_COMMAND", false, None, |_| {
+                        Ok(vec![DispatchEvent::Info("next".to_owned())])
+                    })
+                    .map_err(|error| error)?;
+                Ok(vec![DispatchEvent::Info("registered".to_owned())])
+            })
+            .unwrap();
+
+        printer.set_ready();
+        let first = printer.process_gcode_line("REGISTER_NEXT", true).unwrap();
+        assert_eq!(first.events[0], DispatchEvent::Info("registered".to_owned()));
+
+        let second = printer.process_gcode_line("NEXT_COMMAND", true).unwrap();
+        assert_eq!(second.events[0], DispatchEvent::Info("next".to_owned()));
     }
 
     #[test]
