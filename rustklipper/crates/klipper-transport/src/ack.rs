@@ -72,7 +72,7 @@ impl AckTracker {
     pub fn pending_count(&self) -> usize { self.pending.len() }
     pub fn contains_notify(&self, id: u64) -> bool { self.pending.contains_key(&id) }
     pub fn extend_wire_sequence(previous: u64, wire_sequence: u8) -> u64 {
-        let delta = (u64::from(wire_sequence & 0x0f) - (previous & 0x0f)) & 0x0f;
+        let delta = u64::from(wire_sequence & 0x0f).wrapping_sub(previous & 0x0f) & 0x0f;
         previous + delta
     }
 }

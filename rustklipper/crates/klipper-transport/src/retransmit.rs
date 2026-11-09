@@ -386,7 +386,9 @@ mod tests {
         assert_eq!(retries.len(), 2);
         assert_eq!(retries[0].bytes, vec![0x10]);
         assert_eq!(retries[1].bytes, vec![0x11]);
-        assert!(state.handle_empty_ack(10, 12, 0.012).unwrap().is_empty());
+        // The MCU advances its cumulative ACK before a later duplicate ACK
+        // can signal a NAK for the remaining frame.
+        assert_eq!(state.acknowledge(11, 0.012).unwrap().acknowledged.len(), 1);
         assert!(state.handle_empty_ack(11, 12, 0.013).unwrap().is_empty());
         let next_nak = state.handle_empty_ack(11, 12, 0.014).unwrap();
         assert_eq!(next_nak.len(), 1);

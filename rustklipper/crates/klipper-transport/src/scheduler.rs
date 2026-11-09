@@ -343,6 +343,7 @@ mod tests {
         s.enqueue(1, ScheduledCommand::new(vec![0x41], 0, 1)).unwrap();
         s.promote_ready(0);
         let sent = s.build_frame().unwrap().unwrap();
+        s.mark_frame_sent(&sent, 1.0).unwrap();
         let ack = Frame { sequence: 1, payload: vec![] };
         let first = s.handle_received_frame(&ack, 1.01).unwrap();
         assert!(first.retransmissions.is_empty());
