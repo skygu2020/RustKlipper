@@ -6,7 +6,7 @@ use serde_json::Value;
 use klipper_protocol::{Frame, IdentifyChunk, IdentifyDictionary};
 
 use crate::{
-    AckTracker, CommandScheduler, Response, ResponseRouter, ResponseWaiter, ScheduleError, ScheduledCommand, TransportError, UsbSerialTransport,
+    AckEvent, AckTracker, CommandScheduler, Response, ResponseRouter, ResponseWaiter, ScheduleError, ScheduledCommand, TransportError, UsbSerialTransport,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -31,6 +31,7 @@ pub enum SessionEvent {
     },
     AckedNotify { id: u64, sent_time: f64, receive_time: f64 },
     ResponseRouted { name: String, oid: Option<u32>, matched: bool },
+    Output { message: String, receive_time: f64 },
     Sent {
         sequence: u64,
         bytes: usize,
@@ -57,6 +58,7 @@ pub struct ReliableSerialSession {
     ack_tracker: AckTracker,
     response_router: ResponseRouter,
     response_requests: HashMap<u64, (String, Option<u32>)>,
+    response_ack_receivers: HashMap<u64, std::sync::mpsc::Receiver<AckEvent>>,
     sent_response_requests: VecDeque<PendingResponseSend>,
     next_response_notify_id: u64,
     dictionary: Option<IdentifyDictionary>,
@@ -76,6 +78,7 @@ impl ReliableSerialSession {
             ack_tracker: AckTracker::new(),
             response_router: ResponseRouter::new(),
             response_requests: HashMap::new(),
+            response_ack_receivers: HashMap::new(),
             sent_response_requests: VecDeque::new(),
             next_response_notify_id: u64::MAX,
             dictionary: None,
@@ -139,11 +142,13 @@ impl ReliableSerialSession {
         self.next_response_notify_id = candidate.wrapping_sub(1);
         // Reserve the ID in AckTracker too, preventing collisions with public
         // notifications and ensuring it is bound only after a successful write.
-        let _ack_receiver = self.ack_tracker.register_notify(candidate)
+        let ack_receiver = self.ack_tracker.register_notify(candidate)
             .ok_or(SessionError::Notification(candidate))?;
+        self.response_ack_receivers.insert(candidate, ack_receiver);
         command.notify_id = Some(candidate);
         if let Err(error) = self.scheduler.enqueue(queue_id, command) {
             self.ack_tracker.cancel_notify(candidate);
+            self.response_ack_receivers.remove(&candidate);
             return Err(SessionError::Schedule(error));
         }
         self.response_requests.insert(candidate, (name, oid));
@@ -157,6 +162,11 @@ impl ReliableSerialSession {
         receive_time: f64,
         events: &mut Vec<SessionEvent>,
     ) {
+        if name == "#output" {
+            let message = params.get("#msg").and_then(Value::as_str).unwrap_or("").to_owned();
+            events.push(SessionEvent::Output { message, receive_time });
+            return;
+        }
         let oid = params.get("oid").and_then(|value| {
             value.as_u64().and_then(|v| u32::try_from(v).ok())
                 .or_else(|| value.as_i64().and_then(|v| u32::try_from(v).ok()))
@@ -252,6 +262,11 @@ impl ReliableSerialSession {
             for (id, ack) in self.ack_tracker.acknowledge_events(
                 result.receive_sequence, result.has_payload, 0.0, receive_time,
             ) {
+                if let Some(receiver) = self.response_ack_receivers.remove(&id) {
+                    // Consume the same event through the waiter channel as well;
+                    // retaining the receiver prevents a detached internal notify.
+                    let _ = receiver.try_recv();
+                }
                 events.push(SessionEvent::AckedNotify {
                     id, sent_time: ack.sent_time, receive_time: ack.receive_time,
                 });
