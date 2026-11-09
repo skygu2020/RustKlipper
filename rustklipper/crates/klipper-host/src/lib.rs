@@ -1596,19 +1596,24 @@ mod tests {
         let observed = calls.clone();
         let mut registry = ComponentRegistry::new();
         registry
-            .register("fan", move |_, section| {
+            .register("fan", move |printer, section| {
                 observed.fetch_add(1, Ordering::SeqCst);
-                assert_eq!(section.get("pin"), Some("PA0"));
-                Ok(())
+                let pin = section.get("pin").unwrap().to_owned();
+                printer
+                    .register_object("fan", pin)
+                    .map_err(|error| error.to_string())
             })
             .unwrap();
 
         assert_eq!(printer.load_components(&registry).unwrap(), vec!["fan"]);
+        assert_eq!(&*printer.lookup_object::<String>("fan").unwrap(), "PA0");
         assert!(printer.load_components(&registry).unwrap().is_empty());
         assert_eq!(calls.load(Ordering::SeqCst), 1);
 
         printer.install_config(ConfigDocument::parse("[fan]\npin=PB0\n").unwrap());
+        assert!(!printer.has_object("fan"));
         assert_eq!(printer.load_components(&registry).unwrap(), vec!["fan"]);
+        assert_eq!(&*printer.lookup_object::<String>("fan").unwrap(), "PB0");
         assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
