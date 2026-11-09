@@ -1404,6 +1404,23 @@ mod tests {
 
 
     #[test]
+    fn printer_blocking_reactor_dispatch_accepts_cross_thread_callbacks() {
+        let printer = Arc::new(Printer::new());
+        let dispatcher_printer = printer.clone();
+        let dispatcher = std::thread::spawn(move || {
+            dispatcher_printer.run_reactor(std::time::Duration::from_secs(2))
+        });
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let called = Arc::new(AtomicUsize::new(0));
+        let observed = called.clone();
+        printer.reactor().register_async_callback(move |_| {
+            observed.fetch_add(1, Ordering::SeqCst);
+        });
+        assert_eq!(dispatcher.join().unwrap(), 1);
+        assert_eq!(called.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn printer_exposes_reactor_for_host_callbacks() {
         let printer = Printer::new();
         let called = Arc::new(AtomicUsize::new(0));
