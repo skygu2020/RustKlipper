@@ -367,7 +367,16 @@ impl ReliableSerialSession {
 
     /// Earliest known host deadline for either a scheduled command or a retry.
     pub fn next_poll_deadline(&self) -> Option<f64> {
-        earliest_deadline(self.next_send_at, self.scheduler.next_retransmit_at())
+        let command_or_retry =
+            earliest_deadline(self.next_send_at, self.scheduler.next_retransmit_at());
+        let periodic = if self.periodic_clock_queue_id.is_some()
+            && !self.periodic_clock_in_flight
+        {
+            self.next_periodic_clock_at
+        } else {
+            None
+        };
+        earliest_deadline(command_or_retry, periodic)
     }
 
     fn kick_scheduler(&mut self) {
