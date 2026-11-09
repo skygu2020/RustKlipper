@@ -32,8 +32,9 @@ the compatibility reference and is not modified by the Rust implementation.
   parameter access, readiness-aware command dispatch, mux commands, script
   execution, and ACK/response events.
 - `klipper-host`: guarded printer lifecycle and ordered identify/connect
-  events, typed object registry and module-group lookup, tracked configuration
-  reads and pre-connect validation, reactor-driven callbacks, and G-code readiness.
+  events, typed object registry and module-group lookup, dependency-aware and
+  lazy component loading, tracked configuration reads, pre-connect validation,
+  reactor callbacks, and G-code handler reset on configuration reload.
 
 The upstream Python implementation remains the behavioral oracle during the
 staged port. Run the Rust workspace tests from this directory with:
