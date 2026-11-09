@@ -197,6 +197,18 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_to_missing_waiter_does_not_consume_another_registration() {
+        let router = ResponseRouter::new();
+        let live = router.register("status", Some(6));
+        let claimed_id = router.claim_oldest("status", Some(6)).unwrap();
+        assert!(router.cancel_waiter("status", Some(6), claimed_id));
+
+        assert!(!router.dispatch_to_waiter(response("status", Some(6)), claimed_id));
+        assert_eq!(router.pending_count("status", Some(6)), 0);
+        assert_eq!(live.wait(Duration::from_millis(1)), Err(WaitError::Disconnected));
+    }
+
+    #[test]
     fn response_router_keeps_fifo_waiters_for_same_name_and_oid() {
         let router = ResponseRouter::new();
         let first = router.register("config", Some(7));
