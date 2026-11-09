@@ -96,7 +96,7 @@ impl PinResolver {
 
         while pos + 5 <= bytes.len() {
             let has_prefix = bytes[pos] == b' ' || bytes[pos] == b'_';
-            if has_prefix && bytes.get(pos + 1..pos + 5) == Some(b"pin=") {
+            if has_prefix && bytes.get(pos + 1..pos + 5) == Some(&b"pin="[..]) {
                 let name_start = pos + 5;
                 let end = bytes[name_start..].iter()
                     .position(|b| *b == b' ')
@@ -154,6 +154,16 @@ mod tests {
             resolver.update_command("config_spi oid=2 cs_pin=LED").unwrap(),
             "config_spi oid=2 cs_pin=PA1",
         );
+    }
+
+
+    #[test]
+    fn pin_rewrite_matches_only_prefixed_pin_fields() {
+        let mut resolver = PinResolver::new(true);
+        resolver.alias_pin("LED", "PA1").unwrap();
+        assert_eq!(resolver.update_command("pin=LED").unwrap(), "pin=LED");
+        assert_eq!(resolver.update_command("config_a pin=LED").unwrap(), "config_a pin=PA1");
+        assert_eq!(resolver.update_command("config_b cs_pin=LED").unwrap(), "config_b cs_pin=PA1");
     }
 
     #[test]
