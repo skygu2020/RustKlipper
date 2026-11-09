@@ -187,6 +187,7 @@ fn command_send_deadline(
 }
 
 /// Boolean convenience wrapper used by deterministic scheduling tests.
+#[cfg(test)]
 fn should_send_command(
     scheduler: &mut CommandScheduler,
     update: ClockUpdate,
