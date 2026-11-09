@@ -383,6 +383,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn command_handler_panics_are_reported_as_dispatch_errors() {
+        let mut dispatcher = GCodeDispatcher::new();
+        dispatcher
+            .register_command("M999", true, None, |_| -> Result<Vec<DispatchEvent>, GCodeError> {
+                panic!("handler panic");
+            })
+            .unwrap();
+        let outcome = dispatcher.process_line("M999", true).unwrap();
+        assert!(outcome.handler_found);
+        assert!(matches!(outcome.events.first(), Some(DispatchEvent::Error(_))));
+        assert!(outcome.acknowledged);
+    }
+
+    #[test]
+    fn mux_handler_panics_are_reported_as_dispatch_errors() {
+        let mut dispatcher = GCodeDispatcher::new();
+        dispatcher
+            .register_mux_command("SET_HEATER", "HEATER", Some("hotend"), None, |_| {
+                panic!("mux handler panic");
+            })
+            .unwrap();
+        let outcome = dispatcher
+            .process_line("SET_HEATER HEATER=hotend", true)
+            .unwrap();
+        assert!(outcome.handler_found);
+        assert!(matches!(outcome.events.first(), Some(DispatchEvent::Error(_))));
+    }
+
+    #[test]
     fn dispatcher_snapshot_keeps_handlers_alive_after_live_unregister() {
         let mut dispatcher = GCodeDispatcher::new();
         dispatcher
