@@ -418,6 +418,25 @@ mod tests {
     }
 
     #[test]
+    fn cumulative_data_ack_charges_only_the_last_acked_block() {
+        let mut s = CommandScheduler::new();
+        let mut frames = Vec::new();
+        for value in 0x51..=0x53 {
+            s.enqueue(1, ScheduledCommand::new(vec![value], 0, value as u64)).unwrap();
+            s.promote_ready(0);
+            frames.push(s.build_frame().unwrap().unwrap());
+        }
+
+        let data_ack = Frame { sequence: 3, payload: vec![0x55] };
+        s.handle_received_frame(&data_ack, 0.01).unwrap();
+        assert_eq!(s.need_ack_bytes, frames[2].bytes.len());
+        assert_eq!(s.last_ack_bytes, frames[1].bytes.len());
+        assert_eq!(s.last_ack_sequence, 0);
+        assert_eq!(s.sent_blocks.len(), 1);
+        assert_eq!(s.sent_blocks.front().unwrap().0, frames[2].send_sequence);
+    }
+
+    #[test]
     fn pending_block_limit_stops_additional_transmission() {
         let mut s = CommandScheduler::new();
         s.send_sequence = 13; s.receive_sequence = 1;
