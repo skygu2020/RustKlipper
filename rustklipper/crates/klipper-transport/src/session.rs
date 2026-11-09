@@ -278,6 +278,18 @@ fn allocate_retry_transaction_id(
     }
 }
 
+/// Consume the earliest actually-sent request matching a decoded response key.
+/// Requests are queued when their frames are written, not when waiters are registered,
+/// so this preserves wire send order for responses that carry no transaction identifier.
+fn take_matching_response_send(
+    pending: &mut VecDeque<PendingResponseSend>,
+    name: &str,
+    oid: Option<u32>,
+) -> Option<PendingResponseSend> {
+    let index = pending.iter().position(|entry| entry.name == name && entry.oid == oid)?;
+    pending.remove(index)
+}
+
 /// Finalize ACK-exhausted requests only after the current frame's payload has
 /// had a chance to complete them. Returns transaction IDs whose attempt state
 /// still needs to be retired by the owning session.
@@ -1158,11 +1170,9 @@ impl ReliableSerialSession {
             value.as_u64().and_then(|v| u32::try_from(v).ok())
                 .or_else(|| value.as_i64().and_then(|v| u32::try_from(v).ok()))
         });
-        let pending_index = self.sent_response_requests.iter()
-            .position(|pending| pending.name == name && pending.oid == oid);
-        let matched = if let Some(index) = pending_index {
-            let pending = self.sent_response_requests.remove(index)
-                .expect("located response request must exist");
+        let matched = if let Some(pending) = take_matching_response_send(
+            &mut self.sent_response_requests, &name, oid,
+        ) {
             let response = Response {
                 name: name.clone(), oid, params: params.clone(),
                 sent_time, receive_time,
@@ -1645,6 +1655,32 @@ mod exhausted_transaction_tests {
             waiter_id,
             transaction: RetryTransaction::default(),
         }
+    }
+
+    #[test]
+    fn matching_response_consumes_requests_in_actual_send_order() {
+        let mut pending = VecDeque::from([
+            PendingResponseSend { transaction_id: 20, name: "status".into(), oid: Some(3) },
+            PendingResponseSend { transaction_id: 10, name: "status".into(), oid: Some(4) },
+            PendingResponseSend { transaction_id: 30, name: "status".into(), oid: Some(3) },
+        ]);
+
+        assert_eq!(
+            take_matching_response_send(&mut pending, "status", Some(3))
+                .map(|entry| entry.transaction_id),
+            Some(20),
+        );
+        assert_eq!(
+            take_matching_response_send(&mut pending, "status", Some(4))
+                .map(|entry| entry.transaction_id),
+            Some(10),
+        );
+        assert_eq!(
+            take_matching_response_send(&mut pending, "status", Some(3))
+                .map(|entry| entry.transaction_id),
+            Some(30),
+        );
+        assert!(pending.is_empty());
     }
 
     #[test]
