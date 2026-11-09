@@ -5,7 +5,8 @@
 //! scope of this crate; communication is delegated to the protocol/transport
 //! layers.
 
-pub mod reactor;
+pub mod mcu;
+mod reactor;
 pub use reactor::{Completion, CompletionCancelled, Reactor, ReactorError, TaskId};
 
 use std::any::Any;
@@ -339,6 +340,7 @@ pub struct Printer {
     loaded_components: Mutex<HashSet<String>>,
     component_load_lock: Mutex<()>,
     connection_initialized: AtomicBool,
+    mcus: McuRegistry,
     objects: RwLock<HashMap<String, Arc<dyn Any + Send + Sync>>>,
     event_handlers: Mutex<HashMap<PrinterEventKind, Vec<EventHandler>>>,
     component_gcode: Mutex<HashMap<String, HashSet<String>>>,
@@ -362,6 +364,7 @@ impl Printer {
             loaded_components: Mutex::new(HashSet::new()),
             component_load_lock: Mutex::new(()),
             connection_initialized: AtomicBool::new(false),
+            mcus: McuRegistry::new(),
             objects: RwLock::new(HashMap::new()),
             event_handlers: Mutex::new(HashMap::new()),
             component_gcode: Mutex::new(HashMap::new()),
@@ -1203,6 +1206,10 @@ impl Printer {
     }
 
     /// Access the cooperative host event scheduler.
+    pub fn mcus(&self) -> &McuRegistry {
+        &self.mcus
+    }
+
     pub fn reactor(&self) -> &Reactor {
         &self.reactor
     }
