@@ -152,6 +152,7 @@ pub struct ReliableSerialSession {
     dictionary: Option<IdentifyDictionary>,
     clock_sync: Option<crate::ClockSync>,
     clock_calibration_remaining: u8,
+    periodic_clock_in_flight: bool,
     startup_stage: McuStartupStage,
     identify_assembler: IdentifyAssembler,
     identify_queue_id: Option<u64>,
@@ -191,6 +192,7 @@ impl ReliableSerialSession {
             dictionary: None,
             clock_sync: None,
             clock_calibration_remaining: 0,
+            periodic_clock_in_flight: false,
             startup_stage: McuStartupStage::AwaitingIdentify,
             identify_assembler: IdentifyAssembler::new(),
             identify_queue_id: None,
@@ -524,14 +526,26 @@ impl ReliableSerialSession {
                 reason: "periodic clock update received before startup calibration completed".into(),
             }));
         }
+        if !self.periodic_clock_in_flight {
+            return Err(SessionError::Dictionary(DictionaryError::InvalidField {
+                field: "clock_sync".into(),
+                reason: "periodic clock response received without an outstanding periodic query".into(),
+            }));
+        }
         let update = self.update_owned_clock_sync(&response, false)?;
-        match update {
+        let result = match update {
             Some(update) => self.apply_clock_update(update, response.receive_time),
             None => Ok(None),
+        };
+        if result.is_ok() {
+            self.periodic_clock_in_flight = false;
         }
+        result
     }
 
-    /// Queue the next periodic clock query. Startup calibration must be complete.
+    /// Queue one periodic clock query. The caller should invoke this again only
+    /// after handling the response; this guard prevents poll loops or duplicate
+    /// timers from accumulating multiple outstanding get_clock requests.
     pub fn request_periodic_clock(&mut self, queue_id: u64) -> Result<ResponseWaiter, SessionError> {
         self.ensure_connected()?;
         if !self.is_clock_calibrated() {
@@ -540,7 +554,20 @@ impl ReliableSerialSession {
                 reason: "periodic clock query requested before startup calibration completed".into(),
             }));
         }
-        self.request_get_clock(queue_id)
+        if self.periodic_clock_in_flight {
+            return Err(SessionError::Dictionary(DictionaryError::InvalidField {
+                field: "clock_sync".into(),
+                reason: "a periodic clock query is already outstanding".into(),
+            }));
+        }
+        let waiter = self.request_get_clock(queue_id)?;
+        self.periodic_clock_in_flight = true;
+        Ok(waiter)
+    }
+
+    /// Whether a periodic get_clock request is awaiting its response.
+    pub fn periodic_clock_in_flight(&self) -> bool {
+        self.periodic_clock_in_flight
     }
 
     /// Update the ClockSync instance owned by this session. Keeping the mutable
