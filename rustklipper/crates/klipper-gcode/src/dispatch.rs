@@ -387,6 +387,7 @@ mod tests {
         assert!(dispatcher.registered_commands().is_empty());
         assert!(dispatcher.command_help().is_empty());
         assert!(!dispatcher.process_line("M999", true).unwrap().handler_found);
+        assert!(dispatcher.process_line("M105", true).unwrap().handler_found);
     }
 
     #[test]
