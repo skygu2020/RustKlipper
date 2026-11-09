@@ -1639,7 +1639,7 @@ mod tests {
             let outer = tracker.begin_transaction();
             assert_eq!(tracker.get(&config, "fan", "pin"), Some("PA0"));
             {
-                let inner = tracker.begin_transaction();
+                let _inner = tracker.begin_transaction();
                 assert_eq!(tracker.get(&config, "fan", "speed"), Some("100"));
                 // Inner drop rolls back only the inner transaction.
             }
