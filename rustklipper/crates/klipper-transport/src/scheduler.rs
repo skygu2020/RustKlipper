@@ -168,7 +168,13 @@ impl CommandScheduler {
                 .filter_map(|(id, q)| q.ready.front().map(|cmd| {
                     (*id, cmd.req_clock, cmd.bytes.len())
                 }))
-                .min_by_key(|(_, priority, _)| if *priority == BACKGROUND_PRIORITY_CLOCK {\n                    self.background_priority_clock\n                } else { *priority });
+                .min_by_key(|(_, priority, _)| {
+                    if *priority == BACKGROUND_PRIORITY_CLOCK {
+                        self.background_priority_clock
+                    } else {
+                        *priority
+                    }
+                });
             let Some((queue_id, _, size)) = selected else { break; };
             if payload.len() + size > MESSAGE_PAYLOAD_MAX { break; }
             let command = self.queues.get_mut(&queue_id)
