@@ -9,6 +9,12 @@ Implemented:
 - Parsed configuration ownership and recursive config-file loading.
 - Configuration-ordered component factory registry.
 - Integration with the host G-code dispatcher and its readiness gating.
+- Component-scoped G-code and mux-command registration, with ownership checks,
+  automatic handler removal on component unload, rollback after factory failure,
+  and reset on configuration reinstall.
+- G-code callbacks run from dispatcher snapshots outside the printer mutex;
+  scripts refresh the active command snapshot for each line, and handler panics
+  are converted into command error events without aborting the remaining script.
 - Cooperative Reactor for immediate callbacks, delayed/periodic timers,
   cancellation, and next-deadline polling, driven by the host runtime.
 
