@@ -57,24 +57,32 @@ pub struct Completion<T> {
 
 impl<T> Clone for Completion<T> {
     fn clone(&self) -> Self {
-        Self { state: Arc::clone(&self.state) }
+        Self {
+            state: Arc::clone(&self.state),
+        }
     }
 }
 
 impl<T> Default for Completion<T> {
     fn default() -> Self {
-        Self { state: Arc::new((Mutex::new(None), Condvar::new())) }
+        Self {
+            state: Arc::new((Mutex::new(None), Condvar::new())),
+        }
     }
 }
 
 impl<T> Completion<T> {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// Complete once. A second completion returns the unused result.
     pub fn complete(&self, result: T) -> Result<(), T> {
         let (lock, ready) = &*self.state;
         let mut current = lock.lock().expect("completion lock poisoned");
-        if current.is_some() { return Err(result); }
+        if current.is_some() {
+            return Err(result);
+        }
         *current = Some(result);
         ready.notify_all();
         Ok(())
@@ -85,12 +93,18 @@ impl<T> Completion<T> {
     }
 
     /// Clone the result if it has already been produced.
-    pub fn result(&self) -> Option<T> where T: Clone {
+    pub fn result(&self) -> Option<T>
+    where
+        T: Clone,
+    {
         self.state.0.lock().expect("completion lock poisoned").clone()
     }
 
     /// Wait for completion. Do not call this on the reactor dispatch thread.
-    pub fn wait(&self) -> T where T: Clone {
+    pub fn wait(&self) -> T
+    where
+        T: Clone,
+    {
         let (lock, ready) = &*self.state;
         let mut current = lock.lock().expect("completion lock poisoned");
         while current.is_none() {
@@ -100,10 +114,14 @@ impl<T> Completion<T> {
     }
 
     /// Wait up to the given duration; returns None if no result arrives in time.
-    pub fn wait_timeout(&self, timeout: Duration) -> Option<T> where T: Clone {
+    pub fn wait_timeout(&self, timeout: Duration) -> Option<T>
+    where
+        T: Clone,
+    {
         let (lock, ready) = &*self.state;
         let current = lock.lock().expect("completion lock poisoned");
-        let (current, _) = ready.wait_timeout_while(current, timeout, Option::is_none)
+        let (current, _) = ready
+            .wait_timeout_while(current, timeout, |value| value.is_none())
             .expect("completion lock poisoned");
         current.clone()
     }
