@@ -794,15 +794,13 @@ mod tests {
 
     #[test]
     fn rejects_empty_request_methods() {
-        for method in ["", ""] {
-            assert_eq!(
-                KlippyApiRequest::from_value(json!({
-                    "id": 1,
-                    "method": method
-                })).unwrap_err(),
-                KlippyApiCodecError::EmptyMethod
-            );
-        }
+        assert_eq!(
+            KlippyApiRequest::from_value(json!({
+                "id": 1,
+                "method": ""
+            })).unwrap_err(),
+            KlippyApiCodecError::EmptyMethod
+        );
     }
 
     #[test]
