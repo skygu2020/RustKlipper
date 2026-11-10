@@ -180,6 +180,7 @@ impl ComponentRegistry {
                 message: "section name cannot be empty".to_owned(),
             });
         }
+        let section = section.trim().to_owned();
         if self.factories.contains_key(&section) {
             return Err(ComponentError::DuplicateFactory { section });
         }
@@ -189,6 +190,10 @@ impl ComponentRegistry {
                 message: "dependency names cannot be empty".to_owned(),
             });
         }
+        let dependencies = dependencies
+            .into_iter()
+            .map(|dependency| dependency.trim().to_owned())
+            .collect();
         self.factories.insert(
             section,
             ComponentFactoryEntry {
@@ -2653,6 +2658,46 @@ mod tests {
         );
         assert!(printer.unused_config_options().is_empty());
         assert!(printer.validate_config().is_ok());
+    }
+
+    #[test]
+    fn component_registry_normalizes_section_and_dependency_names() {
+        let printer = Printer::new();
+        printer.install_config(
+            ConfigDocument::parse("[base]\nvalue=ready\n[fan]\npin=PA0\n").unwrap(),
+        );
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register(" base ", |printer, section| {
+                printer
+                    .register_object("base_value", section.get("value").unwrap().to_owned())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        registry
+            .register_with_dependencies(" fan ", vec![" base ".to_owned()], |printer, section| {
+                let base = printer
+                    .lookup_object::<String>("base_value")
+                    .map_err(|error| error.to_string())?;
+                let pin = section.get("pin").unwrap();
+                printer
+                    .register_object("fan_config", format!("{}:{pin}", base.as_str()))
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        assert_eq!(
+            printer.load_components(&registry).unwrap(),
+            vec!["base".to_owned(), "fan".to_owned()]
+        );
+        assert_eq!(
+            &*printer.lookup_object::<String>("fan_config").unwrap(),
+            "ready:PA0"
+        );
+        assert!(matches!(
+            registry.register("base ", |_, _| Ok(())),
+            Err(ComponentError::DuplicateFactory { section }) if section == "base"
+        ));
     }
 
     #[test]
