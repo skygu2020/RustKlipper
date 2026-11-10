@@ -4224,6 +4224,17 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn printer_eventtime_is_non_negative_and_monotonic() {
+        let printer = Printer::new();
+        let first = printer.eventtime();
+        assert!(first >= 0.0);
+
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let second = printer.eventtime();
+        assert!(second > first);
+    }
+
     #[tokio::test]
     async fn status_object_updates_are_broadcast_to_subscribers() {
         let printer = Printer::new();
