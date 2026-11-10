@@ -112,8 +112,14 @@ fn advance_ack_clock(last_ack_clock: u64, observed_ack_clock: u64) -> u64 {
 /// instead of emitting a burst of catch-up requests.
 fn next_periodic_clock_deadline(due_at: f64, now: f64) -> f64 {
     let first_due = due_at + PERIODIC_CLOCK_INTERVAL_SECONDS;
-    if first_due > now {
+    if first_due.is_finite() && first_due > now {
         return first_due;
+    }
+
+    // Invalid or exhausted timestamps cannot produce a representable future
+    // deadline. Keep the timer finite rather than propagating infinity/NaN.
+    if !due_at.is_finite() || !now.is_finite() || !first_due.is_finite() {
+        return f64::MAX;
     }
 
     // Jump directly to the first tick strictly after now. This keeps the
@@ -121,8 +127,11 @@ fn next_periodic_clock_deadline(due_at: f64, now: f64) -> f64 {
     // missed interval after a long pause or debugger stop.
     let elapsed_intervals =
         ((now - due_at) / PERIODIC_CLOCK_INTERVAL_SECONDS).floor() + 1.0;
-    let mut next_due =
-        due_at + elapsed_intervals * PERIODIC_CLOCK_INTERVAL_SECONDS;
+    let offset = elapsed_intervals * PERIODIC_CLOCK_INTERVAL_SECONDS;
+    let mut next_due = due_at + offset;
+    if !next_due.is_finite() {
+        return f64::MAX;
+    }
 
     // Floating-point rounding at an exact boundary can leave the computed
     // deadline equal to now; one correction preserves the strict-future
@@ -130,7 +139,7 @@ fn next_periodic_clock_deadline(due_at: f64, now: f64) -> f64 {
     if next_due <= now {
         next_due += PERIODIC_CLOCK_INTERVAL_SECONDS;
     }
-    next_due
+    if next_due.is_finite() { next_due } else { f64::MAX }
 }
 
 /// Compute the next serialqueue.c command wake deadline.
@@ -2163,6 +2172,22 @@ mod command_send_timing_tests {
 #[cfg(test)]
 mod periodic_clock_deadline_tests {
     use super::{next_periodic_clock_deadline, PERIODIC_CLOCK_INTERVAL_SECONDS};
+
+    #[test]
+    fn periodic_deadline_saturates_at_finite_timestamp_limits() {
+        assert_eq!(
+            next_periodic_clock_deadline(f64::MAX, 0.0),
+            f64::MAX
+        );
+        assert_eq!(
+            next_periodic_clock_deadline(-f64::MAX, f64::MAX),
+            f64::MAX
+        );
+        assert_eq!(
+            next_periodic_clock_deadline(0.0, f64::MAX),
+            f64::MAX
+        );
+    }
 
     #[test]
     fn next_tick_is_anchored_to_previous_deadline() {
