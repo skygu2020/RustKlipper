@@ -163,16 +163,22 @@ impl McuConfigPlan {
                 .map(|line| resolver.update_command(line).map_err(ConfigError::from))
                 .collect()
         };
-        let resolved_config = resolve(config_lines, resolver)?;
-        let resolved_restart = resolve(restart_lines, resolver)?;
-        let resolved_init = resolve(init_lines, resolver)?;
-        Self::from_command_lines(
+        // Resolve against a working copy so a failed plan does not leave
+        // partially activated pins in the caller's resolver. A caller may
+        // correct the invalid command and retry with the same resolver.
+        let mut candidate = resolver.clone();
+        let resolved_config = resolve(config_lines, &mut candidate)?;
+        let resolved_restart = resolve(restart_lines, &mut candidate)?;
+        let resolved_init = resolve(init_lines, &mut candidate)?;
+        let plan = Self::from_command_lines(
             dictionary,
             oid_count,
             &resolved_config,
             &resolved_restart,
             &resolved_init,
-        )
+        )?;
+        *resolver = candidate;
+        Ok(plan)
     }
 
     pub fn crc(&self) -> u32 { self.crc }
@@ -407,6 +413,39 @@ mod tests {
         ]);
     }
 
+
+    #[test]
+    fn failed_unresolved_plan_does_not_mutate_pin_resolver() {
+        let dictionary = dictionary();
+        let mut resolver = PinResolver::new(true);
+        resolver.alias_pin("LED", "PA1").unwrap();
+        resolver.reserve_pin("PA2", "serial").unwrap();
+
+        let result = McuConfigPlan::from_unresolved_command_lines(
+            &dictionary,
+            1,
+            &[
+                "config_pin oid=0 pin=LED value=1".to_owned(),
+                "config_pin oid=0 pin=PA2 value=0".to_owned(),
+            ],
+            &[],
+            &[],
+            &mut resolver,
+        );
+        assert!(matches!(result, Err(ConfigError::Pin(PinResolverError::ReservedPin { .. }))));
+
+        // The failed attempt must not leave LED active as PA1; retrying with
+        // the physical pin is valid when the earlier attempt was rolled back.
+        let retry = McuConfigPlan::from_unresolved_command_lines(
+            &dictionary,
+            1,
+            &["config_pin oid=0 pin=PA1 value=1".to_owned()],
+            &[],
+            &[],
+            &mut resolver,
+        );
+        assert!(retry.is_ok());
+    }
 
     #[test]
     fn unresolved_plan_resolves_aliases_before_crc_and_encoding() {
