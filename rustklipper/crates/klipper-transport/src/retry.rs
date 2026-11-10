@@ -3,13 +3,13 @@ use std::time::Duration;
 
 /// Add a retry delay without producing an infinite monotonic deadline.
 fn saturating_deadline(now: f64, delay: Duration) -> f64 {
-    // Retry deadlines use the session's non-negative monotonic clock. A
-    // negative or non-finite observation must never create an already-due
-    // deadline that would trigger an immediate retry on the next valid poll.
-    if !now.is_finite() || now < 0.0 {
+    // Retry deadlines use the session's non-negative monotonic clock. Clamp
+    // a negative observation to the clock origin so it still receives the
+    // configured delay; non-finite observations cannot define a useful epoch.
+    if !now.is_finite() {
         return f64::MAX;
     }
-    let deadline = now + delay.as_secs_f64();
+    let deadline = now.max(0.0) + delay.as_secs_f64();
     if deadline.is_finite() { deadline } else { f64::MAX }
 }
 
@@ -143,8 +143,9 @@ mod tests {
             transaction.attempt_acked(-1.0),
             AckRetryDecision::RetryAfter(Duration::from_millis(10)),
         );
-        assert_eq!(transaction.retry_deadline(), Some(f64::MAX));
-        assert!(!transaction.take_due_retry(0.0));
+        assert_eq!(transaction.retry_deadline(), Some(0.010));
+        assert!(!transaction.take_due_retry(0.009));
+        assert!(transaction.take_due_retry(0.010));
         assert_eq!(transaction.retries_remaining(), 0);
     }
 
