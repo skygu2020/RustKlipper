@@ -198,14 +198,19 @@ impl McuRegistry {
     /// Poll every registered MCU once, preserving each session's event order.
     /// A failed MCU is reported independently; other sessions are still polled.
     pub fn poll_all(&self) -> McuPollBatch {
-        let mut sessions: Vec<_> = self
-            .state
-            .lock()
-            .expect("MCU registry lock poisoned")
-            .sessions
-            .iter()
-            .map(|(name, session)| (name.clone(), session.clone()))
-            .collect();
+        // Take the generation and session snapshot under the same lock. If
+        // clear() runs while any serial session is being polled, the complete
+        // batch belongs to an obsolete printer lifecycle and must be dropped.
+        let (generation, mut sessions): (u64, Vec<_>) = {
+            let state = self.state.lock().expect("MCU registry lock poisoned");
+            (
+                state.generation,
+                state.sessions
+                    .iter()
+                    .map(|(name, session)| (name.clone(), session.clone()))
+                    .collect(),
+            )
+        };
         sessions.sort_by(|left, right| left.0.cmp(&right.0));
 
         let mut batch = McuPollBatch::default();
@@ -260,6 +265,14 @@ impl McuRegistry {
                 }
             }
         }
+
+        // A disconnect/configuration replacement may have cleared the
+        // registry after the snapshot. Do not leak events or errors collected
+        // from sessions that no longer belong to the active lifecycle.
+        let state = self.state.lock().expect("MCU registry lock poisoned");
+        if state.generation != generation {
+            return McuPollBatch::default();
+        }
         batch
     }
 
@@ -303,6 +316,18 @@ mod tests {
         let registry = McuRegistry::new();
         assert!(registry.clear().is_empty());
         assert!(registry.session_names().is_empty());
+    }
+
+    #[test]
+    fn poll_batch_is_discarded_after_registry_generation_changes() {
+        let registry = McuRegistry::new();
+        let snapshot_generation = registry.state.lock().unwrap().generation;
+
+        registry.clear();
+
+        let state = registry.state.lock().unwrap();
+        assert_ne!(state.generation, snapshot_generation);
+        assert_ne!(state.generation, snapshot_generation);
     }
 
     #[test]
