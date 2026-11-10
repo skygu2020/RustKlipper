@@ -255,7 +255,12 @@ impl UartTiming {
     pub fn baud_rate(self) -> u32 { self.baud_rate }
     pub fn byte_time(self) -> f64 { self.byte_time }
     pub fn duration_for_bytes(self, bytes: usize) -> Duration {
-        Duration::from_secs_f64(self.byte_time * bytes as f64)
+        let seconds = self.seconds_for_bytes(bytes);
+        if !seconds.is_finite() || seconds >= u64::MAX as f64 {
+            Duration::MAX
+        } else {
+            Duration::from_secs_f64(seconds)
+        }
     }
     pub fn seconds_for_bytes(self, bytes: usize) -> f64 {
         self.byte_time * bytes as f64
@@ -289,6 +294,13 @@ impl UartTiming {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    #[test]
+    fn uart_duration_clamps_instead_of_panicking_for_unrepresentable_lengths() {
+        let uart = UartTiming::new(1).unwrap();
+        assert_eq!(uart.duration_for_bytes(usize::MAX), Duration::MAX);
+    }
 
     #[test]
     fn uart_reservations_saturate_at_finite_timestamp_limit() {
