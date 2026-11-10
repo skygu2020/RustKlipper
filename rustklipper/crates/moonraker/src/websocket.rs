@@ -28,6 +28,7 @@ pub struct ClientInfo {
     pub version: String,
     pub client_type: String,
     pub url: String,
+    pub identified: bool,
 }
 
 impl Default for ClientInfo {
@@ -38,6 +39,7 @@ impl Default for ClientInfo {
             version: String::new(),
             client_type: String::new(),
             url: String::new(),
+            identified: false,
         }
     }
 }
@@ -108,10 +110,14 @@ impl WebSocketManager {
         let Some(client) = clients.get_mut(&id) else {
             return false;
         };
+        if client.identified { return false; }
+        let client_type = client_type.into().to_lowercase();
+        if !["web", "mobile", "desktop", "display", "bot", "agent", "other"].contains(&client_type.as_str()) { return false; }
         client.name = name.into();
         client.version = version.into();
-        client.client_type = client_type.into();
+        client.client_type = client_type;
         client.url = url.into();
+        client.identified = true;
         true
     }
 
@@ -136,6 +142,37 @@ impl WebSocketManager {
         self.notifications.send(message).unwrap_or(0)
     }
 
+    /// Handle Moonraker's built-in WebSocket control methods.
+    /// Returns None when the method belongs to the application router.
+    pub fn handle_control_message(&self, input: &str, connection: &WebSocketConnection) -> Option<Option<String>> {
+        let value: Value = serde_json::from_str(input).ok()?;
+        let Value::Object(object) = value else { return None; };
+        let method = object.get("method")?.as_str()?;
+        if method != "server.websocket.id" && method != "server.connection.identify" { return None; }
+        let request_id = object.get("id").cloned();
+        let result: Result<Value, (i64, String)> = if method == "server.websocket.id" {
+            Ok(json!({"websocket_id": connection.id()}))
+        } else {
+            let params = object.get("params").and_then(Value::as_object);
+            let required = |key: &str| params.and_then(|p| p.get(key)).and_then(Value::as_str);
+            match (required("client_name"), required("version"), required("type"), required("url")) {
+                (Some(name), Some(version), Some(client_type), Some(url)) => {
+                    if connection.identify(name, version, client_type, url) {
+                        Ok(json!({"connection_id": connection.id()}))
+                    } else {
+                        Err((-32602, "Invalid client type or connection already identified".to_owned()))
+                    }
+                }
+                _ => Err((-32602, "Missing client_name, version, type, or url".to_owned())),
+            }
+        };
+        let Some(id) = request_id else { return Some(None); };
+        let response = match result {
+            Ok(result) => json!({"jsonrpc":"2.0", "id":id, "result":result}),
+            Err((code, message)) => json!({"jsonrpc":"2.0", "id":id, "error":{"code":code,"message":message}}),
+        };
+        Some(serde_json::to_string(&response).ok())
+    }
     fn disconnect(&self, id: u64) {
         self.clients
             .lock()
