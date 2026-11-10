@@ -85,36 +85,48 @@ impl KlippyApiCodec {
     pub fn is_empty(&self) -> bool { self.buffer.is_empty() }
 
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<Value>, KlippyApiCodecError> {
-        self.buffer.extend_from_slice(bytes);
         let mut messages = Vec::new();
-        let mut consumed = 0;
-        while let Some(relative_end) = self.buffer[consumed..]
-            .iter().position(|byte| *byte == MESSAGE_TERMINATOR)
-        {
-            let end = consumed + relative_end;
-            if end - consumed > self.max_message_size {
-                self.buffer.drain(..=end);
-                return Err(KlippyApiCodecError::MessageTooLarge { limit: self.max_message_size });
+        let mut segment_start = 0;
+
+        // Process each complete frame independently. In particular, do not
+        // copy an arbitrarily large read chunk into the buffer before checking
+        // the per-message limit: a chunk may contain many small valid frames.
+        for (terminator, byte) in bytes.iter().enumerate() {
+            if *byte != MESSAGE_TERMINATOR {
+                continue;
             }
-            let parsed = match serde_json::from_slice::<Value>(&self.buffer[consumed..end]) {
+
+            let segment_len = terminator - segment_start;
+            if self.buffer.len().saturating_add(segment_len) > self.max_message_size {
+                self.buffer.clear();
+                return Err(KlippyApiCodecError::MessageTooLarge {
+                    limit: self.max_message_size,
+                });
+            }
+
+            self.buffer.extend_from_slice(&bytes[segment_start..terminator]);
+            let parsed = match serde_json::from_slice::<Value>(&self.buffer) {
                 Ok(parsed) => parsed,
                 Err(error) => {
-                    // Consume the malformed frame (and any earlier frames from
-                    // this push) so a caller that reports the error can recover
-                    // or close the stream without repeatedly parsing the same
-                    // invalid bytes on every subsequent read.
-                    self.buffer.drain(..=end);
+                    // Consume the malformed frame and reset the partial-frame
+                    // buffer so the same invalid bytes are not parsed again.
+                    self.buffer.clear();
                     return Err(KlippyApiCodecError::InvalidJson(error.to_string()));
                 }
             };
             messages.push(parsed);
-            consumed = end + 1;
-        }
-        if consumed > 0 { self.buffer.drain(..consumed); }
-        if self.buffer.len() > self.max_message_size {
             self.buffer.clear();
-            return Err(KlippyApiCodecError::MessageTooLarge { limit: self.max_message_size });
+            segment_start = terminator + 1;
         }
+
+        let trailing_len = bytes.len() - segment_start;
+        if self.buffer.len().saturating_add(trailing_len) > self.max_message_size {
+            self.buffer.clear();
+            return Err(KlippyApiCodecError::MessageTooLarge {
+                limit: self.max_message_size,
+            });
+        }
+        self.buffer.extend_from_slice(&bytes[segment_start..]);
         Ok(messages)
     }
 
@@ -705,6 +717,39 @@ mod tests {
     fn rejects_oversized_unterminated_message() {
         let mut codec = KlippyApiCodec::new(4);
         assert_eq!(codec.push(b"12345"), Err(KlippyApiCodecError::MessageTooLarge { limit: 4 }));
+        assert!(codec.is_empty());
+    }
+
+    #[test]
+    fn rejects_oversized_input_without_retaining_it() {
+        let mut codec = KlippyApiCodec::new(8);
+        assert_eq!(
+            codec.push(b"123456789"),
+            Err(KlippyApiCodecError::MessageTooLarge { limit: 8 })
+        );
+        assert!(codec.is_empty());
+    }
+
+    #[test]
+    fn accepts_multiple_small_frames_in_one_large_chunk() {
+        let mut codec = KlippyApiCodec::new(8);
+        let mut input = Vec::new();
+        for _ in 0..5 {
+            input.extend_from_slice(b"{}");
+            input.push(MESSAGE_TERMINATOR);
+        }
+        assert!(input.len() > 8);
+        assert_eq!(codec.push(&input).unwrap(), vec![json!({}); 5]);
+        assert!(codec.is_empty());
+    }
+
+    #[test]
+    fn rejects_oversized_frame_with_terminator_in_same_chunk() {
+        let mut codec = KlippyApiCodec::new(8);
+        assert_eq!(
+            codec.push(b"123456789\\x03"),
+            Err(KlippyApiCodecError::MessageTooLarge { limit: 8 })
+        );
         assert!(codec.is_empty());
     }
 
