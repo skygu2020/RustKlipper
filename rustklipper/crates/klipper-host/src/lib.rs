@@ -3502,7 +3502,7 @@ mod tests {
 
         assert_eq!(
             printer.registered_gcode_commands(),
-            vec!["M110".to_owned(), "M112".to_owned(), "M115".to_owned(), "STATUS".to_owned()]
+            vec!["FIRMWARE_RESTART".to_owned(), "M110".to_owned(), "M112".to_owned(), "M115".to_owned(), "RESTART".to_owned(), "STATUS".to_owned()]
         );
         assert_eq!(
             printer.gcode_help(),
@@ -3512,7 +3512,7 @@ mod tests {
         printer.set_ready();
         assert_eq!(
             printer.registered_gcode_commands(),
-            vec!["M110".to_owned(), "M112".to_owned(), "M115".to_owned(), "MOVE".to_owned(), "STATUS".to_owned()]
+            vec!["FIRMWARE_RESTART".to_owned(), "M110".to_owned(), "M112".to_owned(), "M115".to_owned(), "MOVE".to_owned(), "RESTART".to_owned(), "STATUS".to_owned()]
         );
         assert_eq!(printer.gcode_help().len(), 2);
     }
@@ -3818,7 +3818,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             printer.registered_gcode_commands(),
-            vec!["M110".to_owned(), "M112".to_owned(), "M115".to_owned(), "M999".to_owned()]
+            vec!["FIRMWARE_RESTART".to_owned(), "M110".to_owned(), "M112".to_owned(), "M115".to_owned(), "M999".to_owned(), "RESTART".to_owned()]
         );
         assert_eq!(
             printer.gcode_help().get("M999").map(String::as_str),
@@ -3989,7 +3989,7 @@ mod tests {
 
         printer.install_config(ConfigDocument::parse("[printer]\n").unwrap());
         let dispatcher = printer.gcode_dispatcher();
-        assert_eq!(dispatcher.registered_commands(), vec!["M110".to_owned(), "M112".to_owned(), "M115".to_owned()]);
+        assert_eq!(dispatcher.registered_commands(), vec!["FIRMWARE_RESTART".to_owned(), "M110".to_owned(), "M112".to_owned(), "M115".to_owned(), "RESTART".to_owned()]);
         assert!(!dispatcher.is_ready());
     }
 
