@@ -5470,6 +5470,65 @@ mod tests {
     }
 
     #[test]
+    fn firmware_restart_drains_motion_and_emits_firmware_restart_event() {
+        struct RecordingMotion {
+            steps: Arc<Mutex<Vec<String>>>,
+        }
+
+        impl RestartMotion for RecordingMotion {
+            fn last_move_time(&self) -> f64 {
+                42.25
+            }
+
+            fn dwell(&self, duration: std::time::Duration) {
+                self.steps
+                    .lock()
+                    .unwrap()
+                    .push(format!("dwell:{}", duration.as_millis()));
+            }
+
+            fn wait_moves(&self) {
+                self.steps.lock().unwrap().push("wait_moves".to_owned());
+            }
+        }
+
+        let printer = Printer::new();
+        printer.set_ready();
+        let steps = Arc::new(Mutex::new(Vec::new()));
+        let observed = steps.clone();
+        printer.register_event_handler(PrinterEventKind::RestartRequested, move |event| {
+            if let PrinterEvent::RestartRequested {
+                result,
+                last_move_time,
+            } = event
+            {
+                observed
+                    .lock()
+                    .unwrap()
+                    .push(format!("event:{result}:{last_move_time}"));
+            }
+        });
+        printer.set_restart_motion(Arc::new(RecordingMotion {
+            steps: steps.clone(),
+        }));
+
+        let outcome = printer
+            .process_gcode_line("FIRMWARE_RESTART", true)
+            .unwrap();
+
+        assert!(outcome.handler_found);
+        assert_eq!(
+            *steps.lock().unwrap(),
+            vec![
+                "event:firmware_restart:42.25".to_owned(),
+                "dwell:500".to_owned(),
+                "wait_moves".to_owned(),
+            ]
+        );
+        assert_eq!(printer.exit_reason().as_deref(), Some("firmware_restart"));
+    }
+
+    #[test]
     fn restart_before_ready_requests_exit_without_restart_event() {
         let printer = Printer::new();
         let events = Arc::new(AtomicUsize::new(0));
