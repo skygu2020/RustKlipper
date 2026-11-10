@@ -98,6 +98,10 @@ impl ClockSync {
         if !initial_host_time.is_finite() {
             return Err(ClockSyncError::InvalidTimestamp);
         }
+        let prediction_variance = (0.001 * mcu_frequency).powi(2);
+        if !prediction_variance.is_finite() {
+            return Err(ClockSyncError::InvalidFrequency);
+        }
         let estimate = ClockEstimate {
             sample_time: initial_host_time,
             clock: initial_clock as f64,
@@ -107,7 +111,7 @@ impl ClockSync {
             mcu_frequency, last_clock: initial_clock,
             time_avg: initial_host_time, time_variance: 0.0,
             clock_avg: initial_clock as f64, clock_covariance: 0.0,
-            prediction_variance: (0.001 * mcu_frequency).powi(2),
+            prediction_variance,
             last_prediction_time: 0.0,
             min_half_rtt: f64::MAX, min_rtt_time: 0.0, estimate,
         })
@@ -526,6 +530,14 @@ mod tests {
         let second = uart.reserve_transmission(2.0, 0, 10);
         assert!((first - 1.001).abs() < 1e-12);
         assert!((second - 2.001).abs() < 1e-12);
+    }
+
+    #[test]
+    fn clock_sync_rejects_frequency_that_overflows_prediction_variance() {
+        assert_eq!(
+            ClockSync::new(f64::MAX, 1.0, 0),
+            Err(ClockSyncError::InvalidFrequency),
+        );
     }
 
     #[test]
