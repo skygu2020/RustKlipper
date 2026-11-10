@@ -34,8 +34,22 @@ pub struct MoonrakerHttpServer {
 impl MoonrakerHttpServer {
     /// Bind the API listener to an address such as `0.0.0.0:7125`.
     pub async fn bind(address: SocketAddr, router: Arc<JsonRpcRouter>) -> io::Result<Self> {
+        Self::bind_with_websocket_manager(address, router, WebSocketManager::new()).await
+    }
+
+    /// Bind using a caller-owned manager so host components can publish notifications.
+    pub async fn bind_with_websocket_manager(
+        address: SocketAddr,
+        router: Arc<JsonRpcRouter>,
+        websocket_manager: Arc<WebSocketManager>,
+    ) -> io::Result<Self> {
         let listener = TcpListener::bind(address).await?;
-        Ok(Self { listener, router, websocket_manager: WebSocketManager::new() })
+        Ok(Self { listener, router, websocket_manager })
+    }
+
+    /// Clone the shared manager before moving the server into its run loop.
+    pub fn websocket_manager(&self) -> Arc<WebSocketManager> {
+        Arc::clone(&self.websocket_manager)
     }
 
     /// Return the actual bound address (useful when binding port zero in tests).
@@ -307,6 +321,30 @@ mod tests {
         task.abort();
     }
 
+    #[tokio::test]
+    async fn websocket_receives_server_notifications() {
+        let mut router = JsonRpcRouter::new();
+        router.register("printer.test_echo", |params| Ok(params)).unwrap();
+        let manager = WebSocketManager::new();
+        let server = MoonrakerHttpServer::bind_with_websocket_manager(
+            "127.0.0.1:0".parse().unwrap(), Arc::new(router), Arc::clone(&manager),
+        ).await.unwrap();
+        let address = server.local_addr().unwrap();
+        let task = tokio::spawn(server.run());
+        let (mut websocket, _) = connect_async(format!("ws://{address}/websocket")).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while manager.client_count() == 0 { tokio::task::yield_now().await; }
+        }).await.unwrap();
+        assert_eq!(manager.notify_all("klippy_ready", vec![json!({"ready": true})]), 1);
+        let message = tokio::time::timeout(std::time::Duration::from_secs(1), websocket.next())
+            .await.unwrap().unwrap().unwrap();
+        let ClientMessage::Text(text) = message else { panic!("expected a notification text frame"); };
+        let value: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["method"], "notify_klippy_ready");
+        assert_eq!(value["params"][0]["ready"], true);
+        websocket.close(None).await.unwrap();
+        task.abort();
+    }
     #[tokio::test]
     async fn websocket_notifications_do_not_generate_responses() {
         let (address, task) = start_test_server().await;
