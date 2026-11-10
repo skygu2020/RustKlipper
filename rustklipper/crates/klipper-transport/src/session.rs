@@ -815,6 +815,15 @@ impl ReliableSerialSession {
         // snapshot of the regression state because processing the response
         // mutates ClockSync before the next request is accepted by the queue.
         let previous_clock_sync = self.clock_sync.clone();
+        // Applying a valid sample also updates the scheduler's clock model,
+        // promotes queued commands, and changes its cached wake deadline.
+        // Those effects must be rolled back together if the follow-up query
+        // cannot be accepted; otherwise a retry would run against a clock
+        // state that no longer matches the retained calibration sample.
+        let previous_scheduler = self.scheduler.clone();
+        let previous_queue_clock_update = self.queue_clock_update.clone();
+        let previous_last_ack_clock = self.last_ack_clock;
+        let previous_next_send_at = self.next_send_at;
         let result = (|| {
             let update = self.update_owned_clock_sync(&response, true)?;
             if let Some(update) = update {
@@ -840,6 +849,10 @@ impl ReliableSerialSession {
 
         if result.is_err() {
             self.clock_sync = previous_clock_sync;
+            self.scheduler = previous_scheduler;
+            self.queue_clock_update = previous_queue_clock_update;
+            self.last_ack_clock = previous_last_ack_clock;
+            self.next_send_at = previous_next_send_at;
         }
         result
     }
