@@ -904,6 +904,13 @@ mod tests {
         .join();
         assert!(panic.is_err());
 
+        // The condition-variable wait path must also recover the poisoned
+        // mutex when it reacquires the guard.
+        assert_eq!(
+            completion.wait_timeout(Duration::from_millis(1)),
+            None
+        );
+
         assert_eq!(completion.complete(7), Ok(()));
         assert!(completion.is_complete());
         assert!(!completion.is_cancelled());
