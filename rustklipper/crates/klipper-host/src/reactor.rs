@@ -276,12 +276,14 @@ impl Reactor {
         if interval.is_some_and(|value| value.is_zero()) {
             return Err(ReactorError::ZeroInterval);
         }
-        let deadline = Instant::now() + delay;
+        let deadline = Instant::now()
+            .checked_add(delay)
+            .ok_or(ReactorError::DeadlineOutOfRange)?;
         let next_interval = interval;
         let mut callback = callback;
         Ok(self.insert_task(deadline, move |eventtime| {
             callback();
-            next_interval.map(|value| eventtime + value)
+            next_interval.and_then(|value| eventtime.checked_add(value))
         }))
     }
 
@@ -516,12 +518,34 @@ impl Reactor {
 pub enum ReactorError {
     #[error("timer interval must be greater than zero")]
     ZeroInterval,
+    #[error("timer deadline is outside the supported monotonic clock range")]
+    DeadlineOutOfRange,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn timer_rejects_delay_outside_instant_range() {
+        let reactor = Reactor::new();
+        let result = reactor.register_timer(Duration::MAX, None, || {});
+        assert_eq!(result, Err(ReactorError::DeadlineOutOfRange));
+        assert_eq!(reactor.pending_tasks(), 0);
+    }
+
+    #[test]
+    fn periodic_timer_stops_if_next_deadline_is_out_of_range() {
+        let reactor = Reactor::new();
+        let start = Instant::now();
+        let id = reactor.register_timer_at(start, move |_| {
+            start.checked_add(Duration::MAX)
+        });
+        assert_eq!(reactor.run_due(start), 1);
+        assert_eq!(reactor.pending_tasks(), 0);
+        assert!(!reactor.unregister(id));
+    }
 
     #[test]
     fn task_id_wrap_skips_pending_running_and_cancelled_ids() {
