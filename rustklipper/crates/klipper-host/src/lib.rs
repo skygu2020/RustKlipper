@@ -3098,7 +3098,7 @@ mod tests {
     #[test]
     fn lazy_component_load_normalizes_section_name() {
         let printer = Printer::new();
-        printer.install_config(ConfigDocument::parse("[fan]\\npin=PA0\\n").unwrap());
+        printer.install_config(ConfigDocument::parse("[fan]\npin=PA0\n").unwrap());
         let mut registry = ComponentRegistry::new();
         registry
             .register(" fan ", |printer, section| {
