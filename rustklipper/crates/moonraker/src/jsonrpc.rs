@@ -198,7 +198,7 @@ impl JsonRpcRouter {
             return Some(invalid());
         }
         let params = match object.remove("params") {
-            None | Some(Value::Null) => Value::Null,
+            None => Value::Null,
             Some(value @ Value::Array(_)) | Some(value @ Value::Object(_)) => value,
             Some(_) => return Some(invalid()),
         };
@@ -297,6 +297,27 @@ mod tests {
             router().handle_value(json!([])).unwrap()
         ).unwrap();
         assert_eq!(empty.error.unwrap().code, -32600);
+    }
+
+    #[test]
+    fn rejects_null_and_scalar_params_but_allows_omitted_params() {
+        let router = router();
+
+        for input in [
+            r#"{"jsonrpc":"2.0","method":"sum","params":null,"id":1}"#,
+            r#"{"jsonrpc":"2.0","method":"sum","params":5,"id":2}"#,
+            r#"{"jsonrpc":"2.0","method":"sum","params":"invalid","id":3}"#,
+            r#"{"jsonrpc":"2.0","method":"sum","params":true,"id":4}"#,
+        ] {
+            let response: RpcResponse =
+                serde_json::from_str(&router.handle_json(input).unwrap()).unwrap();
+            assert_eq!(response.error.unwrap().code, -32600);
+        }
+
+        let omitted: RpcResponse = serde_json::from_str(
+            &router.handle_json(r#"{"jsonrpc":"2.0","method":"missing","id":5}"#).unwrap()
+        ).unwrap();
+        assert_eq!(omitted.error.unwrap().code, -32601);
     }
 
     #[test]
