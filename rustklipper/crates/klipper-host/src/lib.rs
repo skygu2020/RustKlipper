@@ -1679,12 +1679,13 @@ impl Printer {
     }
 
     fn dispatch_mcu_messages(&self, events: &[McuSessionEvent]) -> usize {
-        let handlers: Vec<_> = self.mcu_message_handlers
+        let mut handlers: Vec<_> = self.mcu_message_handlers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .values()
-            .map(|entry| (entry.mcu.clone(), entry.name.clone(), entry.handler.clone()))
+            .iter()
+            .map(|(id, entry)| (*id, entry.mcu.clone(), entry.name.clone(), entry.handler.clone()))
             .collect();
+        handlers.sort_by_key(|(id, _, _, _)| *id);
         let mut panics = 0;
         for event in events {
             let klipper_transport::SessionEvent::DecodedMessage {
@@ -1698,7 +1699,7 @@ impl Printer {
                 params: params.clone(),
                 receive_time: *receive_time,
             };
-            for (mcu, expected_name, handler) in &handlers {
+            for (_, mcu, expected_name, handler) in &handlers {
                 if expected_name == name && mcu.as_deref().map_or(true, |expected| expected == event.mcu.as_str()) {
                     if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(&message))).is_err() {
                         panics += 1;
