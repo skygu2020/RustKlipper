@@ -523,17 +523,20 @@ impl Printer {
         // Serialize configuration replacement with component factories so a
         // factory cannot register handlers or objects into a discarded config.
         let _load_guard = self.lock_component_load();
+        // Invalidate any in-flight connection-stage callbacks before clearing
+        // state owned by the previous configuration. Component initialization
+        // may start concurrently, but it cannot pass the load lock until this
+        // replacement (including MCU cleanup) is complete.
+        let _lifecycle_guard = self.lifecycle_lock.lock()
+            .expect("printer lifecycle lock poisoned");
+        self.connection_generation.fetch_add(1, Ordering::SeqCst);
+        self.connection_initialized.store(false, Ordering::SeqCst);
         self.config_usage.clear();
-        self.mcus.clear();
         let mut component_gcode = self
             .component_gcode
             .lock()
             .expect("component G-code ownership lock poisoned");
         component_gcode.clear();
-        let _lifecycle_guard = self.lifecycle_lock.lock()
-            .expect("printer lifecycle lock poisoned");
-        self.connection_generation.fetch_add(1, Ordering::SeqCst);
-        self.connection_initialized.store(false, Ordering::SeqCst);
         self.gcode
             .lock()
             .expect("gcode dispatcher lock poisoned")
@@ -552,6 +555,10 @@ impl Printer {
         *self.config.write().expect("printer config lock poisoned") = Some(Arc::new(config));
         self.set_configuring_locked();
         drop(_lifecycle_guard);
+        // MCU cleanup follows generation invalidation and state replacement,
+        // but stays inside the component-load critical section so a new
+        // initialization cannot publish sessions before the cleanup finishes.
+        self.mcus.clear();
         // Event handlers may initialize or load components; release the
         // component load lock before invoking user callbacks.
         drop(_load_guard);
