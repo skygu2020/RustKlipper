@@ -823,7 +823,7 @@ mod tests {
             response,
             json!({
                 "id":5,
-                "result":{"endpoints":["gcode/subscribe_output","gcode/script","info","list_endpoints"]}
+                "result":{"endpoints":["gcode/script","gcode/subscribe_output","info","list_endpoints"]}
             })
         );
     }
