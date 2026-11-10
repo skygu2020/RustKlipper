@@ -159,13 +159,40 @@ impl KlippyApiRpcError {
 /// It deliberately owns no socket or runtime. A transport adapter can call
 /// `dispatch_value` for messages received over Unix sockets, Windows named
 /// pipes, TCP, or an in-process channel.
-#[derive(Default)]
 pub struct KlippyApiDispatcher {
     methods: std::sync::RwLock<std::collections::HashMap<String, KlippyApiMethod>>,
+    gcode_output: tokio::sync::broadcast::Sender<String>,
+}
+
+impl Default for KlippyApiDispatcher {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl KlippyApiDispatcher {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        let (gcode_output, _) = tokio::sync::broadcast::channel(256);
+        let dispatcher = Self {
+            methods: std::sync::RwLock::new(std::collections::HashMap::new()),
+            gcode_output,
+        };
+        // Output subscription is connection-local in the async transport.
+        // The method itself is a no-op; the stream adapter enables delivery
+        // only for the connection that requested it.
+        dispatcher.register("gcode/subscribe_output", |_| Ok(serde_json::json!({})))
+            .expect("built-in endpoint name is unique");
+        dispatcher
+    }
+
+    fn subscribe_gcode_output(&self) -> tokio::sync::broadcast::Receiver<String> {
+        self.gcode_output.subscribe()
+    }
+
+    fn publish_gcode_output(&self, response: String) {
+        // No listeners is a normal condition before a client subscribes.
+        let _ = self.gcode_output.send(response);
+    }
 
     /// Register Klippy's `objects/list` endpoint from the printer object registry.
     ///
@@ -255,6 +282,7 @@ impl KlippyApiDispatcher {
         &self,
         printer: std::sync::Arc<crate::Printer>,
     ) -> Result<(), KlippyApiRpcError> {
+        let output = self.gcode_output.clone();
         self.register("gcode/script", move |params| {
             let script = params
                 .get("script")
@@ -263,6 +291,17 @@ impl KlippyApiDispatcher {
                     "gcode/script requires a string script parameter"
                 ))?;
             for outcome in printer.process_gcode_script(script) {
+                for event in &outcome.events {
+                    let response = match event {
+                        DispatchEvent::Raw(message) => Some(message.clone()),
+                        DispatchEvent::Info(message) => Some(format!("// {message}")),
+                        DispatchEvent::Error(message) => Some(format!("!! {message}")),
+                        DispatchEvent::Ack(_) => None,
+                    };
+                    if let Some(response) = response {
+                        let _ = output.send(response);
+                    }
+                }
                 if let Some(DispatchEvent::Error(message)) = outcome.events.iter()
                     .find(|event| matches!(event, DispatchEvent::Error(_)))
                 {
@@ -840,26 +879,58 @@ where
 {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+    let (mut reader, mut writer) = tokio::io::split(stream);
     let mut codec = KlippyApiCodec::default();
     let mut chunk = [0u8; 8192];
+    let mut output = dispatcher.subscribe_gcode_output();
+    let mut subscribed = false;
 
     loop {
-        let count = stream.read(&mut chunk).await?;
-        if count == 0 {
-            return if codec.is_empty() {
-                Ok(())
-            } else {
-                Err(KlippyApiStreamError::TruncatedMessage {
-                    buffered: codec.buffered_len(),
-                })
-            };
-        }
+        tokio::select! {
+            read = reader.read(&mut chunk) => {
+                let count = read?;
+                if count == 0 {
+                    return if codec.is_empty() {
+                        Ok(())
+                    } else {
+                        Err(KlippyApiStreamError::TruncatedMessage {
+                            buffered: codec.buffered_len(),
+                        })
+                    };
+                }
 
-        for message in codec.push(&chunk[..count])? {
-            if let Some(response) = dispatcher.dispatch_value(message) {
-                let encoded = KlippyApiCodec::encode(&response)?;
-                stream.write_all(&encoded).await?;
-                stream.flush().await?;
+                for message in codec.push(&chunk[..count])? {
+                    if message.get("method").and_then(Value::as_str)
+                        == Some("gcode/subscribe_output")
+                    {
+                        subscribed = true;
+                    }
+                    if let Some(response) = dispatcher.dispatch_value(message) {
+                        let encoded = KlippyApiCodec::encode(&response)?;
+                        writer.write_all(&encoded).await?;
+                        writer.flush().await?;
+                    }
+                }
+            }
+            event = output.recv(), if subscribed => {
+                match event {
+                    Ok(response) => {
+                        let notification = serde_json::json!({
+                            "method": "process_gcode_response",
+                            "params": { "response": response },
+                        });
+                        let encoded = KlippyApiCodec::encode(&notification)?;
+                        writer.write_all(&encoded).await?;
+                        writer.flush().await?;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        // A slow client may miss old console lines; keep the
+                        // connection alive and deliver subsequent output.
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        subscribed = false;
+                    }
+                }
             }
         }
     }
@@ -901,6 +972,74 @@ mod async_stream_tests {
             decoder.push(&output).unwrap(),
             vec![json!({"id":1,"result":{"state":"ready"}})]
         );
+    }
+
+    #[tokio::test]
+    async fn subscribed_client_receives_gcode_script_output_notifications() {
+        let dispatcher = std::sync::Arc::new(KlippyApiDispatcher::new());
+        let printer = std::sync::Arc::new(crate::Printer::new());
+        printer.set_ready();
+        printer.register_gcode_command("REPORT", false, None, |_| {
+            Ok(vec![DispatchEvent::Info("temperature is 205".to_owned())])
+        }).unwrap();
+        dispatcher.register_gcode_script(printer).unwrap();
+
+        let (mut client, mut server) = tokio::io::duplex(4096);
+        let server_dispatcher = dispatcher.clone();
+        let server_task = tokio::spawn(async move {
+            serve_async_stream(&mut server, &server_dispatcher).await
+        });
+
+        let subscribe = KlippyApiCodec::encode(&json!({
+            "id": 1,
+            "method": "gcode/subscribe_output",
+            "params": {}
+        })).unwrap();
+        client.write_all(&subscribe).await.unwrap();
+
+        let mut response_bytes = vec![0u8; 256];
+        let response_len = client.read(&mut response_bytes).await.unwrap();
+        let mut decoder = KlippyApiCodec::default();
+        let responses = decoder.push(&response_bytes[..response_len]).unwrap();
+        assert_eq!(responses, vec![json!({"id":1,"result":{}})]);
+
+        let script = KlippyApiCodec::encode(&json!({
+            "id": 2,
+            "method": "gcode/script",
+            "params": { "script": "REPORT" }
+        })).unwrap();
+        client.write_all(&script).await.unwrap();
+
+        let mut received = Vec::new();
+        while received.len() < 2 {
+            let mut chunk = [0u8; 256];
+            let count = client.read(&mut chunk).await.unwrap();
+            received.extend_from_slice(&chunk[..count]);
+            let messages = decoder.push(&chunk[..count]).unwrap();
+            for message in messages {
+                if message["method"] == "process_gcode_response"
+                    || message["id"] == 2
+                {
+                    // Keep only the decoded messages below; this branch
+                    // intentionally drains the codec incrementally.
+                }
+            }
+            if let Ok(messages) = decoder.push(&[]) {
+                if !messages.is_empty() { break; }
+            }
+            if received.len() > 1024 { break; }
+        }
+
+        let mut final_decoder = KlippyApiCodec::default();
+        let messages = final_decoder.push(&received).unwrap();
+        assert!(messages.contains(&json!({
+            "method": "process_gcode_response",
+            "params": { "response": "// temperature is 205" }
+        })));
+        assert!(messages.contains(&json!({"id":2,"result":{}})));
+
+        client.shutdown().await.unwrap();
+        server_task.abort();
     }
 
     #[tokio::test]
