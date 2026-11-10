@@ -415,10 +415,10 @@ mod tests {
         assert_eq!(malformed_number.line_number, None);
         assert_eq!(malformed_number.raw_parameters(), "X10");
 
-        // A checksum followed by whitespace is not a checksum according to
-        // Klipper's exact str.isdigit() check.
-        let trailing_space = parse_line("N123 G1 X10*45 ").unwrap();
-        assert_eq!(trailing_space.raw_parameters(), "X10*45 ");
+        // A checksum followed by a comment is not a checksum according
+        // to Klipper's exact str.isdigit() check on the remaining suffix.
+        let trailing_content = parse_line("N123 G1 X10*45 ; comment").unwrap();
+        assert_eq!(trailing_content.raw_parameters(), "X10*45 ; comment");
     }
 
     #[test]
