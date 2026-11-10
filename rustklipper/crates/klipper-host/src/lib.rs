@@ -121,6 +121,8 @@ pub enum ComponentError {
     MissingDependency { section: String, dependency: String },
     #[error("component dependency cycle detected at section '{section}'")]
     DependencyCycle { section: String },
+    #[error("component initialization was cancelled by a lifecycle transition")]
+    InitializationCancelled,
     #[error("failed to load component section '{section}': {message}")]
     LoadFailed { section: String, message: String },
     #[error(transparent)]
@@ -206,7 +208,11 @@ impl ComponentRegistry {
         loaded_set: &mut HashSet<String>,
         loading: &mut HashSet<String>,
         requested_by: Option<&str>,
+        generation: Option<u64>,
     ) -> Result<(), ComponentError> {
+        if generation.is_some_and(|generation| !printer.is_current_connection_generation(generation)) {
+            return Err(ComponentError::InitializationCancelled);
+        }
         if loaded_set.contains(name)
             || printer.is_component_loaded(name)
             // A pre-registered object may satisfy a dependency, but it must
@@ -243,7 +249,13 @@ impl ComponentRegistry {
                 loaded_set,
                 loading,
                 Some(name),
+                generation,
             )?;
+        }
+
+        if generation.is_some_and(|generation| !printer.is_current_connection_generation(generation)) {
+            loading.remove(name);
+            return Err(ComponentError::InitializationCancelled);
         }
 
         let usage_transaction = printer.config_usage.begin_transaction();
@@ -252,6 +264,13 @@ impl ComponentRegistry {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             (entry.factory)(printer, &tracked)
         }));
+        if generation.is_some_and(|generation| !printer.is_current_connection_generation(generation)) {
+            drop(usage_transaction);
+            drop(object_transaction);
+            printer.remove_component_gcode_commands(name);
+            loading.remove(name);
+            return Err(ComponentError::InitializationCancelled);
+        }
         let failure = match result {
             Ok(Ok(())) => None,
             Ok(Err(message)) => Some(message),
@@ -303,6 +322,7 @@ impl ComponentRegistry {
             &mut loaded_set,
             &mut loading,
             None,
+            None,
         )?;
         Ok(loaded)
     }
@@ -311,6 +331,14 @@ impl ComponentRegistry {
     /// declared dependencies first. Unregistered sections are left for later
     /// validation/component crates.
     pub fn load_registered(&self, printer: &Printer) -> Result<Vec<String>, ComponentError> {
+        self.load_registered_for_generation(printer, None)
+    }
+
+    fn load_registered_for_generation(
+        &self,
+        printer: &Printer,
+        generation: Option<u64>,
+    ) -> Result<Vec<String>, ComponentError> {
         let _load_guard = printer
             .component_load_lock
             .lock()
@@ -329,6 +357,7 @@ impl ComponentRegistry {
                     &mut loaded_set,
                     &mut loading,
                     None,
+                    generation,
                 )?;
             }
         }
@@ -758,7 +787,11 @@ impl Printer {
         };
 
         let result = (|| {
-            let loaded = self.load_components(registry)?;
+            let loaded = match registry.load_registered_for_generation(self, Some(generation)) {
+                Ok(loaded) => loaded,
+                Err(ComponentError::InitializationCancelled) => return Ok(Vec::new()),
+                Err(error) => return Err(error),
+            };
             if !self.is_current_connection_generation(generation) {
                 // Component loading may itself trigger disconnect or config
                 // replacement. The initialization attempt was cancelled, so
