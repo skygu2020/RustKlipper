@@ -450,3 +450,98 @@ mod tests {
         assert!(!dispatcher.unregister("info"));
     }
 }
+
+
+/// Serve Klippy API requests on any Tokio asynchronous byte stream.
+///
+/// The same handler can be used with Tokio TCP streams, Unix streams, Windows
+/// named-pipe clients, and in-memory duplex streams. Platform-specific listener
+/// creation remains the responsibility of the transport adapter.
+pub async fn serve_async_stream<S>(
+    stream: &mut S,
+    dispatcher: &KlippyApiDispatcher,
+) -> Result<(), KlippyApiStreamError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut codec = KlippyApiCodec::default();
+    let mut chunk = [0u8; 8192];
+
+    loop {
+        let count = stream.read(&mut chunk).await?;
+        if count == 0 {
+            return if codec.is_empty() {
+                Ok(())
+            } else {
+                Err(KlippyApiStreamError::TruncatedMessage {
+                    buffered: codec.buffered_len(),
+                })
+            };
+        }
+
+        for message in codec.push(&chunk[..count])? {
+            if let Some(response) = dispatcher.dispatch_value(message) {
+                let encoded = KlippyApiCodec::encode(&response)?;
+                stream.write_all(&encoded).await?;
+                stream.flush().await?;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod async_stream_tests {
+    use super::*;
+    use serde_json::json;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn serves_requests_and_suppresses_notifications() {
+        let dispatcher = std::sync::Arc::new(KlippyApiDispatcher::new());
+        dispatcher
+            .register("info", |_| Ok(json!({"state":"ready"})))
+            .unwrap();
+        dispatcher
+            .register("notify", |_| Ok(Value::Null))
+            .unwrap();
+
+        let (mut client, mut server) = tokio::io::duplex(4096);
+        let server_dispatcher = dispatcher.clone();
+        let server_task = tokio::spawn(async move {
+            serve_async_stream(&mut server, &server_dispatcher).await
+        });
+
+        let mut input = KlippyApiCodec::encode(&json!({"id":1,"method":"info"})).unwrap();
+        input.extend(KlippyApiCodec::encode(&json!({"method":"notify"})).unwrap());
+        client.write_all(&input).await.unwrap();
+        client.shutdown().await.unwrap();
+
+        let mut output = Vec::new();
+        client.read_to_end(&mut output).await.unwrap();
+        server_task.await.unwrap().unwrap();
+
+        let mut decoder = KlippyApiCodec::default();
+        assert_eq!(
+            decoder.push(&output).unwrap(),
+            vec![json!({"id":1,"result":{"state":"ready"}})]
+        );
+    }
+
+    #[tokio::test]
+    async fn reports_eof_inside_an_async_message() {
+        let (mut client, mut server) = tokio::io::duplex(128);
+        let server_task = tokio::spawn(async move {
+            serve_async_stream(&mut server, &KlippyApiDispatcher::new()).await
+        });
+
+        client.write_all(br#"{"id":1"#).await.unwrap();
+        client.shutdown().await.unwrap();
+
+        assert!(matches!(
+            server_task.await.unwrap(),
+            Err(KlippyApiStreamError::TruncatedMessage { buffered: 7 })
+        ));
+    }
+}
