@@ -79,6 +79,9 @@ pub struct PrinterStatus {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PrinterRunBatch {
     pub reactor_callbacks: usize,
+    /// First requested process-exit result, if a G-code or lifecycle callback
+    /// requested a restart during this iteration.
+    pub exit_reason: Option<String>,
     pub mcus: McuPollBatch,
     /// MCUs that completed the Host-provided configuration handshake.
     pub mcu_configured: Vec<McuConfigReady>,
@@ -2346,6 +2349,7 @@ impl Printer {
         let mcu_message_handler_panics = self.dispatch_mcu_messages(&mcus.events);
         PrinterRunBatch {
             reactor_callbacks,
+            exit_reason: self.exit_reason(),
             mcus,
             mcu_configured,
             mcu_startup_errors,
@@ -2364,6 +2368,12 @@ impl Printer {
         let dispatcher = {
             let _lifecycle_guard = self.lifecycle_lock.lock()
                 .expect("printer lifecycle lock poisoned");
+            if self.exit_reason.lock()
+                .expect("printer exit reason lock poisoned")
+                .is_some()
+            {
+                return None;
+            }
             self.gcode_dispatcher().clone()
         };
         let outcome = dispatcher.process_line(line, need_ack)?;
@@ -2379,10 +2389,16 @@ impl Printer {
     }
 
     pub fn process_gcode_script(&self, script: &str) -> Vec<DispatchOutcome> {
-        script
-            .split('\n')
-            .filter_map(|line| self.process_gcode_line(line, false))
-            .collect()
+        let mut outcomes = Vec::new();
+        for line in script.split('\n') {
+            if self.exit_reason().is_some() {
+                break;
+            }
+            if let Some(outcome) = self.process_gcode_line(line, false) {
+                outcomes.push(outcome);
+            }
+        }
+        outcomes
     }
 }
 
@@ -5335,6 +5351,29 @@ mod tests {
         printer.process_gcode_line("RESTART", true).unwrap();
         assert_eq!(printer.exit_reason().as_deref(), Some("restart"));
         assert_eq!(events.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn gcode_script_stops_after_restart_request() {
+        let printer = Printer::new();
+        printer.set_ready();
+
+        let outcomes = printer.process_gcode_script("RESTART\nM115\nFIRMWARE_RESTART");
+
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].command, "RESTART");
+        assert_eq!(printer.exit_reason().as_deref(), Some("restart"));
+    }
+
+    #[test]
+    fn host_iteration_reports_requested_exit_reason() {
+        let printer = Printer::new();
+        printer.set_ready();
+        printer.process_gcode_line("FIRMWARE_RESTART", true).unwrap();
+
+        let batch = printer.run_host_once(std::time::Duration::ZERO);
+
+        assert_eq!(batch.exit_reason.as_deref(), Some("firmware_restart"));
     }
 
     #[test]
