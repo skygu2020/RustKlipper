@@ -270,6 +270,12 @@ impl RetransmitState {
 
     /// Retransmit the complete outstanding window, preserving each encoded frame.
     pub fn retransmit_all(&mut self, now: f64) -> Vec<Retransmission> {
+        // Keep this public entry point safe even when called outside the
+        // validated NAK and timeout paths.
+        if self.check_time(now).is_err() {
+            return Vec::new();
+        }
+        self.last_now = Some(now);
         let mut retries = Vec::with_capacity(self.outstanding.len());
         self.rtt_sample_seq = None;
         let first_frame_wire_time = self.outstanding.front().map_or(0.0, |entry| {
@@ -415,6 +421,21 @@ mod tests {
 
         assert_eq!(state.last_receive_sent_time(), 0.0);
         assert_eq!(state.retransmit_deadline(), Some(f64::MAX));
+        assert_eq!(state.outstanding_len(), 1);
+    }
+
+    #[test]
+    fn retransmit_all_rejects_invalid_or_backward_time_without_mutation() {
+        let mut state = RetransmitState::new();
+        state.track_sent(1, vec![0x01], 2.0).unwrap();
+        let before = state.clone();
+
+        assert!(state.retransmit_all(f64::NAN).is_empty());
+        assert_eq!(state, before);
+        assert!(state.retransmit_all(1.0).is_empty());
+        assert_eq!(state, before);
+
+        assert_eq!(state.retransmit_all(2.0).len(), 1);
         assert_eq!(state.outstanding_len(), 1);
     }
 
