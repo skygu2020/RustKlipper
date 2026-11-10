@@ -459,12 +459,13 @@ fn query_printer_status(
     for (object_name, requested_fields) in requested {
         let object = match printer.lookup_object_optional::<Value>(object_name) {
             Ok(Some(object)) => object,
-            Ok(None) | Err(crate::PrinterError::ObjectTypeMismatch { .. }) => continue,
+            Ok(None) | Err(crate::PrinterError::ObjectTypeMismatch { .. }) => {
+                status.insert(object_name.clone(), Value::Object(Map::new()));
+                continue;
+            }
             Err(error) => return Err(KlippyApiRpcError::internal(error.to_string())),
         };
-        let Some(fields) = object.as_object() else {
-            continue;
-        };
+        let fields = object.as_object().cloned().unwrap_or_default();
         let selected = match requested_fields {
             Value::Array(names) => {
                 let mut selected = serde_json::Map::new();
@@ -474,13 +475,16 @@ fn query_printer_status(
                             "object field names must be strings"
                         ));
                     };
-                    if let Some(value) = fields.get(name) {
-                        selected.insert(name.to_owned(), value.clone());
-                    }
+                    // Klipper includes every requested field in query results;
+                    // fields absent from an object's status are represented as null.
+                    selected.insert(
+                        name.to_owned(),
+                        fields.get(name).cloned().unwrap_or(Value::Null),
+                    );
                 }
                 selected
             }
-            Value::Null => fields.clone(),
+            Value::Null => fields,
             _ => return Err(KlippyApiRpcError::invalid_request(
                 "each objects entry must be an array of field names or null"
             )),
@@ -535,6 +539,31 @@ fn status_cache_from_snapshot(snapshot: &Value) -> Map<String, Value> {
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default()
+}
+
+/// Klipper resolves a null field selection to the fields present in the
+/// initial status query, then keeps that concrete field list for the life of
+/// the subscription. This prevents later-added fields from silently joining
+/// an existing subscription while allowing removed fields to be reported null.
+fn normalize_object_subscription(
+    requested: &Map<String, Value>,
+    snapshot: &Value,
+) -> Map<String, Value> {
+    let status = snapshot.get("status").and_then(Value::as_object);
+    requested.iter().map(|(object_name, fields)| {
+        let fields = match fields {
+            Value::Null => {
+                let names = status
+                    .and_then(|status| status.get(object_name))
+                    .and_then(Value::as_object)
+                    .map(|fields| fields.keys().cloned().map(Value::String).collect())
+                    .unwrap_or_default();
+                Value::Array(names)
+            }
+            fields => fields.clone(),
+        };
+        (object_name.clone(), fields)
+    }).collect()
 }
 
 fn gcode_output_response_template(
@@ -958,6 +987,53 @@ mod tests {
     }
 
     #[test]
+    fn object_query_includes_missing_objects_and_requested_fields_as_empty_or_null() {
+        let printer = std::sync::Arc::new(crate::Printer::new());
+        printer.register_status_object("toolhead", json!({"position": [1.0, 2.0, 3.0]})).unwrap();
+        let dispatcher = KlippyApiDispatcher::new();
+        dispatcher.register_object_query(printer).unwrap();
+
+        let response = dispatcher.dispatch_value(json!({
+            "id": 31,
+            "method": "objects/query",
+            "params": {"objects": {
+                "toolhead": ["position", "missing_field"],
+                "not_loaded_yet": null
+            }}
+        })).unwrap();
+
+        assert_eq!(response["result"]["status"], json!({
+            "toolhead": {
+                "position": [1.0, 2.0, 3.0],
+                "missing_field": null
+            },
+            "not_loaded_yet": {}
+        }));
+    }
+
+    #[test]
+    fn null_subscription_fields_are_fixed_from_initial_snapshot() {
+        let requested = serde_json::from_value(json!({
+            "toolhead": null,
+            "missing": null,
+            "explicit": ["position"]
+        })).unwrap();
+        let snapshot = json!({"status": {
+            "toolhead": {"position": [0.0, 0.0, 0.0], "homed_axes": "xyz"},
+            "missing": {}
+        }});
+
+        assert_eq!(
+            normalize_object_subscription(&requested, &snapshot),
+            serde_json::from_value(json!({
+                "toolhead": ["homed_axes", "position"],
+                "missing": [],
+                "explicit": ["position"]
+            })).unwrap()
+        );
+    }
+
+    #[test]
     fn object_query_rejects_malformed_field_selection() {
         let printer = std::sync::Arc::new(crate::Printer::new());
         printer.register_object("toolhead", serde_json::json!({"position": [0, 0, 0]})).unwrap();
@@ -1162,11 +1238,10 @@ where
                                         object_subscription_template = None;
                                         object_subscription_cache.clear();
                                     } else {
-                                        object_subscription = Some(objects.clone());
+                                        let snapshot = response.get("result").unwrap_or(&Value::Null);
+                                        object_subscription = Some(normalize_object_subscription(objects, snapshot));
                                         object_subscription_template = Some(template);
-                                        object_subscription_cache = status_cache_from_snapshot(
-                                            response.get("result").unwrap_or(&Value::Null)
-                                        );
+                                        object_subscription_cache = status_cache_from_snapshot(snapshot);
                                     }
                                 }
                             }
@@ -1193,7 +1268,7 @@ where
                                         object_subscription_template = None;
                                         object_subscription_cache.clear();
                                     } else {
-                                        object_subscription = Some(objects.clone());
+                                        object_subscription = Some(normalize_object_subscription(objects, &snapshot));
                                         object_subscription_template = Some(template);
                                         object_subscription_cache = status_cache_from_snapshot(&snapshot);
                                     }
