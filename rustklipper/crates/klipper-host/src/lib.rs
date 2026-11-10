@@ -311,6 +311,7 @@ impl ComponentRegistry {
         printer: &Printer,
         section: &str,
     ) -> Result<Vec<String>, ComponentError> {
+        let section = section.trim();
         let _load_guard = printer.lock_component_load();
         let config = printer.config().ok_or(ComponentError::ConfigNotLoaded)?;
         let mut loaded = Vec::new();
@@ -1154,6 +1155,7 @@ impl Printer {
         // Serialize unload with component factories and configuration
         // replacement so a concurrent load cannot publish a partially
         // unloaded component as successfully loaded.
+        let section = section.trim();
         let _load_guard = self.lock_component_load();
         let removed_commands = self.remove_component_gcode_commands(section);
         let removed_component = self
@@ -3091,6 +3093,25 @@ mod tests {
                 dependency,
             }) if section == "missing" && dependency == "missing"
         ));
+    }
+
+    #[test]
+    fn lazy_component_load_normalizes_section_name() {
+        let printer = Printer::new();
+        printer.install_config(ConfigDocument::parse("[fan]\\npin=PA0\\n").unwrap());
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register(" fan ", |printer, section| {
+                printer
+                    .register_object("fan", section.get("pin").unwrap().to_owned())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        assert_eq!(registry.load_component(&printer, " fan ").unwrap(), vec!["fan"]);
+        assert!(printer.has_object("fan"));
+        assert!(printer.unload_component(" fan "));
+        assert!(!printer.is_component_loaded("fan"));
     }
 
     #[test]
