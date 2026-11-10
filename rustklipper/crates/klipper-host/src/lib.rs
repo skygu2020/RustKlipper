@@ -1621,6 +1621,17 @@ impl Printer {
         self.gcode_dispatcher().command_help()
     }
 
+    /// Begin MCU dictionary discovery on one registered serial session.
+    /// All subsequent identify chunks are requested by the transport session.
+    pub fn start_mcu_identify(
+        &self,
+        name: &str,
+        queue_id: u64,
+        chunk_size: u8,
+    ) -> Result<(), McuRegistryError> {
+        self.mcus.start_identify(name, queue_id, chunk_size)
+    }
+
     /// Access the cooperative host event scheduler.
     pub fn mcus(&self) -> &McuRegistry {
         &self.mcus
