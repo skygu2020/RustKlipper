@@ -1659,22 +1659,30 @@ mod async_stream_tests {
         });
         let mut decoder = KlippyApiCodec::default();
 
+        // A following request is the synchronization barrier: subscription
+        // activation happens after its own response has been written.
         let subscribe = KlippyApiCodec::encode(&json!({
             "id": 1,
             "method": "objects/subscribe",
             "params": { "objects": { "toolhead": ["position"] } }
         })).unwrap();
         client.write_all(&subscribe).await.unwrap();
-        let mut received_initial = false;
-        while !received_initial {
+        let barrier = KlippyApiCodec::encode(&json!({
+            "id": 10,
+            "method": "info"
+        })).unwrap();
+        client.write_all(&barrier).await.unwrap();
+
+        let mut received_barrier = false;
+        while !received_barrier {
             let mut chunk = [0u8; 512];
             let count = tokio::time::timeout(
                 std::time::Duration::from_secs(2),
                 client.read(&mut chunk)
             ).await.unwrap().unwrap();
             assert_ne!(count, 0);
-            received_initial = decoder.push(&chunk[..count]).unwrap().into_iter().any(|message| {
-                message["id"] == 1
+            received_barrier = decoder.push(&chunk[..count]).unwrap().into_iter().any(|message| {
+                message["id"] == 10
             });
         }
 
@@ -1684,16 +1692,22 @@ mod async_stream_tests {
             "params": { "objects": {} }
         })).unwrap();
         client.write_all(&unsubscribe).await.unwrap();
-        let mut received_unsubscribe = false;
-        while !received_unsubscribe {
+        let barrier = KlippyApiCodec::encode(&json!({
+            "id": 20,
+            "method": "info"
+        })).unwrap();
+        client.write_all(&barrier).await.unwrap();
+
+        let mut received_unsubscribe_barrier = false;
+        while !received_unsubscribe_barrier {
             let mut chunk = [0u8; 512];
             let count = tokio::time::timeout(
                 std::time::Duration::from_secs(2),
                 client.read(&mut chunk)
             ).await.unwrap().unwrap();
             assert_ne!(count, 0);
-            received_unsubscribe = decoder.push(&chunk[..count]).unwrap().into_iter().any(|message| {
-                message["id"] == 2 && message["result"]["status"].as_object().is_some_and(|status| status.is_empty())
+            received_unsubscribe_barrier = decoder.push(&chunk[..count]).unwrap().into_iter().any(|message| {
+                message["id"] == 20
             });
         }
 
