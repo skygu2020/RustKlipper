@@ -12,6 +12,7 @@ klipper-gcode = { path = "../klipper-gcode" }
 klipper-transport = { path = "../klipper-transport" }
 thiserror.workspace = true
 serde_json.workspace = true
+tracing.workspace = true
 tokio = { version = "1", features = ["io-util", "net"] }
 
 [dev-dependencies]
