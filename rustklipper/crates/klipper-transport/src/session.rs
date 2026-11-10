@@ -1410,6 +1410,20 @@ impl ReliableSerialSession {
     /// then writes newly eligible scheduled frames. Serial read timeout is idle.
     pub fn poll(&mut self) -> Result<Vec<SessionEvent>, SessionError> {
         self.ensure_connected()?;
+        match self.poll_inner() {
+            Ok(events) => Ok(events),
+            Err(error) => {
+                // Every poll failure is terminal, including errors propagated
+                // by helper methods with '?' that do not own the session state.
+                // This keeps the documented reconnect-before-reuse contract
+                // consistent across all error paths.
+                self.disconnected = true;
+                Err(error)
+            }
+        }
+    }
+
+    fn poll_inner(&mut self) -> Result<Vec<SessionEvent>, SessionError> {
         // Drop response metadata when its waiter timed out or was cancelled.
         self.prune_abandoned_response_requests();
         let read_timeout =
