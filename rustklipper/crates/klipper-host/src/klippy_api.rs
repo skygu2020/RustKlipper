@@ -350,6 +350,26 @@ impl KlippyApiDispatcher {
         })
     }
 
+    /// Register the standard printer-backed Klippy API surface in one place.
+    ///
+    /// The dispatcher must be shared with the Host runtime and transport
+    /// listener. This helper wires the endpoints to the supplied live Printer
+    /// without introducing any dependency on Moonraker or a particular socket.
+    pub fn register_standard_endpoints(
+        self: &std::sync::Arc<Self>,
+        printer: std::sync::Arc<crate::Printer>,
+        software_version: impl Into<String>,
+    ) -> Result<(), KlippyApiRpcError> {
+        self.register_printer_info(printer.clone(), software_version)?;
+        self.register_object_listing(printer.clone())?;
+        self.register_object_query(printer.clone())?;
+        self.register_gcode_help(printer.clone())?;
+        self.register_gcode_script(printer.clone())?;
+        self.register_emergency_stop(printer)?;
+        self.register_endpoint_listing()?;
+        Ok(())
+    }
+
     /// Register Klippy's endpoint-discovery method used by Moonraker clients.
     ///
     /// The response shape matches Klippy's `list_endpoints` contract:
@@ -623,6 +643,50 @@ mod tests {
         let mut stream = TestStream::new(br#"{"id":1"#.to_vec());
         let error = serve_stream(&mut stream, &KlippyApiDispatcher::new()).unwrap_err();
         assert!(matches!(error, KlippyApiStreamError::TruncatedMessage { buffered: 7 }));
+    }
+
+    #[test]
+    fn standard_endpoint_registration_exposes_live_printer_api() {
+        let printer = std::sync::Arc::new(crate::Printer::new());
+        printer.set_ready();
+        printer.register_status_object("toolhead", serde_json::json!({
+            "position": [1.0, 2.0, 3.0],
+            "homed_axes": "xyz"
+        })).unwrap();
+
+        let dispatcher = std::sync::Arc::new(KlippyApiDispatcher::new());
+        dispatcher.register_standard_endpoints(printer, "rustklipper-test").unwrap();
+
+        let info = dispatcher.dispatch_value(json!({
+            "id": 1, "method": "info", "params": {}
+        })).unwrap();
+        assert_eq!(info["result"]["state"], "ready");
+        assert_eq!(info["result"]["software_version"], "rustklipper-test");
+
+        let objects = dispatcher.dispatch_value(json!({
+            "id": 2, "method": "objects/list", "params": {}
+        })).unwrap();
+        assert_eq!(objects["result"]["objects"], json!(["toolhead"]));
+
+        let status = dispatcher.dispatch_value(json!({
+            "id": 3, "method": "objects/query",
+            "params": { "objects": { "toolhead": ["position"] } }
+        })).unwrap();
+        assert_eq!(status["result"]["status"]["toolhead"]["position"], json!([1.0, 2.0, 3.0]));
+
+        let endpoints = dispatcher.dispatch_value(json!({
+            "id": 4, "method": "list_endpoints", "params": {}
+        })).unwrap();
+        assert_eq!(endpoints["result"]["endpoints"], json!([
+            "emergency_stop",
+            "gcode/help",
+            "gcode/script",
+            "gcode/subscribe_output",
+            "info",
+            "list_endpoints",
+            "objects/list",
+            "objects/query"
+        ]));
     }
 
     #[test]
