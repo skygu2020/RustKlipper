@@ -1906,16 +1906,21 @@ mod tests {
         let config = ConfigFileLoader::load(dir.join("trailing.cfg")).unwrap();
         assert_eq!(config.get("printer", "max_velocity"), Some("200"));
 
-        // Include matching is anchored at column zero. A leading space means
-        // this is an ordinary section header, not an include directive.
+        // ConfigParser section headers are anchored at column zero.
+        // An indented include header is therefore not a section and must not
+        // be interpreted as an include directive.
         fs::write(
             dir.join("indented.cfg"),
             " [include base.cfg]\n",
         )
         .unwrap();
-        let config = ConfigFileLoader::load(dir.join("indented.cfg")).unwrap();
-        assert!(config.has_section("include base.cfg"));
-        assert!(config.section("printer").is_none());
+        assert!(matches!(
+            ConfigFileLoader::load(dir.join("indented.cfg")),
+            Err(ConfigLoadError::Parse(ConfigParseError::MissingSection {
+                line: 1,
+                ..
+            }))
+        ));
 
         let _ = fs::remove_dir_all(&dir);
     }
