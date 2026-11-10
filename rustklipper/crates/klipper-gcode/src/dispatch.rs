@@ -301,6 +301,23 @@ impl GCodeDispatcher {
                 _ if !self.ready => {
                     events.push(DispatchEvent::Error(self.state_message.clone()));
                 }
+                // Klipper silently accepts heater-off and fan-off requests
+                // even when no corresponding device is configured.
+                "M104" | "M140" => match command.get_f64("S", Some(0.0)) {
+                    Ok(value) if value == 0.0 => {}
+                    Ok(_) => events.push(DispatchEvent::Info(format!(
+                        "Unknown command:\"{}\"", command.command()
+                    ))),
+                    Err(error) => events.push(DispatchEvent::Error(error.to_string())),
+                },
+                "M107" => {}
+                "M106" => match command.get_f64("S", Some(1.0)) {
+                    Ok(value) if value == 0.0 => {}
+                    Ok(_) => events.push(DispatchEvent::Info(format!(
+                        "Unknown command:\"{}\"", command.command()
+                    ))),
+                    Err(error) => events.push(DispatchEvent::Error(error.to_string())),
+                },
                 "" => {}
                 _ => events.push(DispatchEvent::Info(format!(
                     "Unknown command:\"{}\"", command.command()
@@ -555,6 +572,37 @@ mod tests {
         );
     }
 
+
+    #[test]
+    fn unconfigured_heater_and_fan_off_commands_are_silently_accepted() {
+        let mut dispatcher = GCodeDispatcher::new();
+        dispatcher.set_ready();
+
+        for line in ["M104", "M104 S0", "M140 S0", "M107", "M106 S0"] {
+            let outcome = dispatcher.process_line(line, true).unwrap();
+            assert!(
+                outcome.events == vec![DispatchEvent::Ack(None)],
+                "{line} should be silently accepted, got {:?}",
+                outcome.events
+            );
+        }
+    }
+
+    #[test]
+    fn unconfigured_heater_and_fan_on_commands_remain_unknown() {
+        let mut dispatcher = GCodeDispatcher::new();
+        dispatcher.set_ready();
+
+        for line in ["M104 S200", "M140 S60", "M106", "M106 S1"] {
+            let outcome = dispatcher.process_line(line, true).unwrap();
+            assert!(
+                matches!(outcome.events.first(), Some(DispatchEvent::Info(message))
+                    if message.contains("Unknown command")),
+                "{line} should remain unknown, got {:?}",
+                outcome.events
+            );
+        }
+    }
 
     #[test]
     fn pre_ready_temperature_query_only_acks_when_ack_is_requested() {
