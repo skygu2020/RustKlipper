@@ -647,7 +647,7 @@ mod tests {
     fn only_base_commands_are_available_before_ready() {
         let mut dispatcher = GCodeDispatcher::new();
         dispatcher
-            .register_command("M115", true, Some("Firmware version"), |_| {
+            .register_command("BASE_TEST", true, Some("Base command test"), |_| {
                 Ok(vec![DispatchEvent::Info("Klipper".to_owned())])
             })
             .unwrap();
@@ -655,7 +655,7 @@ mod tests {
             .register_command("G1", false, None, |_| Ok(Vec::new()))
             .unwrap();
 
-        assert!(dispatcher.process_line("M115", true).unwrap().handler_found);
+        assert!(dispatcher.process_line("BASE_TEST", true).unwrap().handler_found);
         let blocked = dispatcher.process_line("G1 X1", true).unwrap();
         assert!(!blocked.handler_found);
         assert!(matches!(blocked.events.first(), Some(DispatchEvent::Error(_))));
@@ -729,12 +729,12 @@ mod tests {
         let mut dispatcher = GCodeDispatcher::new();
         dispatcher.set_ready();
         dispatcher
-            .register_command("M115", false, None, |_| {
+            .register_command("TEST_ACK", false, None, |_| {
                 Ok(vec![DispatchEvent::Ack(Some("FIRMWARE_NAME:Klipper".to_owned()))])
             })
             .unwrap();
 
-        let result = dispatcher.process_line("M115", true).unwrap();
+        let result = dispatcher.process_line("TEST_ACK", true).unwrap();
         assert_eq!(
             result.events,
             vec![DispatchEvent::Ack(Some("FIRMWARE_NAME:Klipper".to_owned()))]
