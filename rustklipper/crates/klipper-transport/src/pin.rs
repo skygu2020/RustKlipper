@@ -46,8 +46,15 @@ impl PinResolver {
         pin: impl Into<String>,
         reserve_name: impl Into<String>,
     ) -> Result<(), PinResolverError> {
-        let pin = pin.into();
+        let requested_pin = pin.into();
+        let pin = self
+            .aliases
+            .get(&requested_pin)
+            .cloned()
+            .unwrap_or(requested_pin);
         let reserve_name = reserve_name.into();
+        // Reservations must use the same physical-pin key as command
+        // resolution; otherwise reserving an alias would not protect its target.
         // Klipper does not permit reserving a pin after a config command has
         // already activated it. Check before mutating the reservation map.
         if let Some(active) = self.active_pins.get(&pin) {
@@ -237,6 +244,26 @@ mod tests {
             }) if pin == "PA1" && active == "LED"
         ));
         assert!(!resolver.reserved().contains_key("PA1"));
+    }
+
+    #[test]
+    fn reserving_an_alias_reserves_its_physical_target() {
+        let mut resolver = PinResolver::new(true);
+        resolver.alias_pin("LED", "PA1").unwrap();
+
+        resolver.reserve_pin("LED", "status_led").unwrap();
+        assert_eq!(resolver.reserved().get("PA1").map(String::as_str), Some("status_led"));
+        assert!(!resolver.reserved().contains_key("LED"));
+        assert!(matches!(
+            resolver.update_command("config_a pin=LED"),
+            Err(PinResolverError::ReservedPin { pin, owner })
+                if pin == "LED" && owner == "status_led"
+        ));
+        assert!(matches!(
+            resolver.reserve_pin("PA1", "spi"),
+            Err(PinResolverError::ReservationConflict { pin, owner, requested })
+                if pin == "PA1" && owner == "status_led" && requested == "spi"
+        ));
     }
 
     #[test]
