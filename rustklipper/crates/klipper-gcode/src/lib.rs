@@ -163,6 +163,13 @@ impl GCodeCommand {
         above: Option<f64>,
         below: Option<f64>,
     ) -> Result<(), GCodeError> {
+        if !value.is_finite() {
+            return Err(GCodeError::InvalidParameter {
+                line: self.commandline().to_owned(),
+                parameter: name.to_owned(),
+                value: value.to_string(),
+            });
+        }
         let constraint = if let Some(min) = min.filter(|bound| value < *bound) {
             Some(format!("at least {min}"))
         } else if let Some(max) = max.filter(|bound| value > *bound) {
@@ -379,6 +386,18 @@ mod tests {
             parsed.extended_parameters(),
             Err(GCodeError::MalformedCommand { .. })
         ));
+    }
+
+    #[test]
+    fn check_range_rejects_non_finite_values() {
+        let command = GCodeCommand::new(parse_line("SET_VALUE VALUE=1").unwrap());
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(matches!(
+                command.check_range("VALUE", value, Some(0.0), Some(10.0), None, None),
+                Err(GCodeError::InvalidParameter { parameter, .. }) if parameter == "VALUE"
+            ));
+        }
+        assert!(command.check_range("VALUE", 5.0, Some(0.0), Some(10.0), None, None).is_ok());
     }
 
     #[test]
