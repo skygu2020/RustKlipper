@@ -442,10 +442,13 @@ impl KlippyApiDispatcher {
     /// but intentionally produce no response, matching Moonruster's client.
     pub fn dispatch_value(&self, value: Value) -> Option<Value> {
         let id = value.as_object().and_then(|object| object.get("id")).cloned();
+        let response_id = id.as_ref().filter(|id| {
+            id.is_null() || id.is_string() || id.is_number()
+        }).cloned().unwrap_or(Value::Null);
         let request = match KlippyApiRequest::from_value(value) {
             Ok(request) => request,
             Err(error) => {
-                return Some(rpc_error_response(id.unwrap_or(Value::Null),
+                return Some(rpc_error_response(response_id,
                     KlippyApiRpcError::invalid_request(error.to_string())));
             }
         };
@@ -798,6 +801,33 @@ mod tests {
                 "method": "info"
             })).unwrap_err();
             assert_eq!(error, KlippyApiCodecError::InvalidId);
+        }
+    }
+
+    #[test]
+    fn invalid_request_ids_are_normalized_to_null_in_error_responses() {
+        let dispatcher = KlippyApiDispatcher::new();
+        for id in [json!(true), json!([]), json!({"nested": 1})] {
+            let response = dispatcher.dispatch_value(json!({
+                "id": id,
+                "method": "info"
+            })).unwrap();
+            assert_eq!(response["id"], Value::Null);
+            assert_eq!(response["error"]["code"], json!(-32600));
+        }
+    }
+
+    #[test]
+    fn valid_request_ids_are_preserved_when_other_request_fields_are_invalid() {
+        let dispatcher = KlippyApiDispatcher::new();
+        for id in [json!("client-1"), json!(42), Value::Null] {
+            let response = dispatcher.dispatch_value(json!({
+                "id": id,
+                "method": "info",
+                "params": []
+            })).unwrap();
+            assert_eq!(response["id"], id);
+            assert_eq!(response["error"]["code"], json!(-32600));
         }
     }
 
