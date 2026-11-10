@@ -14,6 +14,8 @@ pub enum McuRegistryError {
     OpenFailed { name: String, message: String },
     #[error("opening MCU '{name}' was cancelled by registry cleanup")]
     OpenCancelled { name: String },
+    #[error("MCU '{name}' session is already disconnected")]
+    DisconnectedSession { name: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -135,6 +137,9 @@ impl McuRegistry {
     ) -> Result<(), McuRegistryError> {
         let name = name.into();
         self.validate_name(&name)?;
+        if session.is_disconnected() {
+            return Err(McuRegistryError::DisconnectedSession { name });
+        }
         let mut state = self.state.lock().expect("MCU registry lock poisoned");
         if state.sessions.contains_key(&name) || state.opening.contains(&name) {
             return Err(McuRegistryError::DuplicateName { name });
