@@ -154,7 +154,7 @@ mod tests {
     async fn post_json_rpc(address: SocketAddr, payload: &str) -> String {
         let mut stream = TcpStream::connect(address).await.unwrap();
         let request = format!(
-            "POST /server/jsonrpc HTTP/1.1\\r\\nHost: localhost\\r\\nContent-Type: application/json\\r\\nContent-Length: {}\\r\\nConnection: close\\r\\n\\r\\n{}",
+            "POST /server/jsonrpc HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
             payload.len(),
             payload,
         );
@@ -173,7 +173,7 @@ mod tests {
         )
         .await;
         assert!(response.starts_with("HTTP/1.1 200"));
-        let body = response.split("\\r\\n\\r\\n").nth(1).unwrap();
+        let body = response.split("\r\n\r\n").nth(1).unwrap();
         let value: serde_json::Value = serde_json::from_str(body).unwrap();
         assert_eq!(value["id"], json!(9));
         assert_eq!(value["result"]["value"], json!(42));
@@ -185,7 +185,7 @@ mod tests {
         let (address, task) = start_test_server().await;
         let response = post_json_rpc(address, "{").await;
         assert!(response.starts_with("HTTP/1.1 200"));
-        let body = response.split("\\r\\n\\r\\n").nth(1).unwrap();
+        let body = response.split("\r\n\r\n").nth(1).unwrap();
         let value: serde_json::Value = serde_json::from_str(body).unwrap();
         assert_eq!(value["error"]["code"], json!(-32700));
         task.abort();
@@ -196,7 +196,7 @@ mod tests {
         let (address, task) = start_test_server().await;
         let mut stream = TcpStream::connect(address).await.unwrap();
         stream
-            .write_all(b"GET /server/jsonrpc HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n")
+            .write_all(b"GET /server/jsonrpc HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
             .await
             .unwrap();
         let mut response = Vec::new();
