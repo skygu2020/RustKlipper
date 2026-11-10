@@ -717,7 +717,8 @@ mod tests {
             "info",
             "list_endpoints",
             "objects/list",
-            "objects/query"
+            "objects/query",
+            "objects/subscribe"
         ]));
     }
 
@@ -870,6 +871,28 @@ mod tests {
             "params": { "objects": { "toolhead": ["position"] } }
         })).unwrap();
         assert_eq!(updated["result"]["status"]["toolhead"]["position"], json!([4.0, 5.0, 6.0]));
+    }
+
+    #[test]
+    fn object_subscription_returns_initial_eventtime_and_selected_status() {
+        let printer = std::sync::Arc::new(crate::Printer::new());
+        printer.register_status_object("toolhead", serde_json::json!({
+            "position": [1.0, 2.0, 3.0],
+            "homed_axes": "xyz"
+        })).unwrap();
+
+        let dispatcher = KlippyApiDispatcher::new();
+        dispatcher.register_object_subscription(printer).unwrap();
+        let response = dispatcher.dispatch_value(json!({
+            "id": 12,
+            "method": "objects/subscribe",
+            "params": { "objects": { "toolhead": ["position"] } }
+        })).unwrap();
+
+        assert_eq!(response["result"]["status"]["toolhead"], json!({
+            "position": [1.0, 2.0, 3.0]
+        }));
+        assert!(response["result"]["eventtime"].as_f64().is_some());
     }
 
     #[test]
