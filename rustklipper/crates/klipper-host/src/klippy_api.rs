@@ -903,6 +903,9 @@ where
                     if message.get("method").and_then(Value::as_str)
                         == Some("gcode/subscribe_output")
                     {
+                        // Start at the subscription point so output emitted
+                        // before this request is never replayed to the client.
+                        output = dispatcher.subscribe_gcode_output();
                         subscribed = true;
                     }
                     if let Some(response) = dispatcher.dispatch_value(message) {
