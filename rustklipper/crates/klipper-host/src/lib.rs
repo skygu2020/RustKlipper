@@ -2412,6 +2412,69 @@ mod tests {
     }
 
     #[test]
+    fn failed_component_factory_rolls_back_mcu_config_contributions() {
+        let printer = Printer::new();
+        printer.install_config(ConfigDocument::parse("[heater_component]\n").unwrap());
+        let mut registry = ComponentRegistry::new();
+        registry.register("heater_component", |printer, _| {
+            printer.with_mcu_config_builder("mcu", |builder| {
+                assert_eq!(builder.allocate_oid("heater").unwrap(), 0);
+                builder.add_config_command("config_heater oid=0");
+            });
+            Err("component initialization failed".to_owned())
+        }).unwrap();
+
+        assert!(matches!(
+            printer.load_components(&registry),
+            Err(ComponentError::LoadFailed { .. })
+        ));
+        assert!(printer.mcu_config_builder_snapshot("mcu").is_none());
+    }
+
+    #[test]
+    fn successful_components_share_one_mcu_oid_allocator() {
+        let printer = Printer::new();
+        printer.install_config(
+            ConfigDocument::parse("[heater_component]\n\n[fan_component]\n").unwrap(),
+        );
+        let mut registry = ComponentRegistry::new();
+        registry.register("heater_component", |printer, _| {
+            printer.with_mcu_config_builder("mcu", |builder| {
+                assert_eq!(builder.allocate_oid("heater").unwrap(), 0);
+                builder.add_config_command("config_heater oid=0");
+            });
+            Ok(())
+        }).unwrap();
+        registry.register("fan_component", |printer, _| {
+            printer.with_mcu_config_builder("mcu", |builder| {
+                assert_eq!(builder.allocate_oid("fan").unwrap(), 1);
+                builder.add_config_command("config_fan oid=1");
+            });
+            Ok(())
+        }).unwrap();
+
+        printer.load_components(&registry).unwrap();
+        let builder = printer.mcu_config_builder_snapshot("mcu").unwrap();
+        assert_eq!(builder.oid_count(), 2);
+        assert_eq!(builder.oid("heater"), Some(0));
+        assert_eq!(builder.oid("fan"), Some(1));
+        assert_eq!(
+            builder.config_commands(),
+            &["config_heater oid=0".to_owned(), "config_fan oid=1".to_owned()]
+        );
+    }
+
+    #[test]
+    fn installing_new_config_clears_component_mcu_config_contributions() {
+        let printer = Printer::new();
+        printer.with_mcu_config_builder("mcu", |builder| {
+            builder.allocate_oid("heater").unwrap();
+        });
+        printer.install_config(ConfigDocument::parse("[printer]\n").unwrap());
+        assert!(printer.mcu_config_builder_snapshot("mcu").is_none());
+    }
+
+    #[test]
     fn object_registration_transactions_recover_after_poisoning() {
         let printer = Printer::new();
         let poisoned = printer.object_registration_transactions.lock().unwrap();
