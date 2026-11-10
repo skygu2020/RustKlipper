@@ -8,9 +8,10 @@ description = "Rust implementation of the Moonraker API server"
 
 [dependencies]
 serde.workspace = true
+klipper-host = { path = "../klipper-host" }
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { version = "1", features = ["net", "rt", "macros", "time", "sync"] }
+tokio = { version = "1", features = ["net", "rt", "macros", "time", "sync", "io-util"] }
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
