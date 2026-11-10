@@ -37,11 +37,15 @@ impl ParsedLine {
             start = position + self.command.len();
         }
         let mut end = self.original.len();
-        if let Some(star) = self.original.rfind('*') {
-            if self.original[star + 1..].trim().chars().all(|ch| ch.is_ascii_digit())
-                && !self.original[star + 1..].trim().is_empty()
-            {
-                end = star;
+        // A trailing checksum belongs to a numbered G-code line. On an
+        // unnumbered extended command, '*' is ordinary parameter content.
+        if self.line_number.is_some() {
+            if let Some(star) = self.original.rfind('*') {
+                if self.original[star + 1..].trim().chars().all(|ch| ch.is_ascii_digit())
+                    && !self.original[star + 1..].trim().is_empty()
+                {
+                    end = star;
+                }
             }
         }
         let raw = &self.original[start.min(end)..end];
@@ -387,6 +391,18 @@ mod tests {
             single_quoted.extended_parameters().unwrap().get("MSG").map(String::as_str),
             Some(r#"hello\ world"#)
         );
+    }
+
+    #[test]
+    fn extended_parameter_asterisks_are_not_treated_as_checksums() {
+        let parsed = parse_line("RESPOND MSG=version*123").unwrap();
+        assert_eq!(
+            parsed.extended_parameters().unwrap().get("MSG").map(String::as_str),
+            Some("version*123")
+        );
+
+        let numbered = parse_line("N123 G1 X10*45").unwrap();
+        assert_eq!(numbered.raw_parameters(), "X10");
     }
 
     #[test]
