@@ -35,6 +35,7 @@ struct Registration {
 struct MuxRegistration {
     key: String,
     values: HashMap<Option<String>, Handler>,
+    value_order: Vec<Option<String>>,
 }
 
 /// Result of processing one input line.
@@ -172,6 +173,7 @@ impl GCodeDispatcher {
                 MuxRegistration {
                     key: key.to_owned(),
                     values: HashMap::new(),
+                    value_order: Vec::new(),
                 },
             );
         }
@@ -183,6 +185,7 @@ impl GCodeDispatcher {
                 line: format!("mux command {name} {key} {value:?} already registered"),
             });
         }
+        mux.value_order.push(value.clone());
         mux.values.insert(value, Arc::new(handler));
         Ok(())
     }
@@ -349,20 +352,22 @@ fn dispatch_mux(
     }
 
     let value_text = value.as_deref().unwrap_or("");
-    // HashMap iteration order is randomized; sort values so error messages
-    // remain stable across runs and match reproducible host-side diagnostics.
-    let mut registered_values: Vec<_> = mux
-        .values
-        .keys()
+    // Klipper's mux values are stored in a Python dict, whose iteration
+    // order follows registration order. Preserve that order both for the
+    // options list and for the last matching substring suggestion.
+    let registered_values: Vec<_> = mux
+        .value_order
+        .iter()
         .filter_map(|value| value.as_deref())
         .collect();
-    registered_values.sort_unstable();
 
     let mut hint = String::new();
-    let suggestion = registered_values
-        .iter()
-        .copied()
-        .find(|candidate| !value_text.is_empty() && candidate.contains(value_text));
+    let mut suggestion = None;
+    for candidate in &registered_values {
+        if !value_text.is_empty() && candidate.contains(value_text) {
+            suggestion = Some(*candidate);
+        }
+    }
     if let Some(suggestion) = suggestion {
         hint = format!(". Did you mean '{suggestion}'?");
     } else if !registered_values.is_empty() {
@@ -745,7 +750,7 @@ mod tests {
 
 
     #[test]
-    fn mux_invalid_value_diagnostics_are_sorted_deterministically() {
+    fn mux_invalid_value_diagnostics_follow_registration_order() {
         let mut dispatcher = GCodeDispatcher::new();
         dispatcher.set_ready();
         for value in ["zeta", "fast", "faster", "alpha"] {
@@ -756,13 +761,14 @@ mod tests {
                 .unwrap();
         }
 
+        // Klipper keeps the last matching suggestion in registration order.
         let suggestion = dispatcher
             .process_line("SET_MODE MODE=fas", true)
             .unwrap();
         assert!(matches!(
             suggestion.events.first(),
             Some(DispatchEvent::Error(message))
-                if message.contains("Did you mean 'fast'?")
+                if message.contains("Did you mean 'faster'?")
         ));
 
         let options = dispatcher
@@ -771,7 +777,7 @@ mod tests {
         assert!(matches!(
             options.events.first(),
             Some(DispatchEvent::Error(message))
-                if message.contains("Options: 'alpha', 'fast', 'faster', 'zeta'")
+                if message.contains("Options: 'zeta', 'fast', 'faster', 'alpha'")
         ));
     }
 
