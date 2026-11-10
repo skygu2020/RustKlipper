@@ -2676,11 +2676,18 @@ mod tests {
     #[test]
     fn disconnect_during_component_loading_prevents_connection_events() {
         let printer = Arc::new(Printer::new());
-        printer.install_config(ConfigDocument::parse("[fan]\npin=PA0\n").unwrap());
+        printer.install_config(
+            ConfigDocument::parse(
+                "[fan]\npin=PA0\n[heater_generic hotend]\nmax_temp=250\n",
+            )
+            .unwrap(),
+        );
         let identifies = Arc::new(AtomicUsize::new(0));
         let connects = Arc::new(AtomicUsize::new(0));
+        let later_factories = Arc::new(AtomicUsize::new(0));
         let seen_identifies = identifies.clone();
         let seen_connects = connects.clone();
+        let seen_later_factories = later_factories.clone();
         printer.register_event_handler(PrinterEventKind::McuIdentify, move |_| {
             seen_identifies.fetch_add(1, Ordering::SeqCst);
         });
@@ -2690,8 +2697,17 @@ mod tests {
         let disconnect_printer = printer.clone();
         let mut registry = ComponentRegistry::new();
         registry
-            .register("fan", move |_, _| {
+            .register("fan", move |printer, _| {
+                printer
+                    .register_object("partial_fan", "PA0".to_owned())
+                    .map_err(|error| error.to_string())?;
                 disconnect_printer.disconnect();
+                Ok(())
+            })
+            .unwrap();
+        registry
+            .register("heater_generic hotend", move |_, _| {
+                seen_later_factories.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             })
             .unwrap();
@@ -2700,6 +2716,9 @@ mod tests {
         assert_eq!(printer.state(), PrinterState::Disconnected);
         assert_eq!(identifies.load(Ordering::SeqCst), 0);
         assert_eq!(connects.load(Ordering::SeqCst), 0);
+        assert_eq!(later_factories.load(Ordering::SeqCst), 0);
+        assert!(!printer.has_object("partial_fan"));
+        assert!(printer.loaded_component_names().is_empty());
     }
 
     #[test]
