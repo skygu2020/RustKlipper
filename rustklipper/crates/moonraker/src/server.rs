@@ -416,6 +416,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn klippysocket_forwards_etx_framed_requests_to_host_dispatcher() {
+        let mut router = JsonRpcRouter::new();
+        router.register("printer.test_echo", |params| Ok(params)).unwrap();
+
+        let dispatcher = Arc::new(KlippyApiDispatcher::new());
+        dispatcher.register("info", |_| Ok(json!({"state": "ready"}))).unwrap();
+
+        let server = MoonrakerHttpServer::bind_with_klippy_dispatcher(
+            "127.0.0.1:0".parse().unwrap(),
+            Arc::new(router),
+            dispatcher,
+        ).await.unwrap();
+        let address = server.local_addr().unwrap();
+        let task = tokio::spawn(server.run());
+
+        let (mut websocket, response) = connect_async(format!("ws://{address}/klippysocket"))
+            .await.unwrap();
+        assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+
+        websocket.send(ClientMessage::Text(
+            r#"{"id":41,"method":"info","params":{}}"#.into(),
+        )).await.unwrap();
+
+        let message = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            websocket.next(),
+        ).await.unwrap().unwrap().unwrap();
+        let ClientMessage::Text(text) = message else {
+            panic!("expected a Klippy API JSON response");
+        };
+        let value: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value, json!({"id": 41, "result": {"state": "ready"}}));
+
+        websocket.close(None).await.unwrap();
+        task.abort();
+    }
+
+    #[tokio::test]
     async fn websocket_exposes_id_and_identification_methods() {
         let mut router = JsonRpcRouter::new();
         router.register("printer.test_echo", |params| Ok(params)).unwrap();
