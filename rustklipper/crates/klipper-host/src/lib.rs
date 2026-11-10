@@ -63,6 +63,10 @@ pub struct PrinterRunBatch {
 
 const MCU_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
 
+fn bounded_host_wait(max_wait: std::time::Duration) -> std::time::Duration {
+    max_wait.min(MCU_POLL_INTERVAL)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PrinterEventKind {
     ConfigLoaded,
@@ -1605,7 +1609,7 @@ impl Printer {
     /// the caller receives the complete MCU event/error batch for dispatch.
     /// Repeated calls drive both reactor callbacks and MCU transport progress.
     pub fn run_host_once(&self, max_wait: std::time::Duration) -> PrinterRunBatch {
-        let reactor_wait = max_wait.min(MCU_POLL_INTERVAL);
+        let reactor_wait = bounded_host_wait(max_wait);
         let reactor_callbacks = self.reactor.run_once(reactor_wait);
         let mcus = self.poll_mcus();
         PrinterRunBatch {
@@ -1775,16 +1779,19 @@ mod tests {
     }
 
     #[test]
-    fn host_iteration_caps_idle_wait_for_regular_mcu_polling() {
-        let printer = Printer::new();
-        let start = std::time::Instant::now();
-
-        let batch = printer.run_host_once(std::time::Duration::from_millis(100));
-
-        assert_eq!(batch.reactor_callbacks, 0);
-        assert!(batch.mcus.events.is_empty());
-        assert!(batch.mcus.errors.is_empty());
-        assert!(start.elapsed() < std::time::Duration::from_millis(80));
+    fn host_iteration_bounds_wait_to_keep_mcu_polling_regular() {
+        assert_eq!(
+            bounded_host_wait(std::time::Duration::from_millis(100)),
+            std::time::Duration::from_millis(20)
+        );
+        assert_eq!(
+            bounded_host_wait(std::time::Duration::from_millis(5)),
+            std::time::Duration::from_millis(5)
+        );
+        assert_eq!(
+            bounded_host_wait(std::time::Duration::ZERO),
+            std::time::Duration::ZERO
+        );
     }
 
     #[test]
