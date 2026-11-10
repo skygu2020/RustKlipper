@@ -493,6 +493,50 @@ fn query_printer_status(
     }))
 }
 
+/// Keep only status fields whose values differ from the last snapshot sent
+/// to this connection. Klipper's objects/subscribe notifications are deltas,
+/// not repeated full snapshots.
+fn changed_status_snapshot(
+    snapshot: &Value,
+    previous: &mut Map<String, Value>,
+) -> Option<Value> {
+    let status = snapshot.get("status")?.as_object()?;
+    let mut changed_status = Map::new();
+
+    for (object_name, current_value) in status {
+        let current_fields = current_value.as_object()?;
+        let previous_fields = previous.get(object_name).and_then(Value::as_object);
+        let mut changed_fields = Map::new();
+
+        for (field_name, value) in current_fields {
+            if previous_fields.and_then(|fields| fields.get(field_name)) != Some(value) {
+                changed_fields.insert(field_name.clone(), value.clone());
+            }
+        }
+
+        previous.insert(object_name.clone(), current_value.clone());
+        if !changed_fields.is_empty() {
+            changed_status.insert(object_name.clone(), Value::Object(changed_fields));
+        }
+    }
+
+    if changed_status.is_empty() {
+        None
+    } else {
+        Some(serde_json::json!({
+            "eventtime": snapshot.get("eventtime").cloned().unwrap_or(Value::Null),
+            "status": changed_status
+        }))
+    }
+}
+
+fn status_cache_from_snapshot(snapshot: &Value) -> Map<String, Value> {
+    snapshot.get("status")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default()
+}
+
 fn gcode_output_response_template(
     params: &Value,
 ) -> Result<serde_json::Map<String, Value>, KlippyApiRpcError> {
@@ -1066,6 +1110,9 @@ where
     let mut status_updates = printer.as_ref().map(|printer| printer.subscribe_status_updates());
     let mut object_subscription: Option<Map<String, Value>> = None;
     let mut object_subscription_template: Option<Map<String, Value>> = None;
+    // Last full status snapshot observed by this connection, used to emit
+    // only changed fields in subsequent status notifications.
+    let mut object_subscription_cache: Map<String, Value> = Map::new();
 
     loop {
         tokio::select! {
@@ -1110,6 +1157,9 @@ where
                                 ) {
                                     object_subscription = Some(objects.clone());
                                     object_subscription_template = Some(template);
+                                    object_subscription_cache = status_cache_from_snapshot(
+                                        response.get("result").unwrap_or(&Value::Null)
+                                    );
                                 }
                             }
                         }
@@ -1125,13 +1175,14 @@ where
                         if let (Some(params), Some(printer)) =
                             (object_subscription_request, printer.as_ref())
                         {
-                            if query_printer_status(printer, &params).is_ok() {
+                            if let Ok(snapshot) = query_printer_status(printer, &params) {
                                 if let (Ok(template), Some(objects)) = (
                                     object_status_response_template(&params),
                                     params.get("objects").and_then(Value::as_object),
                                 ) {
                                     object_subscription = Some(objects.clone());
                                     object_subscription_template = Some(template);
+                                    object_subscription_cache = status_cache_from_snapshot(&snapshot);
                                 }
                             }
                         }
@@ -1152,16 +1203,17 @@ where
                                     "objects": { (object_name.clone()): fields.clone() }
                                 });
                                 if let Ok(snapshot) = query_printer_status(printer, &requested) {
-                                    let params = serde_json::json!({
-                                        "eventtime": snapshot["eventtime"],
-                                        "status": snapshot["status"]
-                                    });
-                                    let mut notification = object_subscription_template.clone()
-                                        .expect("object response template is present while subscribed");
-                                    notification.insert("params".to_owned(), params);
-                                    let encoded = KlippyApiCodec::encode(&Value::Object(notification))?;
-                                    writer.write_all(&encoded).await?;
-                                    writer.flush().await?;
+                                    if let Some(params) = changed_status_snapshot(
+                                        &snapshot,
+                                        &mut object_subscription_cache,
+                                    ) {
+                                        let mut notification = object_subscription_template.clone()
+                                            .expect("object response template is present while subscribed");
+                                        notification.insert("params".to_owned(), params);
+                                        let encoded = KlippyApiCodec::encode(&Value::Object(notification))?;
+                                        writer.write_all(&encoded).await?;
+                                        writer.flush().await?;
+                                    }
                                 }
                             }
                         }
@@ -1172,12 +1224,17 @@ where
                                 ("objects".to_owned(), Value::Object(subscription.clone()))
                             ]));
                             if let Ok(snapshot) = query_printer_status(printer, &requested) {
-                                let mut notification = object_subscription_template.clone()
-                                    .expect("object response template is present while subscribed");
-                                notification.insert("params".to_owned(), snapshot);
-                                let encoded = KlippyApiCodec::encode(&Value::Object(notification))?;
-                                writer.write_all(&encoded).await?;
-                                writer.flush().await?;
+                                if let Some(params) = changed_status_snapshot(
+                                    &snapshot,
+                                    &mut object_subscription_cache,
+                                ) {
+                                    let mut notification = object_subscription_template.clone()
+                                        .expect("object response template is present while subscribed");
+                                    notification.insert("params".to_owned(), params);
+                                    let encoded = KlippyApiCodec::encode(&Value::Object(notification))?;
+                                    writer.write_all(&encoded).await?;
+                                    writer.flush().await?;
+                                }
                             }
                         }
                     }
