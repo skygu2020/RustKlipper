@@ -2172,7 +2172,7 @@ mod command_send_timing_tests {
         let mut scheduler = CommandScheduler::new();
         scheduler.enqueue(1, ScheduledCommand::new(vec![0x77], 100, 100)).unwrap();
         let mut clock = update();
-        clock.queue_frequency = 1e-300;
+        clock.queue_frequency = f64::MIN_POSITIVE;
         let timing = UartTiming::new(115_200).unwrap();
 
         assert_eq!(
