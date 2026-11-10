@@ -21,6 +21,8 @@ pub enum KlippyApiCodecError {
     ExpectedObject,
     #[error("Klippy API request is missing a string method")]
     MissingMethod,
+    #[error("Klippy API request params must be a JSON object")]
+    ExpectedParamsObject,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -35,11 +37,15 @@ impl KlippyApiRequest {
         let object = value.as_object().ok_or(KlippyApiCodecError::ExpectedObject)?;
         let method = object.get("method").and_then(Value::as_str)
             .ok_or(KlippyApiCodecError::MissingMethod)?.to_owned();
+        let params = match object.get("params") {
+            None => Value::Object(Map::new()),
+            Some(Value::Object(params)) => Value::Object(params.clone()),
+            Some(_) => return Err(KlippyApiCodecError::ExpectedParamsObject),
+        };
         Ok(Self {
             id: object.get("id").cloned(),
             method,
-            params: object.get("params").cloned()
-                .unwrap_or_else(|| Value::Object(Map::new())),
+            params,
         })
     }
 
@@ -707,6 +713,32 @@ mod tests {
         let notification = KlippyApiRequest::from_value(json!({"method":"process_status_update"})).unwrap();
         assert!(notification.is_notification());
         assert_eq!(notification.params, json!({}));
+    }
+
+    #[test]
+    fn rejects_non_object_request_params() {
+        for params in [
+            json!(null),
+            json!("invalid"),
+            json!([1, 2]),
+            json!(42),
+        ] {
+            let error = KlippyApiRequest::from_value(json!({
+                "id": 1,
+                "method": "info",
+                "params": params
+            })).unwrap_err();
+            assert_eq!(error, KlippyApiCodecError::ExpectedParamsObject);
+        }
+    }
+
+    #[test]
+    fn missing_request_params_default_to_an_empty_object() {
+        let request = KlippyApiRequest::from_value(json!({
+            "id": 1,
+            "method": "info"
+        })).unwrap();
+        assert_eq!(request.params, json!({}));
     }
 
     #[test]
