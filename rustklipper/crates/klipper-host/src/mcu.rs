@@ -316,6 +316,45 @@ impl McuRegistry {
         }
     }
 
+    /// Select the dedicated scheduler queue for periodic MCU clock sampling.
+    /// This must be configured before startup clock calibration begins.
+    pub fn set_periodic_clock_queue_id(
+        &self,
+        name: &str,
+        queue_id: u64,
+    ) -> Result<(), McuRegistryError> {
+        let name = normalize_mcu_name(name.to_owned())?;
+        match self.with_session(&name, |session| session.set_periodic_clock_queue_id(queue_id)) {
+            Some(Ok(())) => Ok(()),
+            Some(Err(error)) => Err(McuRegistryError::SessionOperation {
+                name,
+                message: error.to_string(),
+            }),
+            None => Err(McuRegistryError::SessionNotFound { name }),
+        }
+    }
+
+    /// Consume one startup get_clock response and queue the next sample.
+    /// Returns None after the eighth sample completes calibration.
+    pub fn handle_clock_calibration_response(
+        &self,
+        name: &str,
+        queue_id: u64,
+        response: klipper_transport::Response,
+    ) -> Result<Option<klipper_transport::ResponseWaiter>, McuRegistryError> {
+        let name = normalize_mcu_name(name.to_owned())?;
+        match self.with_session(&name, |session| {
+            session.handle_clock_calibration_response(queue_id, response)
+        }) {
+            Some(Ok(waiter)) => Ok(waiter),
+            Some(Err(error)) => Err(McuRegistryError::SessionOperation {
+                name,
+                message: error.to_string(),
+            }),
+            None => Err(McuRegistryError::SessionNotFound { name }),
+        }
+    }
+
     /// Return the current startup phase for one registered MCU.
     ///
     /// A missing or concurrently detached MCU returns None. Session locking
