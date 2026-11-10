@@ -6,6 +6,8 @@
 
 pub mod jsonrpc;
 pub mod server;
+pub mod websocket;
 
 pub use jsonrpc::{JsonRpcRouter, RpcError, RpcId, RpcRequest, RpcResponse};
 pub use server::MoonrakerHttpServer;
+pub use websocket::{ClientInfo, WebSocketConnection, WebSocketManager};
