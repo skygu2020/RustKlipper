@@ -88,6 +88,28 @@ fn encode_retransmission_batch(retries: &[Retransmission]) -> Vec<u8> {
     batch
 }
 
+/// Read one available serial chunk, retrying interrupted system calls.
+///
+/// A timeout or nonblocking "would block" result is represented as zero bytes;
+/// callers can continue their polling loop without treating it as a disconnect.
+fn read_serial_chunk<R: Read>(reader: &mut R, buffer: &mut [u8]) -> std::io::Result<usize> {
+    loop {
+        match reader.read(buffer) {
+            Ok(count) => return Ok(count),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ) =>
+            {
+                return Ok(0);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 pub struct UsbSerialTransport {
     port: Box<dyn SerialPort>,
     decoder: FrameDecoder,
@@ -110,26 +132,11 @@ impl UsbSerialTransport {
     ///
     /// A timeout is not a disconnect: it simply returns an empty frame list.
     pub fn read_frames(&mut self) -> Result<Vec<Frame>, TransportError> {
-        loop {
-            match self.port.read(&mut self.read_buffer) {
-                Ok(0) => return Ok(Vec::new()),
-                Ok(count) => return Ok(self.decoder.push(&self.read_buffer[..count])),
-                // Interrupted is transient and the read should be retried.
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                // Serial backends may report either TimedOut or WouldBlock
-                // when no bytes are currently available. Neither means that
-                // the MCU transport has disconnected.
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
-                    ) =>
-                {
-                    return Ok(Vec::new());
-                }
-                Err(error) => return Err(TransportError::Io(error)),
-            }
+        let count = read_serial_chunk(&mut self.port, &mut self.read_buffer)?;
+        if count == 0 {
+            return Ok(Vec::new());
         }
+        Ok(self.decoder.push(&self.read_buffer[..count]))
     }
 
     /// Queue an already encoded MCU frame without waiting for UART drain or
@@ -216,5 +223,67 @@ impl UsbSerialTransport {
 
     pub fn close(self) {
         drop(self);
+    }
+}
+
+#[cfg(test)]
+mod serial_read_tests {
+    use super::*;
+    use std::collections::VecDeque;
+    use std::io;
+
+    struct ScriptedReader {
+        steps: VecDeque<io::Result<Vec<u8>>>,
+    }
+
+    impl ScriptedReader {
+        fn new(steps: Vec<io::Result<Vec<u8>>>) -> Self {
+            Self { steps: steps.into() }
+        }
+    }
+
+    impl Read for ScriptedReader {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            match self.steps.pop_front().expect("unexpected extra read") {
+                Ok(bytes) => {
+                    let count = bytes.len().min(buffer.len());
+                    buffer[..count].copy_from_slice(&bytes[..count]);
+                    Ok(count)
+                }
+                Err(error) => Err(error),
+            }
+        }
+    }
+
+    #[test]
+    fn retries_interrupted_read_and_returns_following_bytes() {
+        let mut reader = ScriptedReader::new(vec![
+            Err(io::Error::from(io::ErrorKind::Interrupted)),
+            Ok(vec![0x11, 0x22, 0x33]),
+        ]);
+        let mut buffer = [0; 8];
+
+        assert_eq!(read_serial_chunk(&mut reader, &mut buffer).unwrap(), 3);
+        assert_eq!(&buffer[..3], &[0x11, 0x22, 0x33]);
+    }
+
+    #[test]
+    fn timeout_and_would_block_are_empty_polls() {
+        for kind in [io::ErrorKind::TimedOut, io::ErrorKind::WouldBlock] {
+            let mut reader = ScriptedReader::new(vec![Err(io::Error::from(kind))]);
+            let mut buffer = [0; 8];
+            assert_eq!(read_serial_chunk(&mut reader, &mut buffer).unwrap(), 0);
+        }
+    }
+
+    #[test]
+    fn unexpected_read_errors_are_preserved() {
+        let mut reader = ScriptedReader::new(vec![Err(io::Error::from(
+            io::ErrorKind::PermissionDenied,
+        ))]);
+        let mut buffer = [0; 8];
+
+        let error = read_serial_chunk(&mut reader, &mut buffer).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     }
 }
