@@ -93,7 +93,9 @@ impl RetryTransaction {
     /// Consume a due retry exactly once. The caller must enqueue a fresh frame
     /// with a fresh ACK notification ID and call attempt_acked after its ACK.
     pub fn take_due_retry(&mut self, now: f64) -> bool {
-        if self.complete {
+        // A non-finite clock observation cannot prove that a retry deadline
+        // has elapsed. Leave the transaction armed for the next valid poll.
+        if self.complete || !now.is_finite() {
             return false;
         }
         match self.retry_at {
@@ -124,6 +126,24 @@ mod tests {
         // At this magnitude, subtracting one is rounded back to f64::MAX,
         // so the representable deadline is already due at the current time.
         assert!(transaction.take_due_retry(f64::MAX));
+        assert_eq!(transaction.retry_deadline(), None);
+    }
+
+    #[test]
+    fn invalid_retry_poll_timestamps_do_not_consume_due_attempts() {
+        let mut transaction = RetryTransaction::new(1, Duration::from_millis(10));
+        assert_eq!(
+            transaction.attempt_acked(1.0),
+            AckRetryDecision::RetryAfter(Duration::from_millis(10)),
+        );
+
+        for invalid_now in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(!transaction.take_due_retry(invalid_now));
+            assert_eq!(transaction.retry_deadline(), Some(1.010));
+            assert_eq!(transaction.retries_remaining(), 0);
+        }
+
+        assert!(transaction.take_due_retry(1.010));
         assert_eq!(transaction.retry_deadline(), None);
     }
 
