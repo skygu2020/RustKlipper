@@ -1235,7 +1235,7 @@ mod tests {
     #[test]
     fn gcode_help_endpoint_tracks_commands_available_in_printer_state() {
         let printer = std::sync::Arc::new(crate::Printer::new());
-        printer.register_gcode_command("M115", true, Some("Firmware version"), |_| {
+        printer.register_gcode_command("BASE_TEST", true, Some("Base command test"), |_| {
             Ok(Vec::new())
         }).unwrap();
         printer.register_gcode_command("G1", false, Some("Move"), |_| {
@@ -1248,14 +1248,14 @@ mod tests {
 
         let before_ready = dispatcher.dispatch_value(request.clone()).unwrap();
         assert_eq!(before_ready["result"], json!({
-            "M115": "Firmware version"
+            "BASE_TEST": "Firmware version"
         }));
 
         printer.set_ready();
         let ready = dispatcher.dispatch_value(request).unwrap();
         assert_eq!(ready["result"], json!({
             "G1": "Move",
-            "M115": "Firmware version"
+            "BASE_TEST": "Firmware version"
         }));
     }
 
