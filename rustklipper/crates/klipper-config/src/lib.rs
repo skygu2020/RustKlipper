@@ -1330,26 +1330,9 @@ impl ConfigUsageTracker {
 }
 
 fn strip_hash_comment(line: &str) -> &str {
-    let mut quote = None;
-    let mut escaped = false;
-    for (index, ch) in line.char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        if ch == '\\' {
-            escaped = true;
-            continue;
-        }
-        match quote {
-            Some(delimiter) if ch == delimiter => quote = None,
-            Some(_) => {}
-            None if ch == '\'' || ch == '"' => quote = Some(ch),
-            None if ch == '#' => return &line[..index],
-            None => {}
-        }
-    }
-    line
+    // Klipper's ConfigFileReader removes everything from the first '#'
+    // before handing each line to configparser, including text in quotes.
+    line.split_once('#').map_or(line, |(prefix, _)| prefix)
 }
 
 fn strip_inline_comment(line: &str) -> &str {
@@ -1385,12 +1368,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn comment_markers_inside_quoted_values_are_preserved() {
+    fn hash_comments_are_stripped_even_inside_quoted_values_like_klipper() {
         let config = ConfigDocument::parse(
             "[gcode_macro TEST]\nmessage: \"value #1; still text\"\ncommand: 'RESPOND MSG=hello #world' ; real comment\n",
         ).unwrap();
-        assert_eq!(config.get("gcode_macro TEST", "message"), Some("\"value #1; still text\""));
-        assert_eq!(config.get("gcode_macro TEST", "command"), Some("'RESPOND MSG=hello #world'"));
+        assert_eq!(config.get("gcode_macro TEST", "message"), Some("\"value"));
+        assert_eq!(config.get("gcode_macro TEST", "command"), Some("'RESPOND MSG=hello"));
     }
 
     #[test]
