@@ -760,7 +760,10 @@ impl Printer {
         let result = (|| {
             let loaded = self.load_components(registry)?;
             if !self.is_current_connection_generation(generation) {
-                return Ok(loaded);
+                // Component loading may itself trigger disconnect or config
+                // replacement. The initialization attempt was cancelled, so
+                // do not report its partial load as a completed connection.
+                return Ok(Vec::new());
             }
             self.validate_config()?;
             let Some(identify_panics) =
