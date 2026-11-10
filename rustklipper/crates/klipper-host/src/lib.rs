@@ -2640,7 +2640,7 @@ mod tests {
     #[test]
     fn disconnect_during_component_loading_prevents_connection_events() {
         let printer = Arc::new(Printer::new());
-        printer.install_config(ConfigDocument::parse("[fan]\\npin=PA0\\n").unwrap());
+        printer.install_config(ConfigDocument::parse("[fan]\npin=PA0\n").unwrap());
         let identifies = Arc::new(AtomicUsize::new(0));
         let connects = Arc::new(AtomicUsize::new(0));
         let seen_identifies = identifies.clone();
@@ -2699,7 +2699,7 @@ mod tests {
     #[test]
     fn disconnect_during_identify_prevents_connect_event() {
         let printer = Arc::new(Printer::new());
-        printer.install_config(ConfigDocument::parse("[fan]\\npin=PA0\\n").unwrap());
+        printer.install_config(ConfigDocument::parse("[fan]\npin=PA0\n").unwrap());
         let disconnect_printer = printer.clone();
         printer.register_event_handler(PrinterEventKind::McuIdentify, move |_| {
             disconnect_printer.disconnect();
