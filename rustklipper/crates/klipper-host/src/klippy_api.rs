@@ -216,48 +216,21 @@ impl KlippyApiDispatcher {
         printer: std::sync::Arc<crate::Printer>,
     ) -> Result<(), KlippyApiRpcError> {
         self.register("objects/query", move |params| {
-            let requested = params
-                .get("objects")
-                .and_then(Value::as_object)
-                .ok_or_else(|| KlippyApiRpcError::invalid_request(
-                    "objects/query requires an objects mapping"
-                ))?;
-            let mut status = serde_json::Map::new();
-            for (object_name, requested_fields) in requested {
-                let object = match printer.lookup_object_optional::<Value>(object_name) {
-                    Ok(Some(object)) => object,
-                    Ok(None) | Err(crate::PrinterError::ObjectTypeMismatch { .. }) => continue,
-                    Err(error) => return Err(KlippyApiRpcError::internal(error.to_string())),
-                };
-                let Some(fields) = object.as_object() else {
-                    continue;
-                };
-                let selected = match requested_fields {
-                    Value::Array(names) => {
-                        let mut selected = serde_json::Map::new();
-                        for name in names {
-                            let Some(name) = name.as_str() else {
-                                return Err(KlippyApiRpcError::invalid_request(
-                                    "object field names must be strings"
-                                ));
-                            };
-                            if let Some(value) = fields.get(name) {
-                                selected.insert(name.to_owned(), value.clone());
-                            }
-                        }
-                        selected
-                    }
-                    Value::Null => fields.clone(),
-                    _ => return Err(KlippyApiRpcError::invalid_request(
-                        "each objects entry must be an array of field names or null"
-                    )),
-                };
-                status.insert(object_name.clone(), Value::Object(selected));
-            }
-            Ok(serde_json::json!({
-                "eventtime": printer.eventtime(),
-                "status": status
-            }))
+            query_printer_status(&printer, &params)
+        })
+    }
+
+    /// Register Klipper's `objects/subscribe` endpoint.
+    ///
+    /// The initial response has the same eventtime/status shape as
+    /// `objects/query`. The async connection layer can use the Printer's
+    /// status-update stream to publish subsequent notifications.
+    pub fn register_object_subscription(
+        &self,
+        printer: std::sync::Arc<crate::Printer>,
+    ) -> Result<(), KlippyApiRpcError> {
+        self.register("objects/subscribe", move |params| {
+            query_printer_status(&printer, &params)
         })
     }
 
@@ -372,6 +345,7 @@ impl KlippyApiDispatcher {
         self.register_printer_info(printer.clone(), software_version)?;
         self.register_object_listing(printer.clone())?;
         self.register_object_query(printer.clone())?;
+        self.register_object_subscription(printer.clone())?;
         self.register_gcode_help(printer.clone())?;
         self.register_gcode_script(printer.clone())?;
         self.register_emergency_stop(printer)?;
@@ -451,6 +425,54 @@ impl KlippyApiDispatcher {
             Err(error) => rpc_error_response(id, error),
         })
     }
+}
+
+fn query_printer_status(
+    printer: &crate::Printer,
+    params: &Value,
+) -> Result<Value, KlippyApiRpcError> {
+    let requested = params
+        .get("objects")
+        .and_then(Value::as_object)
+        .ok_or_else(|| KlippyApiRpcError::invalid_request(
+            "object status request requires an objects mapping"
+        ))?;
+    let mut status = serde_json::Map::new();
+    for (object_name, requested_fields) in requested {
+        let object = match printer.lookup_object_optional::<Value>(object_name) {
+            Ok(Some(object)) => object,
+            Ok(None) | Err(crate::PrinterError::ObjectTypeMismatch { .. }) => continue,
+            Err(error) => return Err(KlippyApiRpcError::internal(error.to_string())),
+        };
+        let Some(fields) = object.as_object() else {
+            continue;
+        };
+        let selected = match requested_fields {
+            Value::Array(names) => {
+                let mut selected = serde_json::Map::new();
+                for name in names {
+                    let Some(name) = name.as_str() else {
+                        return Err(KlippyApiRpcError::invalid_request(
+                            "object field names must be strings"
+                        ));
+                    };
+                    if let Some(value) = fields.get(name) {
+                        selected.insert(name.to_owned(), value.clone());
+                    }
+                }
+                selected
+            }
+            Value::Null => fields.clone(),
+            _ => return Err(KlippyApiRpcError::invalid_request(
+                "each objects entry must be an array of field names or null"
+            )),
+        };
+        status.insert(object_name.clone(), Value::Object(selected));
+    }
+    Ok(serde_json::json!({
+        "eventtime": printer.eventtime(),
+        "status": status
+    }))
 }
 
 fn gcode_output_response_template(
