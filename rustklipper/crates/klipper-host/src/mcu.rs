@@ -57,6 +57,13 @@ fn poll_generation_is_current(snapshot: u64, current: u64) -> bool {
     snapshot == current
 }
 
+fn disconnect_session_handle(session: &Arc<Mutex<ReliableSerialSession>>) {
+    match session.lock() {
+        Ok(mut guard) => guard.mark_disconnected(),
+        Err(poisoned) => poisoned.into_inner().mark_disconnected(),
+    }
+}
+
 fn remove_session_if_same<T>(
     sessions: &mut HashMap<String, Arc<Mutex<T>>>,
     name: &str,
@@ -165,20 +172,35 @@ impl McuRegistry {
         &self,
         name: &str,
     ) -> Option<Arc<Mutex<ReliableSerialSession>>> {
-        self.state
+        // Detach under the registry lock, then invalidate outside it. This
+        // lock order avoids deadlocking against a poll that owns a session
+        // lock and needs the registry lock for panic cleanup.
+        let session = self.state
             .lock()
             .expect("MCU registry lock poisoned")
             .sessions
-            .remove(name)
+            .remove(name)?;
+        disconnect_session_handle(&session);
+        Some(session)
     }
 
     pub fn clear(&self) -> Vec<String> {
-        let mut state = self.state.lock().expect("MCU registry lock poisoned");
-        let mut names: Vec<_> = state.sessions.keys().cloned().collect();
-        names.sort();
-        state.sessions.clear();
-        state.opening.clear();
-        state.generation = state.generation.wrapping_add(1);
+        let (names, sessions) = {
+            let mut state = self.state.lock().expect("MCU registry lock poisoned");
+            let mut names: Vec<_> = state.sessions.keys().cloned().collect();
+            names.sort();
+            let sessions = state.sessions.drain().map(|(_, session)| session).collect::<Vec<_>>();
+            state.opening.clear();
+            state.generation = state.generation.wrapping_add(1);
+            (names, sessions)
+        };
+
+        // Invalidate detached sessions even if another caller retained a
+        // session_handle() clone. Never hold the registry lock while waiting
+        // for an individual session lock.
+        for session in &sessions {
+            disconnect_session_handle(session);
+        }
         names
     }
 
