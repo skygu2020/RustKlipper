@@ -2060,7 +2060,7 @@ mod tests {
         ));
         fs::write(
             &path,
-            "[printer]\nkinematics=cartesian\n#*# <---------------------- SAVE_CONFIG ---------------------->\n#*# DO NOT EDIT THIS BLOCK OR BELOW. The contents are auto-generated.\n#*#\n#*# [printer]\n#*# <---------------------- SAVE_CONFIG ---------------------->\n",
+            "[printer]\nkinematics=cartesian\n#*# <---------------------- SAVE_CONFIG ---------------------->\n#*# DO NOT EDIT THIS BLOCK OR BELOW. The contents are auto-generated.\n#*#\n#*# [printer]\n#*# <---------------------- SAVE_CONFIG ---------------------->\n#*# DO NOT EDIT THIS BLOCK OR BELOW. The contents are auto-generated.\n#*#\n",
         )
         .unwrap();
         let config = ConfigFileLoader::load(&path).unwrap();
