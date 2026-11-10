@@ -19,7 +19,7 @@ use hyper_tungstenite::{tungstenite::Message, HyperWebsocket};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 
-use crate::JsonRpcRouter;
+use crate::{JsonRpcRouter, WebSocketManager};
 
 const MAX_JSON_RPC_BODY_BYTES: usize = 2 * 1024 * 1024;
 const MAX_WEBSOCKET_MESSAGE_BYTES: usize = 2 * 1024 * 1024;
@@ -28,13 +28,14 @@ const MAX_WEBSOCKET_MESSAGE_BYTES: usize = 2 * 1024 * 1024;
 pub struct MoonrakerHttpServer {
     listener: TcpListener,
     router: Arc<JsonRpcRouter>,
+    websocket_manager: Arc<WebSocketManager>,
 }
 
 impl MoonrakerHttpServer {
     /// Bind the API listener to an address such as `0.0.0.0:7125`.
     pub async fn bind(address: SocketAddr, router: Arc<JsonRpcRouter>) -> io::Result<Self> {
         let listener = TcpListener::bind(address).await?;
-        Ok(Self { listener, router })
+        Ok(Self { listener, router, websocket_manager: WebSocketManager::new() })
     }
 
     /// Return the actual bound address (useful when binding port zero in tests).
@@ -47,11 +48,13 @@ impl MoonrakerHttpServer {
         loop {
             let (stream, _) = self.listener.accept().await?;
             let router = Arc::clone(&self.router);
+            let websocket_manager = Arc::clone(&self.websocket_manager);
             tokio::spawn(async move {
                 let service = service_fn(move |request| {
                     let router = Arc::clone(&router);
+                    let websocket_manager = Arc::clone(&websocket_manager);
                     async move {
-                        Ok::<_, Infallible>(handle_request(request, router).await)
+                        Ok::<_, Infallible>(handle_request(request, router, websocket_manager).await)
                     }
                 });
                 let connection = http1::Builder::new()
@@ -66,6 +69,7 @@ impl MoonrakerHttpServer {
 async fn handle_request(
     mut request: Request<Incoming>,
     router: Arc<JsonRpcRouter>,
+    websocket_manager: Arc<WebSocketManager>,
 ) -> Response<Full<Bytes>> {
     if request.uri().path() == "/websocket" {
         if !hyper_tungstenite::is_upgrade_request(&request) {
@@ -79,7 +83,7 @@ async fn handle_request(
         return match hyper_tungstenite::upgrade(&mut request, None) {
             Ok((response, websocket)) => {
                 tokio::spawn(async move {
-                    let _ = serve_websocket(websocket, router).await;
+                    let _ = serve_websocket(websocket, router, websocket_manager).await;
                 });
                 response
             }
@@ -136,11 +140,16 @@ async fn handle_request(
 async fn serve_websocket(
     websocket: HyperWebsocket,
     router: Arc<JsonRpcRouter>,
+    manager: Arc<WebSocketManager>,
 ) -> Result<(), hyper_tungstenite::tungstenite::Error> {
     let mut websocket = websocket.await?;
+    let mut connection = manager.connect();
 
-    while let Some(message) = websocket.next().await {
-        match message? {
+    loop {
+        tokio::select! {
+            incoming = websocket.next() => {
+                let Some(message) = incoming else { break; };
+                match message? {
             Message::Text(text) => {
                 if text.len() > MAX_WEBSOCKET_MESSAGE_BYTES {
                     websocket
@@ -165,7 +174,16 @@ async fn serve_websocket(
             Message::Ping(payload) => websocket.send(Message::Pong(payload)).await?,
             Message::Pong(_) => {}
             Message::Close(_) => break,
-            Message::Frame(_) => unreachable!("tungstenite handles raw frames internally"),
+                    Message::Frame(_) => unreachable!("tungstenite handles raw frames internally"),
+                }
+            }
+            notification = connection.recv_notification() => {
+                match notification {
+                    Ok(message) => websocket.send(Message::Text(message.into())).await?,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
         }
     }
 
