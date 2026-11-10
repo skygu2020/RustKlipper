@@ -1363,7 +1363,8 @@ fn strip_inline_comment(line: &str) -> &str {
             Some(_) => {}
             None if ch == '\'' || ch == '"' => quote = Some(ch),
             None if (ch == ';' || ch == '#')
-                && line[..index].chars().next_back().is_some_and(char::is_whitespace) =>
+                && (index == 0
+                    || line[..index].chars().next_back().is_some_and(char::is_whitespace)) =>
             {
                 return &line[..index];
             }
