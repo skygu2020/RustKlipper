@@ -109,9 +109,8 @@ impl ConfigDocument {
                 continue;
             }
             if trimmed.starts_with(';') {
-                if last_option.is_some() {
-                    pending_blank_lines += 1;
-                }
+                // configparser skips comment-only lines; unlike blank lines,
+                // they do not become empty lines in a multiline value.
                 continue;
             }
 
@@ -1435,6 +1434,14 @@ mod tests {
         let empty_value =
             ConfigDocument::parse("[gcode_macro TEST]\n  gcode:\n\n    G28\n").unwrap();
         assert_eq!(empty_value.get("gcode_macro TEST", "gcode"), Some("\nG28"));
+
+        let comment_line = ConfigDocument::parse(
+            "[gcode_macro TEST]\n  gcode:\n    G28\n    ; comment only\n    M400\n",
+        ).unwrap();
+        assert_eq!(
+            comment_line.get("gcode_macro TEST", "gcode"),
+            Some("G28\nM400")
+        );
     }
 
     #[test]
