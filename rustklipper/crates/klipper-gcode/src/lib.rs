@@ -302,7 +302,7 @@ fn shell_tokens(input: &str) -> Result<Vec<String>, ()> {
                 quote = Some(ch);
                 active = true;
             }
-            ';' => break,
+            ';' | '#' => break,
             c if c.is_whitespace() => {
                 if active {
                     tokens.push(std::mem::take(&mut token));
@@ -375,9 +375,16 @@ mod tests {
             Some("hello world")
         );
 
+        // Klipper's shlex parser treats unquoted '#' as a comment
+        // delimiter, but preserves it when it is inside a quoted value.
         let hash = parse_line("RESPOND MSG=#status").unwrap();
         assert_eq!(
             hash.extended_parameters().unwrap().get("MSG").map(String::as_str),
+            Some("")
+        );
+        let quoted_hash = parse_line("RESPOND MSG=\"#status\"").unwrap();
+        assert_eq!(
+            quoted_hash.extended_parameters().unwrap().get("MSG").map(String::as_str),
             Some("#status")
         );
 
