@@ -220,7 +220,7 @@ impl McuRegistry {
                     guard.mark_disconnected();
                     drop(guard);
                     let mut state = self.state.lock().expect("MCU registry lock poisoned");
-                    remove_session_if_same(&mut state.sessions, &name, &session);
+                    remove_session_if_same(&mut state.sessions, &name, &session_handle);
                     batch.errors.push(McuPollError {
                         mcu: name,
                         message: "MCU session lock poisoned after a panic".to_owned(),
