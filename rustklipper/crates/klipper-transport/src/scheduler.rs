@@ -326,6 +326,15 @@ impl CommandScheduler {
         acknowledged_frame_bytes: usize,
         now: f64,
     ) -> Result<AckResult, ScheduleError> {
+        // Validate the peer's cumulative ACK before touching retransmission
+        // state. Otherwise an ACK beyond the highest sent sequence could
+        // retire cached frames even though scheduler flow control rejects it.
+        if receive_sequence > self.send_sequence {
+            return Err(ScheduleError::InvalidAckSequence {
+                received: receive_sequence,
+                sent: self.send_sequence,
+            });
+        }
         let retry_result = self.retransmit.acknowledge(receive_sequence, now)?;
         self.acknowledge(receive_sequence, acknowledged_frame_bytes);
         Ok(retry_result)
@@ -760,6 +769,27 @@ mod tests {
         assert_eq!(duplicate.retransmissions[0].bytes, sent.bytes);
         let repeated = s.handle_received_frame(&ack, 1.03).unwrap();
         assert!(repeated.retransmissions.is_empty());
+    }
+
+    #[test]
+    fn acknowledge_at_rejects_future_sequence_before_mutating_retry_state() {
+        let mut scheduler = CommandScheduler::new();
+        scheduler.enqueue(1, ScheduledCommand::new(vec![0x41], 0, 1)).unwrap();
+        scheduler.promote_ready(0);
+        let sent = scheduler.build_frame().unwrap().unwrap();
+        scheduler.mark_frame_sent(&sent, 1.0).unwrap();
+
+        assert_eq!(
+            scheduler.acknowledge_at(3, 0, 2.0),
+            Err(ScheduleError::InvalidAckSequence { received: 3, sent: 2 }),
+        );
+        assert_eq!(scheduler.retransmit_state().outstanding_len(), 1);
+
+        // The rejected ACK must not advance the retry clock or consume the
+        // outstanding frame; a valid ACK at an earlier timestamp still works.
+        let ack = scheduler.acknowledge_at(2, 0, 1.5).unwrap();
+        assert_eq!(ack.acknowledged.len(), 1);
+        assert_eq!(scheduler.retransmit_state().outstanding_len(), 0);
     }
 
     #[test]
