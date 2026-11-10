@@ -1767,7 +1767,7 @@ mod tests {
         let printer = Printer::new();
         let called = Arc::new(AtomicBool::new(false));
         let observed = called.clone();
-        printer.reactor().register_callback(move |_| {
+        printer.reactor().register_callback(move || {
             observed.store(true, Ordering::SeqCst);
         });
 
