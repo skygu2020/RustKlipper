@@ -59,6 +59,9 @@ pub struct GCodeDispatcher {
     mux_commands: HashMap<String, MuxRegistration>,
     ready: bool,
     state_message: String,
+    /// Whether commands are being consumed from Klipper's debuginput mode.
+    /// In this mode an unconfigured fan command is silently ignored.
+    file_input: bool,
 }
 
 impl GCodeDispatcher {
@@ -71,6 +74,11 @@ impl GCodeDispatcher {
 
     pub fn is_ready(&self) -> bool {
         self.ready
+    }
+
+    /// Configure Klipper's debuginput behavior for default command handling.
+    pub fn set_file_input(&mut self, enabled: bool) {
+        self.file_input = enabled;
     }
 
     /// Clear all registered handlers and return to the initial dispatcher state.
@@ -332,6 +340,7 @@ impl GCodeDispatcher {
                     Err(error) => events.push(DispatchEvent::Error(error.to_string())),
                 },
                 "M107" => {}
+                "M106" if self.file_input => {}
                 "M106" => match parse_float_parameter(&command, "S", 1.0) {
                     Ok(value) if value == 0.0 => {}
                     Ok(_) => events.push(DispatchEvent::Info(format!(
@@ -738,6 +747,29 @@ mod tests {
             "M106 defaults S to 1.0 when no S parameter is parsed, got {:?}",
             outcome.events
         );
+    }
+
+    #[test]
+    fn file_input_silently_ignores_unconfigured_fan_commands() {
+        let mut dispatcher = GCodeDispatcher::new();
+        dispatcher.set_ready();
+        dispatcher.set_file_input(true);
+
+        for line in ["M106", "M106 S1", "M106 S255"] {
+            let outcome = dispatcher.process_line(line, true).unwrap();
+            assert_eq!(
+                outcome.events,
+                vec![DispatchEvent::Ack(None)],
+                "{line} should be silently accepted in file-input mode"
+            );
+        }
+
+        dispatcher.set_file_input(false);
+        let outcome = dispatcher.process_line("M106 S1", true).unwrap();
+        assert!(matches!(
+            outcome.events.first(),
+            Some(DispatchEvent::Info(message)) if message.contains("Unknown command")
+        ));
     }
 
     #[test]
