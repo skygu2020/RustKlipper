@@ -724,6 +724,22 @@ mod tests {
     }
 
     #[test]
+    fn accepts_message_at_exact_size_limit() {
+        let mut codec = KlippyApiCodec::new(2);
+        assert_eq!(codec.push(b"{}\x03"), Ok(vec![json!({})]));
+        assert!(codec.is_empty());
+    }
+
+    #[test]
+    fn accepts_exact_limit_when_frame_is_split_across_chunks() {
+        let mut codec = KlippyApiCodec::new(2);
+        assert!(codec.push(b"{").unwrap().is_empty());
+        assert_eq!(codec.buffered_len(), 1);
+        assert_eq!(codec.push(b"}\x03"), Ok(vec![json!({})]));
+        assert!(codec.is_empty());
+    }
+
+    #[test]
     fn rejects_oversized_input_without_retaining_it() {
         let mut codec = KlippyApiCodec::new(8);
         assert_eq!(
