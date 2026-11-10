@@ -747,7 +747,7 @@ mod tests {
     fn rejects_oversized_frame_with_terminator_in_same_chunk() {
         let mut codec = KlippyApiCodec::new(8);
         assert_eq!(
-            codec.push(b"123456789\\x03"),
+            codec.push(b"123456789\x03"),
             Err(KlippyApiCodecError::MessageTooLarge { limit: 8 })
         );
         assert!(codec.is_empty());
