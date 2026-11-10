@@ -180,6 +180,20 @@ impl KlippyApiDispatcher {
         })
     }
 
+    /// Register Klipper's emergency-stop endpoint.
+    ///
+    /// The call transitions the printer into shutdown and returns an empty
+    /// result object, matching the Klippy API response shape.
+    pub fn register_emergency_stop(
+        &self,
+        printer: std::sync::Arc<crate::Printer>,
+    ) -> Result<(), KlippyApiRpcError> {
+        self.register("emergency_stop", move |_params| {
+            printer.invoke_shutdown("Emergency stop");
+            Ok(serde_json::json!({}))
+        })
+    }
+
     /// Register the Klippy `info` endpoint from the live printer lifecycle.
     ///
     /// `software_version` identifies this Rust host implementation; it is not
@@ -477,6 +491,21 @@ mod tests {
         let response = dispatcher.dispatch_value(json!({"id":9,"method":"info","params":{}})).unwrap();
         assert_eq!(response, json!({"id":9,"result":{"state":"ready"}}));
         assert_eq!(dispatcher.method_names(), vec!["info"]);
+    }
+
+    #[test]
+    fn emergency_stop_endpoint_shuts_down_the_printer() {
+        let printer = std::sync::Arc::new(crate::Printer::new());
+        printer.set_ready();
+        let dispatcher = KlippyApiDispatcher::new();
+        dispatcher.register_emergency_stop(printer.clone()).unwrap();
+
+        let response = dispatcher
+            .dispatch_value(json!({"id":3,"method":"emergency_stop"}))
+            .unwrap();
+        assert_eq!(response, json!({"id":3,"result":{}}));
+        assert_eq!(printer.state(), crate::PrinterState::Shutdown);
+        assert_eq!(printer.state_message(), "Emergency stop");
     }
 
     #[test]
