@@ -118,11 +118,12 @@ impl ConfigDocument {
                 pending_blank_lines = 0;
                 // Python ConfigParser uses SECTCRE.match(), not a full-line
                 // match: the first closing bracket ends the section name and
-                // trailing text is ignored. The captured name is not trimmed.
+                // trailing text is ignored. Its expression also consumes
+                // literal spaces immediately inside the brackets.
                 let Some(close) = trimmed.find(']') else {
                     return Err(ConfigParseError::InvalidSection { filename: source, line: line_no });
                 };
-                let name = &trimmed[1..close];
+                let name = trimmed[1..close].trim_matches(' ');
                 if name.is_empty() {
                     return Err(ConfigParseError::InvalidSection { filename: source, line: line_no });
                 }
@@ -1474,9 +1475,9 @@ mod tests {
         let config = ConfigDocument::parse("[printer] trailing text\nmax_velocity=300\n").unwrap();
         assert_eq!(config.get("printer", "max_velocity"), Some("300"));
 
-        // ConfigParser preserves whitespace inside the captured section name.
-        let spaced = ConfigDocument::parse("[ printer ]\nvalue=1\n").unwrap();
-        assert_eq!(spaced.get(" printer ", "value"), Some("1"));
+        // ConfigParser's SECTCRE consumes literal spaces at the edges.
+        let spaced = ConfigDocument::parse("[  printer   ]\nvalue=1\n").unwrap();
+        assert_eq!(spaced.get("printer", "value"), Some("1"));
     }
 
     #[test]
