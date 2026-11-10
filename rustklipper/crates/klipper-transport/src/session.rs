@@ -1666,6 +1666,12 @@ impl ReliableSerialSession {
         Ok(events)
     }
 
+    /// Permanently disable this session after its owner detects corrupted
+    /// in-memory state (for example, a panic while a session mutex was held).
+    pub fn mark_disconnected(&mut self) {
+        self.disconnected = true;
+    }
+
     pub fn is_disconnected(&self) -> bool { self.disconnected }
 }
 
