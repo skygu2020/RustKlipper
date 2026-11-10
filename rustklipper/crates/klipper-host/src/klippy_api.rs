@@ -1248,14 +1248,14 @@ mod tests {
 
         let before_ready = dispatcher.dispatch_value(request.clone()).unwrap();
         assert_eq!(before_ready["result"], json!({
-            "BASE_TEST": "Firmware version"
+            "BASE_TEST": "Base command test"
         }));
 
         printer.set_ready();
         let ready = dispatcher.dispatch_value(request).unwrap();
         assert_eq!(ready["result"], json!({
             "G1": "Move",
-            "BASE_TEST": "Firmware version"
+            "BASE_TEST": "Base command test"
         }));
     }
 
