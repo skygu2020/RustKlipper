@@ -103,10 +103,18 @@ impl AckTracker {
     pub fn pending_count(&self) -> usize { self.pending.len() }
     pub fn contains_notify(&self, id: u64) -> bool { self.pending.contains_key(&id) }
     pub fn extend_wire_sequence(previous: u64, wire_sequence: u8) -> u64 {
-        let delta = u64::from(wire_sequence & 0x0f).wrapping_sub(previous & 0x0f) & 0x0f;
-        // Extended sequence numbers must never wrap back to a small value:
-        // all ACK comparisons in the transport layer rely on monotonic ordering.
-        previous.saturating_add(delta)
+        // Reconstruct the candidate in the current 16-sequence epoch, then
+        // choose the nearest representation in the +/- 8 sequence window.
+        // This is important for duplicate/stale ACKs: a wire sequence just
+        // behind the current value must not be mistaken for one 15 steps ahead.
+        let candidate = (previous & !0x0f) | u64::from(wire_sequence & 0x0f);
+        if candidate < previous.saturating_sub(8) {
+            candidate.saturating_add(16)
+        } else if candidate > previous.saturating_add(8) {
+            candidate.saturating_sub(16)
+        } else {
+            candidate
+        }
     }
 }
 #[cfg(test)]
@@ -227,6 +235,20 @@ mod tests {
     fn extends_four_bit_sequence_across_wrap() {
         assert_eq!(AckTracker::extend_wire_sequence(14, 1), 17);
         assert_eq!(AckTracker::extend_wire_sequence(17, 2), 18);
+    }
+
+    #[test]
+    fn stale_wire_sequence_is_extended_behind_current_sequence() {
+        assert_eq!(AckTracker::extend_wire_sequence(1, 0), 0);
+        assert_eq!(AckTracker::extend_wire_sequence(17, 15), 15);
+        assert_eq!(AckTracker::extend_wire_sequence(8, 0), 0);
+    }
+
+    #[test]
+    fn forward_wire_sequence_uses_nearest_epoch_boundary() {
+        assert_eq!(AckTracker::extend_wire_sequence(0, 8), 8);
+        assert_eq!(AckTracker::extend_wire_sequence(0, 9), 0);
+        assert_eq!(AckTracker::extend_wire_sequence(14, 15), 15);
     }
     #[test]
     fn cancelled_notify_id_reuse_is_not_completed_by_a_late_ack() {
