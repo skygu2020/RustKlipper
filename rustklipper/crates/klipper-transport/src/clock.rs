@@ -98,7 +98,7 @@ impl ClockSync {
         if !mcu_frequency.is_finite() || mcu_frequency <= 0.0 {
             return Err(ClockSyncError::InvalidFrequency);
         }
-        if !initial_host_time.is_finite() {
+        if !initial_host_time.is_finite() || initial_host_time < 0.0 {
             return Err(ClockSyncError::InvalidTimestamp);
         }
         let prediction_variance = (0.001 * mcu_frequency).powi(2);
@@ -173,7 +173,11 @@ impl ClockSync {
     fn update_inner(&mut self, clock32: u32, sent_time: f64, receive_time: f64)
         -> Result<Option<ClockUpdate>, ClockSyncError>
     {
-        if !sent_time.is_finite() || !receive_time.is_finite() || receive_time < sent_time {
+        if !sent_time.is_finite()
+            || !receive_time.is_finite()
+            || sent_time < 0.0
+            || receive_time < sent_time
+        {
             return Err(ClockSyncError::InvalidTimestamp);
         }
         let clock = self.extend_clock_sample32(clock32);
@@ -324,6 +328,23 @@ impl UartTiming {
 mod tests {
     use super::*;
 
+
+    #[test]
+    fn clock_sync_rejects_negative_monotonic_timestamps() {
+        assert_eq!(
+            ClockSync::new(1_000_000.0, -0.001, 0),
+            Err(ClockSyncError::InvalidTimestamp),
+        );
+
+        let mut sync = ClockSync::new(1_000_000.0, 1.0, 100_000).unwrap();
+        let before = sync.clone();
+        assert_eq!(
+            sync.update(110_000, -0.001, 0.0),
+            Err(ClockSyncError::InvalidTimestamp),
+        );
+        assert_eq!(sync.last_clock(), before.last_clock());
+        assert_eq!(sync.estimate(), before.estimate());
+    }
 
     #[test]
     fn rejected_clock_regression_does_not_mutate_sync_state() {
