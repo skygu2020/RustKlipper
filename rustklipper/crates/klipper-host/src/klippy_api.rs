@@ -457,15 +457,15 @@ fn query_printer_status(
         ))?;
     let mut status = serde_json::Map::new();
     for (object_name, requested_fields) in requested {
-        let object = match printer.lookup_object_optional::<Value>(object_name) {
-            Ok(Some(object)) => object,
-            Ok(None) | Err(crate::PrinterError::ObjectTypeMismatch { .. }) => {
-                status.insert(object_name.clone(), Value::Object(Map::new()));
-                continue;
-            }
+        // Klipper treats an absent object (or one without status support)
+        // as an empty status map, then applies the requested field selection.
+        // Consequently explicit fields resolve to null while a null selection
+        // produces an empty object.
+        let fields = match printer.lookup_object_optional::<Value>(object_name) {
+            Ok(Some(object)) => object.as_object().cloned().unwrap_or_default(),
+            Ok(None) | Err(crate::PrinterError::ObjectTypeMismatch { .. }) => Map::new(),
             Err(error) => return Err(KlippyApiRpcError::internal(error.to_string())),
         };
-        let fields = object.as_object().cloned().unwrap_or_default();
         let selected = match requested_fields {
             Value::Array(names) => {
                 let mut selected = serde_json::Map::new();
@@ -950,10 +950,10 @@ mod tests {
                 "position": [1.0, 2.0, 3.0],
                 "homed_axes": "xyz"
             },
-            // Missing and non-JSON objects remain represented in the query
-            // result, matching Klipper's empty-object status response.
-            "opaque": {},
-            "missing": {}
+            // Klipper first resolves unsupported/missing objects to an
+            // empty status map, then returns null for explicitly requested fields.
+            "opaque": {"anything": null},
+            "missing": {"field": null}
         }));
 
         printer.update_status_object("toolhead", json!({
@@ -991,7 +991,7 @@ mod tests {
     }
 
     #[test]
-    fn object_query_includes_missing_objects_and_requested_fields_as_empty_or_null() {
+    fn object_query_resolves_requested_fields_on_missing_objects_to_null() {
         let printer = std::sync::Arc::new(crate::Printer::new());
         printer.register_status_object("toolhead", json!({"position": [1.0, 2.0, 3.0]})).unwrap();
         let dispatcher = KlippyApiDispatcher::new();
