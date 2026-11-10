@@ -276,11 +276,15 @@ impl RetransmitState {
             return Vec::new();
         }
         self.last_now = Some(now);
+        if self.outstanding.is_empty() {
+            self.retransmit_deadline = None;
+            self.rtt_sample_seq = None;
+            return Vec::new();
+        }
         let mut retries = Vec::with_capacity(self.outstanding.len());
         self.rtt_sample_seq = None;
-        let first_frame_wire_time = self.outstanding.front().map_or(0.0, |entry| {
-            self.wire_time_per_byte * (entry.frame.bytes.len() + 1) as f64
-        });
+        let first_frame_wire_time = self.wire_time_per_byte
+            * (self.outstanding.front().expect("outstanding window is non-empty").frame.bytes.len() + 1) as f64;
         self.retransmit_deadline = Some(saturating_time_add(saturating_time_add(now, self.rto), first_frame_wire_time));
         for entry in &mut self.outstanding {
             entry.frame.transmissions = entry.frame.transmissions.saturating_add(1);
@@ -437,6 +441,16 @@ mod tests {
 
         assert_eq!(state.retransmit_all(2.0).len(), 1);
         assert_eq!(state.outstanding_len(), 1);
+    }
+
+    #[test]
+    fn retransmit_all_keeps_deadline_disarmed_when_window_is_empty() {
+        let mut state = RetransmitState::new();
+
+        assert!(state.retransmit_all(1.0).is_empty());
+
+        assert_eq!(state.retransmit_deadline(), None);
+        assert_eq!(state.outstanding_len(), 0);
     }
 
     #[test]
