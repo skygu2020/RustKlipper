@@ -171,6 +171,15 @@ impl GCodeCommand {
                 value: value.to_string(),
             });
         }
+        for bound in [min, max, above, below].into_iter().flatten() {
+            if !bound.is_finite() {
+                return Err(GCodeError::InvalidParameter {
+                    line: self.commandline().to_owned(),
+                    parameter: name.to_owned(),
+                    value: bound.to_string(),
+                });
+            }
+        }
         let constraint = if let Some(min) = min.filter(|bound| value < *bound) {
             Some(format!("at least {min}"))
         } else if let Some(max) = max.filter(|bound| value > *bound) {
@@ -407,6 +416,22 @@ mod tests {
         for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             assert!(matches!(
                 command.check_range("VALUE", value, Some(0.0), Some(10.0), None, None),
+                Err(GCodeError::InvalidParameter { parameter, .. }) if parameter == "VALUE"
+            ));
+        }
+        assert!(command.check_range("VALUE", 5.0, Some(0.0), Some(10.0), None, None).is_ok());
+    }
+
+    #[test]
+    fn check_range_rejects_non_finite_bounds() {
+        let command = GCodeCommand::new(parse_line("SET_VALUE VALUE=5").unwrap());
+        for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(matches!(
+                command.check_range("VALUE", 5.0, Some(invalid), None, None, None),
+                Err(GCodeError::InvalidParameter { parameter, .. }) if parameter == "VALUE"
+            ));
+            assert!(matches!(
+                command.check_range("VALUE", 5.0, None, None, Some(invalid), None),
                 Err(GCodeError::InvalidParameter { parameter, .. }) if parameter == "VALUE"
             ));
         }
