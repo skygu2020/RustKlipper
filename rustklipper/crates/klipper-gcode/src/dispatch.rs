@@ -246,7 +246,19 @@ impl GCodeDispatcher {
         need_ack: bool,
     ) -> DispatchOutcome {
         let command_name = parsed.command.clone();
-        let command = match GCodeCommand::new_for_dispatch(parsed) {
+        let mut dispatch_parsed = parsed;
+        // Klipper's default handler recognizes these commands even when
+        // their free-form message/path makes the parser include text in cmd.
+        if self.ready {
+            if let Some((real_command, _)) = dispatch_parsed.command.split_once(' ') {
+                if matches!(real_command, "M117" | "M118" | "M23")
+                    && self.active_handlers().contains_key(real_command)
+                {
+                    dispatch_parsed.command = real_command.to_owned();
+                }
+            }
+        }
+        let command = match GCodeCommand::new_for_dispatch(dispatch_parsed) {
             Ok(command) => command,
             Err(error) => {
                 let mut events = vec![DispatchEvent::Error(error.to_string())];
@@ -572,6 +584,53 @@ mod tests {
         );
     }
 
+
+    #[test]
+    fn free_form_m117_m118_and_m23_commands_dispatch_to_registered_handlers() {
+        let mut dispatcher = GCodeDispatcher::new();
+        dispatcher.set_ready();
+
+        for name in ["M117", "M118", "M23"] {
+            dispatcher
+                .register_command(name, false, None, move |command| {
+                    assert_eq!(command.command(), name);
+                    let raw = command.raw_parameters();
+                    assert!(!raw.is_empty());
+                    Ok(vec![DispatchEvent::Info(raw.to_owned())])
+                })
+                .unwrap();
+        }
+
+        for (line, expected) in [
+            ("M117 Hello World!", "Hello World!"),
+            ("M118 X:10 Y:20", "X:10 Y:20"),
+            ("M23 /gcodes/test file.gcode", "/gcodes/test file.gcode"),
+        ] {
+            let outcome = dispatcher.process_line(line, true).unwrap();
+            assert!(outcome.handler_found, "{line}");
+            assert_eq!(
+                outcome.events,
+                vec![
+                    DispatchEvent::Info(expected.to_owned()),
+                    DispatchEvent::Ack(None),
+                ],
+                "{line}"
+            );
+        }
+    }
+
+    #[test]
+    fn free_form_special_commands_without_registered_handlers_remain_unknown() {
+        let mut dispatcher = GCodeDispatcher::new();
+        dispatcher.set_ready();
+
+        let outcome = dispatcher.process_line("M117 Hello", true).unwrap();
+        assert!(!outcome.handler_found);
+        assert!(matches!(
+            outcome.events.first(),
+            Some(DispatchEvent::Info(message)) if message.contains("Unknown command")
+        ));
+    }
 
     #[test]
     fn unconfigured_heater_and_fan_off_commands_are_silently_accepted() {
