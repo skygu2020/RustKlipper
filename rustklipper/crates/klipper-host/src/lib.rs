@@ -78,10 +78,30 @@ pub struct PrinterStatus {
 pub struct PrinterRunBatch {
     pub reactor_callbacks: usize,
     pub mcus: McuPollBatch,
+    /// Startup coordinator failures isolated from the Host polling loop.
+    pub mcu_startup_errors: Vec<McuStartupError>,
     /// Number of MCU event callbacks isolated after panicking.
     pub mcu_handler_panics: usize,
     /// Number of decoded-message callbacks isolated after panicking.
     pub mcu_message_handler_panics: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McuStartupError {
+    pub mcu: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum McuClockWaitKind {
+    Uptime,
+    Clock,
+}
+
+struct PendingMcuClockStartup {
+    queue_id: u64,
+    kind: McuClockWaitKind,
+    waiter: klipper_transport::ResponseWaiter,
 }
 
 const MCU_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
@@ -447,6 +467,7 @@ pub struct Printer {
     connection_initialized: AtomicBool,
     connection_generation: AtomicU64,
     mcus: McuRegistry,
+    mcu_clock_startups: Mutex<HashMap<String, PendingMcuClockStartup>>,
     objects: RwLock<HashMap<String, Arc<dyn Any + Send + Sync>>>,
     object_registration_transactions: Mutex<
         HashMap<std::thread::ThreadId, Vec<Vec<(String, Arc<dyn Any + Send + Sync>)>>>,
@@ -482,6 +503,7 @@ impl Printer {
             connection_initialized: AtomicBool::new(false),
             connection_generation: AtomicU64::new(0),
             mcus: McuRegistry::new(),
+            mcu_clock_startups: Mutex::new(HashMap::new()),
             objects: RwLock::new(HashMap::new()),
             object_registration_transactions: Mutex::new(HashMap::new()),
             event_handlers: Mutex::new(HashMap::new()),
@@ -1671,6 +1693,97 @@ impl Printer {
         self.mcus.handle_clock_calibration_response(name, queue_id, response)
     }
 
+    /// Start a Host-managed MCU clock bootstrap.
+    ///
+    /// The Host owns the uptime waiter and advances all eight get_clock samples
+    /// from run_host_once(), so callers do not need to manually poll waiters.
+    /// The periodic clock queue must be distinct from application/config queues.
+    pub fn start_managed_mcu_clock_calibration(
+        &self,
+        name: &str,
+        uptime_queue_id: u64,
+        periodic_clock_queue_id: u64,
+    ) -> Result<(), McuRegistryError> {
+        let normalized = name.trim();
+        if normalized.is_empty() {
+            return Err(McuRegistryError::EmptyName);
+        }
+        let mut pending = self.mcu_clock_startups
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if pending.contains_key(normalized) {
+            return Err(McuRegistryError::SessionOperation {
+                name: normalized.to_owned(),
+                message: "clock startup is already being coordinated".to_owned(),
+            });
+        }
+        self.mcus.set_periodic_clock_queue_id(normalized, periodic_clock_queue_id)?;
+        let waiter = self.mcus.start_clock_calibration(normalized, uptime_queue_id)?;
+        pending.insert(normalized.to_owned(), PendingMcuClockStartup {
+            queue_id: uptime_queue_id,
+            kind: McuClockWaitKind::Uptime,
+            waiter,
+        });
+        Ok(())
+    }
+
+    fn advance_mcu_clock_startups(&self) -> Vec<McuStartupError> {
+        let names = {
+            let pending = self.mcu_clock_startups
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut names: Vec<_> = pending.keys().cloned().collect();
+            names.sort();
+            names
+        };
+        let mut errors = Vec::new();
+        for name in names {
+            let Some(current) = self.mcu_clock_startups
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&name) else { continue; };
+            let response = match current.waiter.try_recv() {
+                Ok(Some(response)) => response,
+                Ok(None) => {
+                    self.mcu_clock_startups.lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(name, current);
+                    continue;
+                }
+                Err(error) => {
+                    errors.push(McuStartupError { mcu: name, message: format!("clock response waiter failed: {error:?}") });
+                    continue;
+                }
+            };
+            let next = match current.kind {
+                McuClockWaitKind::Uptime => self.mcus.begin_clock_calibration(
+                    &name, current.queue_id, response,
+                ).map(|waiter| Some(PendingMcuClockStartup {
+                    queue_id: current.queue_id,
+                    kind: McuClockWaitKind::Clock,
+                    waiter,
+                })),
+                McuClockWaitKind::Clock => self.mcus.handle_clock_calibration_response(
+                    &name, current.queue_id, response,
+                ).map(|waiter| waiter.map(|waiter| PendingMcuClockStartup {
+                    queue_id: current.queue_id,
+                    kind: McuClockWaitKind::Clock,
+                    waiter,
+                })),
+            };
+            match next {
+                Ok(Some(next)) => {
+                    self.mcu_clock_startups.lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(name, next);
+                }
+                Ok(None) => {}
+                Err(error) => errors.push(McuStartupError { mcu: name, message: error.to_string() }),
+            }
+        }
+        errors
+    }
+
     /// Access the cooperative host event scheduler.
     pub fn mcus(&self) -> &McuRegistry {
         &self.mcus
@@ -1859,11 +1972,13 @@ impl Printer {
         let reactor_wait = bounded_host_wait(max_wait);
         let reactor_callbacks = self.reactor.run_once(reactor_wait);
         let mcus = self.poll_mcus();
+        let mcu_startup_errors = self.advance_mcu_clock_startups();
         let mcu_handler_panics = self.dispatch_mcu_events(&mcus.events);
         let mcu_message_handler_panics = self.dispatch_mcu_messages(&mcus.events);
         PrinterRunBatch {
             reactor_callbacks,
             mcus,
+            mcu_startup_errors,
             mcu_handler_panics,
             mcu_message_handler_panics,
         }
