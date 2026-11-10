@@ -2469,7 +2469,7 @@ mod tests {
         let printer = Printer::new();
         printer.install_config(
             ConfigDocument::parse(
-                "[heater_component]\\n\\n[fan_component]\\n",
+                "[heater_component]\n\n[fan_component]\n",
             )
             .unwrap(),
         );
