@@ -118,9 +118,22 @@ async fn handle_request(
         if !hyper_tungstenite::is_upgrade_request(&request) {
             return response(StatusCode::BAD_REQUEST, "application/json", Bytes::from_static(br#"{"error":"WebSocket upgrade required"}"#));
         }
+        let host = match tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            TcpStream::connect(endpoint),
+        ).await {
+            Ok(Ok(host)) => host,
+            Ok(Err(_)) | Err(_) => {
+                return response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "application/json",
+                    Bytes::from_static(br#"{"error":"Klipper Host IPC endpoint unavailable"}"#),
+                );
+            }
+        };
         return match hyper_tungstenite::upgrade(&mut request, None) {
             Ok((response, websocket)) => {
-                tokio::spawn(async move { let _ = serve_klippy_websocket(websocket, endpoint).await; });
+                tokio::spawn(async move { let _ = serve_klippy_websocket(websocket, host).await; });
                 response
             }
             Err(_) => response(StatusCode::BAD_REQUEST, "application/json", Bytes::from_static(br#"{"error":"Invalid WebSocket upgrade"}"#)),
@@ -252,9 +265,8 @@ async fn serve_websocket(
 /// JSON + ETX byte protocol, so either process can restart independently.
 async fn serve_klippy_websocket(
     websocket: HyperWebsocket,
-    endpoint: SocketAddr,
+    host: TcpStream,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let host = TcpStream::connect(endpoint).await?;
     let websocket = websocket.await?;
     let (mut websocket_sink, mut websocket_stream) = websocket.split();
     let (mut host_reader, mut host_writer) = tokio::io::split(host);
@@ -293,14 +305,17 @@ async fn serve_klippy_websocket(
                     break;
                 }
                 pending.extend_from_slice(&chunk[..count]);
-                if pending.len() > MAX_WEBSOCKET_MESSAGE_BYTES {
-                    return Err(io::Error::new(io::ErrorKind::InvalidData, "Klippy API frame exceeds size limit").into());
-                }
                 while let Some(end) = pending.iter().position(|byte| *byte == 0x03) {
+                    if end > MAX_WEBSOCKET_MESSAGE_BYTES {
+                        return Err(io::Error::new(io::ErrorKind::InvalidData, "Klippy API frame exceeds size limit").into());
+                    }
                     let frame: Vec<u8> = pending.drain(..=end).collect();
                     let payload = &frame[..frame.len() - 1];
                     let value: serde_json::Value = serde_json::from_slice(payload)?;
                     websocket_sink.send(Message::Text(serde_json::to_string(&value)?.into())).await?;
+                }
+                if pending.len() > MAX_WEBSOCKET_MESSAGE_BYTES {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "Klippy API frame exceeds size limit").into());
                 }
             }
         }
