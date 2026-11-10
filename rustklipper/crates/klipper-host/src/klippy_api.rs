@@ -1008,7 +1008,7 @@ mod async_stream_tests {
         })).unwrap();
         client.write_all(&script).await.unwrap();
 
-        let mut messages = Vec::new();
+        let mut messages: Vec<Value> = Vec::new();
         while !messages.iter().any(|message| {
             message["method"] == "process_gcode_response"
         }) || !messages.iter().any(|message| message["id"] == 2) {
