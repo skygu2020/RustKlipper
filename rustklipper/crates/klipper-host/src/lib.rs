@@ -1699,7 +1699,7 @@ impl Printer {
                 receive_time: *receive_time,
             };
             for (mcu, expected_name, handler) in &handlers {
-                if expected_name == name && mcu.as_deref().is_none_or(|expected| expected == event.mcu) {
+                if expected_name == name && mcu.as_deref().map_or(true, |expected| expected == event.mcu.as_str()) {
                     if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(&message))).is_err() {
                         panics += 1;
                     }
