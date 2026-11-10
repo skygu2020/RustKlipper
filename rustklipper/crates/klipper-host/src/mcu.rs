@@ -53,14 +53,16 @@ pub struct McuRegistry {
     state: Mutex<McuRegistryState>,
 }
 
-fn remove_session_if_same(
-    state: &Mutex<McuRegistryState>,
+fn remove_session_if_same<T>(
+    sessions: &mut HashMap<String, Arc<Mutex<T>>>,
     name: &str,
-    session: &Arc<Mutex<ReliableSerialSession>>,
-) {
-    let mut state = state.lock().expect("MCU registry lock poisoned");
-    if state.sessions.get(name).is_some_and(|current| Arc::ptr_eq(current, session)) {
-        state.sessions.remove(name);
+    session: &Arc<Mutex<T>>,
+) -> bool {
+    if sessions.get(name).is_some_and(|current| Arc::ptr_eq(current, session)) {
+        sessions.remove(name);
+        true
+    } else {
+        false
     }
 }
 
@@ -148,7 +150,8 @@ impl McuRegistry {
                 let mut guard = poisoned.into_inner();
                 guard.mark_disconnected();
                 drop(guard);
-                remove_session_if_same(&self.state, name, &session);
+                let mut state = self.state.lock().expect("MCU registry lock poisoned");
+                remove_session_if_same(&mut state.sessions, name, &session);
                 None
             }
         }
@@ -215,7 +218,8 @@ impl McuRegistry {
                     let mut guard = poisoned.into_inner();
                     guard.mark_disconnected();
                     drop(guard);
-                    remove_session_if_same(&self.state, &name, &session);
+                    let mut state = self.state.lock().expect("MCU registry lock poisoned");
+                    remove_session_if_same(&mut state.sessions, &name, &session);
                     batch.errors.push(McuPollError {
                         mcu: name,
                         message: "MCU session lock poisoned after a panic".to_owned(),
@@ -255,17 +259,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stale_poison_cleanup_does_not_remove_a_replacement_session() {
-        let mut sessions = HashMap::new();
+    fn poisoned_session_cleanup_does_not_remove_a_replacement_handle() {
         let old = Arc::new(Mutex::new(1_u8));
         let replacement = Arc::new(Mutex::new(2_u8));
-        sessions.insert("mcu".to_owned(), replacement.clone());
+        let mut sessions = HashMap::from([("mcu".to_owned(), replacement.clone())]);
 
-        if sessions.get("mcu").is_some_and(|current| Arc::ptr_eq(current, &old)) {
-            sessions.remove("mcu");
-        }
-
+        assert!(!remove_session_if_same(&mut sessions, "mcu", &old));
         assert!(Arc::ptr_eq(sessions.get("mcu").unwrap(), &replacement));
+        assert!(remove_session_if_same(&mut sessions, "mcu", &replacement));
+        assert!(!sessions.contains_key("mcu"));
     }
 
     #[test]
