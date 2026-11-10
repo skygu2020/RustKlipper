@@ -932,6 +932,11 @@ impl Printer {
                 return;
             }
             *state = PrinterState::Disconnected;
+            // Invalidate every in-flight connection-stage operation before
+            // releasing the lifecycle lock. A later transition back to a
+            // configuring state must never authorize callbacks from this
+            // disconnected connection attempt.
+            self.connection_generation.fetch_add(1, Ordering::SeqCst);
             *self
                 .state_message
                 .write()
@@ -3861,17 +3866,24 @@ mod tests {
     }
 
     #[test]
-    fn repeated_disconnect_emits_one_event() {
+    fn repeated_disconnect_emits_one_event_and_invalidates_connection_generation_once() {
         let printer = Printer::new();
         let events = Arc::new(AtomicUsize::new(0));
         let observed = events.clone();
         printer.register_event_handler(PrinterEventKind::Disconnect, move |_| {
             observed.fetch_add(1, Ordering::SeqCst);
         });
+        let generation = printer.connection_generation.load(Ordering::SeqCst);
         printer.disconnect();
+        let disconnected_generation = printer.connection_generation.load(Ordering::SeqCst);
         printer.disconnect();
         assert_eq!(printer.state(), PrinterState::Disconnected);
         assert_eq!(events.load(Ordering::SeqCst), 1);
+        assert_eq!(disconnected_generation, generation.wrapping_add(1));
+        assert_eq!(
+            printer.connection_generation.load(Ordering::SeqCst),
+            disconnected_generation
+        );
     }
 
     #[test]
