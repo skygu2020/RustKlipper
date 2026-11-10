@@ -166,6 +166,24 @@ pub struct KlippyApiDispatcher {
 impl KlippyApiDispatcher {
     pub fn new() -> Self { Self::default() }
 
+    /// Register Klippy's endpoint-discovery method used by Moonraker clients.
+    ///
+    /// The response shape matches Klippy's `list_endpoints` contract:
+    /// `{"endpoints": ["method/name", ...]}`.
+    pub fn register_endpoint_listing(
+        self: &std::sync::Arc<Self>,
+    ) -> Result<(), KlippyApiRpcError> {
+        let dispatcher = std::sync::Arc::downgrade(self);
+        self.register("list_endpoints", move |_| {
+            let dispatcher = dispatcher
+                .upgrade()
+                .ok_or_else(|| KlippyApiRpcError::internal("Klippy API dispatcher is unavailable"))?;
+            Ok(serde_json::json!({
+                "endpoints": dispatcher.method_names(),
+            }))
+        })
+    }
+
     pub fn register<F>(&self, name: impl Into<String>, handler: F) -> Result<(), KlippyApiRpcError>
     where
         F: Fn(Value) -> Result<Value, KlippyApiRpcError> + Send + Sync + 'static,
@@ -418,6 +436,25 @@ mod tests {
         let response = dispatcher.dispatch_value(json!({"id":9,"method":"info","params":{}})).unwrap();
         assert_eq!(response, json!({"id":9,"result":{"state":"ready"}}));
         assert_eq!(dispatcher.method_names(), vec!["info"]);
+    }
+
+    #[test]
+    fn endpoint_listing_returns_registered_method_names() {
+        let dispatcher = std::sync::Arc::new(KlippyApiDispatcher::new());
+        dispatcher.register("info", |_| Ok(json!({"state":"ready"}))).unwrap();
+        dispatcher.register("gcode/script", |_| Ok(json!("ok"))).unwrap();
+        dispatcher.register_endpoint_listing().unwrap();
+
+        let response = dispatcher
+            .dispatch_value(json!({"id":5,"method":"list_endpoints","params":{}}))
+            .unwrap();
+        assert_eq!(
+            response,
+            json!({
+                "id":5,
+                "result":{"endpoints":["gcode/script","info","list_endpoints"]}
+            })
+        );
     }
 
     #[test]
