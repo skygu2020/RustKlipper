@@ -144,7 +144,7 @@ impl RetransmitState {
     pub fn track_sent(&mut self, sequence: u64, bytes: Vec<u8>, now: f64)
         -> Result<(), RetransmitError>
     {
-        let receive_time = now + self.wire_time_per_byte * bytes.len() as f64;
+        let receive_time = saturating_time_add(now, self.wire_time_per_byte * bytes.len() as f64);
         self.track_sent_with_receive_time(sequence, bytes, now, receive_time)
     }
 
@@ -404,6 +404,18 @@ mod tests {
         assert_eq!(retries.len(), 1);
         assert_eq!(state.retransmit_deadline(), Some(f64::MAX));
         assert!(state.retransmit_deadline().unwrap().is_finite());
+    }
+
+    #[test]
+    fn track_sent_saturates_uart_completion_time_at_f64_limit() {
+        let mut state = RetransmitState::new();
+        state.set_wire_time_per_byte(1.0).unwrap();
+
+        state.track_sent(1, vec![0x01, 0x02], f64::MAX).unwrap();
+
+        assert_eq!(state.last_receive_sent_time(), 0.0);
+        assert_eq!(state.retransmit_deadline(), Some(f64::MAX));
+        assert_eq!(state.outstanding_len(), 1);
     }
 
     #[test]
