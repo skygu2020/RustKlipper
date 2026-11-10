@@ -34,6 +34,7 @@ the compatibility reference and is not modified by the Rust implementation.
 - `klipper-gcode`: Klipper-style traditional/extended G-code parsing, typed
   parameter access, readiness-aware command dispatch, mux commands, script
   execution, and ACK/response events.
+- `moonraker`: initial JSON-RPC 2.0 request dispatcher with request/notification handling, batch dispatch, standard protocol errors, and a method registry. HTTP/WebSocket transport and Moonraker components are subsequent implementation stages.
 - `klipper-host`: guarded printer lifecycle and ordered identify/connect
   events, typed object registry and module-group lookup, multi-MCU USB serial
   session registry, dependency-aware/lazy component loading, tracked config
