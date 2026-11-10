@@ -1448,6 +1448,8 @@ mod async_stream_tests {
         );
         assert!(notification["params"]["status"]["toolhead"].get("homed_axes").is_none());
         assert!(notification["params"]["eventtime"].as_f64().is_some());
+        assert_eq!(notification["method"], "notify_status_update");
+        assert_eq!(notification["source"], "printer");
 
         client.shutdown().await.unwrap();
         server_task.abort();
@@ -1471,8 +1473,7 @@ mod async_stream_tests {
         client.write_all(&KlippyApiCodec::encode(&json!({
             "method": "objects/subscribe",
             "params": {
-                "objects": { "toolhead": ["position"] },
-                "response_template": { "method": "notify_status_update" }
+                "objects": { "toolhead": ["position"] }
             }
         })).unwrap()).await.unwrap();
 
@@ -1489,11 +1490,12 @@ mod async_stream_tests {
             ).await.unwrap().unwrap();
             assert_ne!(count, 0, "connection closed before notification subscription became active");
             if let Some(message) = decoder.push(&chunk[..count]).unwrap().into_iter().find(|message| {
-                message["method"] == "notify_status_update"
+                message["params"]["status"]["toolhead"]["position"] == json!([4.0, 5.0, 6.0])
             }) {
                 break message;
             }
         };
+        assert!(notification.get("method").is_none());
         assert_eq!(
             notification["params"]["status"]["toolhead"]["position"],
             json!([4.0, 5.0, 6.0])
@@ -1501,6 +1503,25 @@ mod async_stream_tests {
 
         client.shutdown().await.unwrap();
         server_task.abort();
+    }
+
+    #[test]
+    fn objects_subscribe_rejects_non_object_response_templates() {
+        let dispatcher = std::sync::Arc::new(KlippyApiDispatcher::new());
+        let printer = std::sync::Arc::new(crate::Printer::new());
+        printer.register_status_object("toolhead", json!({"position": [0.0, 0.0, 0.0]})).unwrap();
+        dispatcher.register_standard_endpoints(printer, "test").unwrap();
+
+        let response = dispatcher.dispatch_value(json!({
+            "id": 9,
+            "method": "objects/subscribe",
+            "params": {
+                "objects": { "toolhead": ["position"] },
+                "response_template": []
+            }
+        })).unwrap();
+        assert_eq!(response["id"], 9);
+        assert_eq!(response["error"]["code"], -32600);
     }
 
     #[tokio::test]
