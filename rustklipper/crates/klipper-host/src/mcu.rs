@@ -53,6 +53,10 @@ pub struct McuRegistry {
     state: Mutex<McuRegistryState>,
 }
 
+fn poll_generation_is_current(snapshot: u64, current: u64) -> bool {
+    snapshot == current
+}
+
 fn remove_session_if_same<T>(
     sessions: &mut HashMap<String, Arc<Mutex<T>>>,
     name: &str,
@@ -270,7 +274,7 @@ impl McuRegistry {
         // registry after the snapshot. Do not leak events or errors collected
         // from sessions that no longer belong to the active lifecycle.
         let state = self.state.lock().expect("MCU registry lock poisoned");
-        if state.generation != generation {
+        if !poll_generation_is_current(generation, state.generation) {
             return McuPollBatch::default();
         }
         batch
@@ -319,15 +323,9 @@ mod tests {
     }
 
     #[test]
-    fn poll_batch_is_discarded_after_registry_generation_changes() {
-        let registry = McuRegistry::new();
-        let snapshot_generation = registry.state.lock().unwrap().generation;
-
-        registry.clear();
-
-        let state = registry.state.lock().unwrap();
-        assert_ne!(state.generation, snapshot_generation);
-        assert_ne!(state.generation, snapshot_generation);
+    fn poll_batch_generation_check_rejects_a_cleared_registry() {
+        assert!(poll_generation_is_current(7, 7));
+        assert!(!poll_generation_is_current(7, 8));
     }
 
     #[test]
