@@ -555,7 +555,9 @@ mod tests {
         dispatcher.reset();
 
         assert!(!dispatcher.is_ready());
-        assert!(dispatcher.registered_commands().is_empty());
+        // Reset removes user registrations, but the built-in M110 command
+        // remains part of a freshly initialized Klipper dispatcher.
+        assert_eq!(dispatcher.registered_commands(), vec!["M110".to_owned()]);
         assert!(dispatcher.command_help().is_empty());
         let unknown = dispatcher.process_line("M999", true).unwrap();
         assert!(!unknown.handler_found);
