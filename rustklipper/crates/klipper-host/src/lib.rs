@@ -1210,13 +1210,19 @@ impl Printer {
         names
     }
 
+    fn lock_event_handlers(
+        &self,
+    ) -> MutexGuard<'_, HashMap<PrinterEventKind, Vec<EventHandler>>> {
+        self.event_handlers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     pub fn register_event_handler<F>(&self, event: PrinterEventKind, handler: F)
     where
         F: Fn(&PrinterEvent) + Send + Sync + 'static,
     {
-        self.event_handlers
-            .lock()
-            .expect("printer event handler lock poisoned")
+        self.lock_event_handlers()
             .entry(event)
             .or_default()
             .push(Arc::new(handler));
@@ -1271,9 +1277,7 @@ impl Printer {
     }
 
     fn event_handlers_for(&self, kind: PrinterEventKind) -> Vec<EventHandler> {
-        self.event_handlers
-            .lock()
-            .expect("printer event handler lock poisoned")
+        self.lock_event_handlers()
             .get(&kind)
             .cloned()
             .unwrap_or_default()
@@ -4007,6 +4011,27 @@ mod tests {
         printer.invoke_shutdown("late shutdown");
         assert_eq!(printer.state(), PrinterState::Disconnected);
         assert!(!printer.is_shutdown());
+    }
+
+    #[test]
+    fn event_handler_registry_recovers_after_lock_poisoning() {
+        let printer = Arc::new(Printer::new());
+        let poisoned_printer = printer.clone();
+        let panic_result = std::thread::spawn(move || {
+            let _guard = poisoned_printer.event_handlers.lock().unwrap();
+            panic!("poison printer event handler registry");
+        })
+        .join();
+        assert!(panic_result.is_err());
+
+        let called = Arc::new(AtomicUsize::new(0));
+        let observed = called.clone();
+        printer.register_event_handler(PrinterEventKind::Ready, move |_| {
+            observed.fetch_add(1, Ordering::SeqCst);
+        });
+
+        assert_eq!(printer.send_event(PrinterEvent::Ready), 0);
+        assert_eq!(called.load(Ordering::SeqCst), 1);
     }
 
     #[test]
