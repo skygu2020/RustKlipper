@@ -167,11 +167,27 @@ impl McuRegistry {
     ) -> Option<R> {
         let session = self.session_handle(name)?;
         match session.lock() {
-            Ok(mut guard) => Some(callback(&mut guard)),
+            Ok(mut guard) => {
+                // Catch callback panics while the guard is still available so
+                // the session can be invalidated and detached immediately.
+                // Resuming the panic preserves the caller's existing behavior.
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    callback(&mut guard)
+                })) {
+                    Ok(result) => Some(result),
+                    Err(payload) => {
+                        guard.mark_disconnected();
+                        drop(guard);
+                        let mut state = self.state.lock().expect("MCU registry lock poisoned");
+                        remove_session_if_same(&mut state.sessions, name, &session);
+                        std::panic::resume_unwind(payload)
+                    }
+                }
+            }
             Err(poisoned) => {
-                // A panicking callback may have left the session's protocol
-                // state partially mutated. Treat it as terminal and remove
-                // this exact handle from the registry before returning.
+                // A prior panic may have left the session's protocol state
+                // partially mutated. Treat it as terminal and remove this
+                // exact handle from the registry before returning.
                 let mut guard = poisoned.into_inner();
                 guard.mark_disconnected();
                 drop(guard);
