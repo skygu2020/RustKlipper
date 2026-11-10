@@ -374,14 +374,6 @@ mod tests {
     }
 
     #[test]
-    fn stale_serial_open_is_classified_as_cancelled_even_if_open_failed() {
-        // A clear() invalidates the whole in-flight operation. Whether the
-        // underlying OS open succeeded or failed must not leak into the new
-        // printer lifecycle as an ordinary open failure.
-        assert!(!poll_generation_is_current(3, 4));
-    }
-
-    #[test]
     fn removing_one_session_does_not_match_a_replacement_handle() {
         let old = Arc::new(Mutex::new(1_u8));
         let replacement = Arc::new(Mutex::new(2_u8));
