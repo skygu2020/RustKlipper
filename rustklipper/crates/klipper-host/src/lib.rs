@@ -2330,7 +2330,11 @@ impl Printer {
                 .expect("printer lifecycle lock poisoned");
             self.gcode_dispatcher().clone()
         };
-        dispatcher.process_line(line, need_ack)
+        let outcome = dispatcher.process_line(line, need_ack)?;
+        if outcome.command == "M112" && outcome.handler_found {
+            self.invoke_shutdown("Shutdown due to M112 command");
+        }
+        Some(outcome)
     }
 
     pub fn process_gcode_script(&self, script: &str) -> Vec<DispatchOutcome> {
@@ -3257,6 +3261,17 @@ mod tests {
     }
 
     #[test]
+    fn m112_requests_printer_shutdown() {
+        let printer = Printer::new();
+        printer.set_ready();
+
+        let outcome = printer.process_gcode_line("M112", true).unwrap();
+        assert!(outcome.handler_found);
+        assert!(outcome.acknowledged);
+        assert_eq!(printer.state(), PrinterState::Shutdown);
+    }
+
+    #[test]
     fn script_observes_commands_unregistered_by_prior_handlers() {
         let printer = Arc::new(Printer::new());
         printer
@@ -3449,7 +3464,7 @@ mod tests {
 
         assert_eq!(
             printer.registered_gcode_commands(),
-            vec!["M110".to_owned(), "STATUS".to_owned()]
+            vec!["M110".to_owned(), "M112".to_owned(), "STATUS".to_owned()]
         );
         assert_eq!(
             printer.gcode_help(),
@@ -3459,7 +3474,7 @@ mod tests {
         printer.set_ready();
         assert_eq!(
             printer.registered_gcode_commands(),
-            vec!["M110".to_owned(), "MOVE".to_owned(), "STATUS".to_owned()]
+            vec!["M110".to_owned(), "M112".to_owned(), "MOVE".to_owned(), "STATUS".to_owned()]
         );
         assert_eq!(printer.gcode_help().len(), 2);
     }
@@ -3765,7 +3780,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             printer.registered_gcode_commands(),
-            vec!["M110".to_owned(), "M999".to_owned()]
+            vec!["M110".to_owned(), "M112".to_owned(), "M999".to_owned()]
         );
         assert_eq!(
             printer.gcode_help().get("M999").map(String::as_str),
@@ -3936,7 +3951,7 @@ mod tests {
 
         printer.install_config(ConfigDocument::parse("[printer]\n").unwrap());
         let dispatcher = printer.gcode_dispatcher();
-        assert_eq!(dispatcher.registered_commands(), vec!["M110".to_owned()]);
+        assert_eq!(dispatcher.registered_commands(), vec!["M110".to_owned(), "M112".to_owned()]);
         assert!(!dispatcher.is_ready());
     }
 
