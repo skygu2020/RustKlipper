@@ -545,3 +545,58 @@ mod async_stream_tests {
         ));
     }
 }
+
+
+/// Accept TCP clients and serve each connection independently.
+///
+/// TCP provides a cross-platform transport for the Klippy API. On Windows,
+/// this can be used directly; Unix-domain sockets and named pipes can be
+/// supplied to `serve_async_stream` through their respective adapters.
+pub async fn serve_tcp_listener(
+    listener: tokio::net::TcpListener,
+    dispatcher: std::sync::Arc<KlippyApiDispatcher>,
+) -> std::io::Result<()> {
+    loop {
+        let (mut stream, peer) = listener.accept().await?;
+        let dispatcher = dispatcher.clone();
+        tokio::spawn(async move {
+            if let Err(error) = serve_async_stream(&mut stream, &dispatcher).await {
+                tracing::debug!(%peer, %error, "Klippy API TCP connection ended");
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+mod tcp_listener_tests {
+    use super::*;
+    use serde_json::json;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn accepts_tcp_clients_and_dispatches_requests() {
+        let dispatcher = std::sync::Arc::new(KlippyApiDispatcher::new());
+        dispatcher
+            .register("info", |_| Ok(json!({"state":"ready"})))
+            .unwrap();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_task = tokio::spawn(serve_tcp_listener(listener, dispatcher));
+
+        let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+        let request = KlippyApiCodec::encode(&json!({"id":17,"method":"info"})).unwrap();
+        client.write_all(&request).await.unwrap();
+        client.shutdown().await.unwrap();
+
+        let mut output = Vec::new();
+        client.read_to_end(&mut output).await.unwrap();
+        server_task.abort();
+
+        let mut decoder = KlippyApiCodec::default();
+        assert_eq!(
+            decoder.push(&output).unwrap(),
+            vec![json!({"id":17,"result":{"state":"ready"}})]
+        );
+    }
+}
