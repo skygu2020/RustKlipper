@@ -235,6 +235,11 @@ fn due_retry_transaction_ids(
     transactions: &HashMap<u64, PendingRetryRequest>,
     now: f64,
 ) -> Vec<u64> {
+    // Invalid clock observations must not enqueue retries that the transaction
+    // itself would refuse to consume.
+    if !now.is_finite() {
+        return Vec::new();
+    }
     let mut due: Vec<_> = transactions.iter()
         .filter_map(|(id, pending)| {
             pending.transaction.retry_deadline()
@@ -2290,6 +2295,29 @@ mod due_retry_selection_tests {
         }
 
         assert_eq!(due_retry_transaction_ids(&transactions, 1.010), vec![2, 7, 9]);
+    }
+
+    #[test]
+    fn invalid_clock_observations_do_not_select_due_retries() {
+        let mut transaction = RetryTransaction::new(1, Duration::from_millis(10));
+        transaction.attempt_acked(1.0);
+        let pending = PendingRetryRequest {
+            queue_id: 7,
+            command: ScheduledCommand::new(vec![0x01], 0, 0),
+            name: "status".into(),
+            oid: None,
+            waiter_id: 11,
+            transaction,
+        };
+        let transactions = HashMap::from([(7, pending)]);
+
+        for invalid_now in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(due_retry_transaction_ids(&transactions, invalid_now).is_empty());
+            assert_eq!(
+                transactions[&7].transaction.retry_deadline(),
+                Some(1.010),
+            );
+        }
     }
 
     #[test]
