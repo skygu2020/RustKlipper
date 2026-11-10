@@ -106,7 +106,7 @@ impl<T> Completion<T> {
 
     /// Complete once. A second completion returns the unused result.
     pub fn complete(&self, result: T) -> Result<(), T> {
-        let (lock, ready) = &*self.state;
+        let ready = &self.state.1;
         let mut current = self.lock_result();
         if current.is_some() {
             return Err(result);
@@ -129,7 +129,7 @@ impl<T> Completion<T> {
 
     /// Cancel a pending completion and wake all waiters.
     pub fn cancel(&self) -> bool {
-        let (lock, ready) = &*self.state;
+        let ready = &self.state.1;
         let mut current = self.lock_result();
         if current.is_some() {
             return false;
@@ -156,7 +156,7 @@ impl<T> Completion<T> {
     where
         T: Clone,
     {
-        let (lock, ready) = &*self.state;
+        let ready = &self.state.1;
         let mut current = self.lock_result();
         while current.is_none() {
             current = ready.wait(current).unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -169,7 +169,7 @@ impl<T> Completion<T> {
     where
         T: Clone,
     {
-        let (lock, ready) = &*self.state;
+        let ready = &self.state.1;
         let current = self.lock_result();
         let (current, _) = ready
             .wait_timeout_while(current, timeout, |value| value.is_none())
