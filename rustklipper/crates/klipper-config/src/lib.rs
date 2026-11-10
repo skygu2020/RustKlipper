@@ -1545,7 +1545,7 @@ mod tests {
 
     #[test]
     fn tracked_float_range_rejects_non_finite_bounds() {
-        let config = ConfigDocument::parse("[heater]\\nmax_temp=250\\n").unwrap();
+        let config = ConfigDocument::parse("[heater]\nmax_temp=250\n").unwrap();
         let tracker = ConfigUsageTracker::new();
         let section = tracker.track_section(config.section("heater").unwrap());
 
