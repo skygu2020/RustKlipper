@@ -21,6 +21,8 @@ pub enum KlippyApiCodecError {
     ExpectedObject,
     #[error("Klippy API request is missing a string method")]
     MissingMethod,
+    #[error("Klippy API request method cannot be empty")]
+    EmptyMethod,
     #[error("Klippy API request params must be a JSON object")]
     ExpectedParamsObject,
     #[error("Klippy API request id must be a string, number, or null")]
@@ -39,6 +41,9 @@ impl KlippyApiRequest {
         let object = value.as_object().ok_or(KlippyApiCodecError::ExpectedObject)?;
         let method = object.get("method").and_then(Value::as_str)
             .ok_or(KlippyApiCodecError::MissingMethod)?.to_owned();
+        if method.is_empty() {
+            return Err(KlippyApiCodecError::EmptyMethod);
+        }
         let id = object.get("id").cloned();
         if id.as_ref().is_some_and(|id| {
             !id.is_null() && !id.is_string() && !id.is_number()
@@ -785,6 +790,19 @@ mod tests {
         let notification = KlippyApiRequest::from_value(json!({"method":"process_status_update"})).unwrap();
         assert!(notification.is_notification());
         assert_eq!(notification.params, json!({}));
+    }
+
+    #[test]
+    fn rejects_empty_request_methods() {
+        for method in ["", ""] {
+            assert_eq!(
+                KlippyApiRequest::from_value(json!({
+                    "id": 1,
+                    "method": method
+                })).unwrap_err(),
+                KlippyApiCodecError::EmptyMethod
+            );
+        }
     }
 
     #[test]
