@@ -146,12 +146,24 @@ impl ClockSync {
         sent_time: f64,
         receive_time: f64,
     ) -> Result<Option<ClockUpdate>, ClockSyncError> {
-        self.last_prediction_time = -9999.0;
-        self.update(clock32, sent_time, receive_time)
+        let mut candidate = self.clone();
+        candidate.last_prediction_time = -9999.0;
+        let result = candidate.update_inner(clock32, sent_time, receive_time)?;
+        *self = candidate;
+        Ok(result)
     }
 
     /// Process a get_clock response with monotonic send and receive timestamps.
     pub fn update(&mut self, clock32: u32, sent_time: f64, receive_time: f64)
+        -> Result<Option<ClockUpdate>, ClockSyncError>
+    {
+        let mut candidate = self.clone();
+        let result = candidate.update_inner(clock32, sent_time, receive_time)?;
+        *self = candidate;
+        Ok(result)
+    }
+
+    fn update_inner(&mut self, clock32: u32, sent_time: f64, receive_time: f64)
         -> Result<Option<ClockUpdate>, ClockSyncError>
     {
         if !sent_time.is_finite() || !receive_time.is_finite() || receive_time < sent_time {
@@ -295,6 +307,18 @@ impl UartTiming {
 mod tests {
     use super::*;
 
+
+    #[test]
+    fn rejected_clock_regression_does_not_mutate_sync_state() {
+        let mut sync = ClockSync::new(1_000_000.0, 1.0, 100_000).unwrap();
+        sync.update(110_000, 1.1, 1.102).unwrap();
+        let before = sync.clone();
+
+        let result = sync.update(120_000, 1.2, 1.1);
+        assert_eq!(result, Err(ClockSyncError::InvalidTimestamp));
+        assert_eq!(sync.last_clock(), before.last_clock());
+        assert_eq!(sync.estimate(), before.estimate());
+    }
 
     #[test]
     fn uart_duration_clamps_instead_of_panicking_for_unrepresentable_lengths() {
