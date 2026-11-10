@@ -164,34 +164,30 @@ async fn serve_websocket(
             incoming = websocket.next() => {
                 let Some(message) = incoming else { break; };
                 match message? {
-            Message::Text(text) => {
-                if text.len() > MAX_WEBSOCKET_MESSAGE_BYTES {
-                    websocket
-                        .send(Message::Close(Some(
-                            hyper_tungstenite::tungstenite::protocol::CloseFrame {
-                                code: hyper_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Size,
-                                reason: "Message too large".into(),
-                            },
-                        )))
-                        .await?;
-                    break;
-                }
-
-                let output = match manager.handle_control_message(&text, &connection) {
-                    Some(output) => output,
-                    None => router.handle_json(&text),
-                };
-                if let Some(output) = output {
-                    websocket.send(Message::Text(output.into())).await?;
-                }
-            }
-            Message::Binary(_) => {
-                // Moonraker's JSON-RPC WebSocket protocol is text-frame based.
-                // Ignore binary frames without terminating an otherwise valid session.
-            }
-            Message::Ping(payload) => websocket.send(Message::Pong(payload)).await?,
-            Message::Pong(_) => {}
-            Message::Close(_) => break,
+                    Message::Text(text) => {
+                        if text.len() > MAX_WEBSOCKET_MESSAGE_BYTES {
+                            websocket.send(Message::Close(Some(
+                                hyper_tungstenite::tungstenite::protocol::CloseFrame {
+                                    code: hyper_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Size,
+                                    reason: "Message too large".into(),
+                                },
+                            ))).await?;
+                            break;
+                        }
+                        let output = match manager.handle_control_message(&text, &connection) {
+                            Some(output) => output,
+                            None => router.handle_json(&text),
+                        };
+                        if let Some(output) = output {
+                            websocket.send(Message::Text(output.into())).await?;
+                        }
+                    }
+                    Message::Binary(_) => {
+                        // Moonraker's JSON-RPC WebSocket protocol is text-frame based.
+                    }
+                    Message::Ping(payload) => websocket.send(Message::Pong(payload)).await?,
+                    Message::Pong(_) => {}
+                    Message::Close(_) => break,
                     Message::Frame(_) => unreachable!("tungstenite handles raw frames internally"),
                 }
             }
@@ -207,7 +203,6 @@ async fn serve_websocket(
 
     Ok(())
 }
-
 fn response(
     status: StatusCode,
     content_type: &'static str,
