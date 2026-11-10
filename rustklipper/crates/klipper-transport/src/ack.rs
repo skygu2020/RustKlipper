@@ -153,6 +153,28 @@ mod tests {
         assert_eq!(later_id.recv().unwrap().sent_time, 99.0);
     }
 
+
+    #[test]
+    fn notifications_in_one_frame_keep_command_order_not_notify_id_order() {
+        let mut tracker = AckTracker::new();
+        let later_id = tracker.register_notify(3).unwrap();
+        let earlier_id = tracker.register_notify(700).unwrap();
+
+        // Both commands share one UART frame. Their notification IDs are
+        // caller-selected, so FIFO completion must use the order in which
+        // the frame's notify IDs are bound after the write.
+        assert!(tracker.mark_sent(700, 25, 1.0));
+        assert!(tracker.mark_sent(3, 25, 1.0));
+
+        let completed = tracker.acknowledge_events(26, false, 2.0, 2.1);
+        assert_eq!(
+            completed.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec![700, 3],
+        );
+        assert!(earlier_id.recv().is_ok());
+        assert!(later_id.recv().is_ok());
+    }
+
     #[test]
     fn send_order_counter_wrap_compacts_pending_notifications_without_reordering() {
         let mut tracker = AckTracker::new();
