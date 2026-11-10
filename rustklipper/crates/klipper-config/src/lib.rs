@@ -1962,7 +1962,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("main.cfg");
-        fs::write(&path, "[include ]\\n").unwrap();
+        fs::write(&path, "[include ]\n").unwrap();
 
         assert!(matches!(
             ConfigFileLoader::load(&path),
