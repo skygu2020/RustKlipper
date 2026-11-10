@@ -112,17 +112,17 @@ async fn handle_request(
 ) -> Response<Full<Bytes>> {
     if request.uri().path() == "/klippysocket" {
         let Some(dispatcher) = klippy_dispatcher else {
-            return response(StatusCode::SERVICE_UNAVAILABLE, "application/json", Bytes::from_static(br#"{\"error\":\"Klippy API is not configured\"}"#));
+            return response(StatusCode::SERVICE_UNAVAILABLE, "application/json", Bytes::from_static(br#"{"error":"Klippy API is not configured"}"#));
         };
         if !hyper_tungstenite::is_upgrade_request(&request) {
-            return response(StatusCode::BAD_REQUEST, "application/json", Bytes::from_static(br#"{\"error\":\"WebSocket upgrade required\"}"#));
+            return response(StatusCode::BAD_REQUEST, "application/json", Bytes::from_static(br#"{"error":"WebSocket upgrade required"}"#));
         }
         return match hyper_tungstenite::upgrade(&mut request, None) {
             Ok((response, websocket)) => {
                 tokio::spawn(async move { let _ = serve_klippy_websocket(websocket, dispatcher).await; });
                 response
             }
-            Err(_) => response(StatusCode::BAD_REQUEST, "application/json", Bytes::from_static(br#"{\"error\":\"Invalid WebSocket upgrade\"}"#)),
+            Err(_) => response(StatusCode::BAD_REQUEST, "application/json", Bytes::from_static(br#"{"error":"Invalid WebSocket upgrade"}"#)),
         };
     }
 
