@@ -604,7 +604,7 @@ mod tests {
         let response = dispatcher.dispatch_value(json!({
             "id": 21,
             "method": "gcode/script",
-            "params": { "script": "FIRST\\nSECOND" }
+            "params": { "script": "FIRST\nSECOND" }
         })).unwrap();
 
         assert_eq!(response, json!({ "id": 21, "result": {} }));
