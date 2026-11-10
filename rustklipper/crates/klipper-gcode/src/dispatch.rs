@@ -714,19 +714,30 @@ mod tests {
     }
 
     #[test]
-    fn unconfigured_heater_and_fan_commands_match_python_non_finite_float_truthiness() {
+    fn heater_and_fan_commands_follow_legacy_letter_tokenization() {
         let mut dispatcher = GCodeDispatcher::new();
         dispatcher.set_ready();
 
-        for line in ["M104 SNaN", "M140 Sinf", "M106 SNaN"] {
+        // The legacy G-code parser treats consecutive letters as parameter
+        // names. Thus "SNaN" and "Sinf" do not produce an S value: they
+        // become SNAN/SINF parameters and the default S value is zero/one.
+        // This is the same behavior as Klipper's args_r split.
+        for line in ["M104 SNaN", "M140 Sinf"] {
             let outcome = dispatcher.process_line(line, true).unwrap();
-            assert!(
-                matches!(outcome.events.first(), Some(DispatchEvent::Info(message))
-                    if message.contains("Unknown command")),
-                "{line} should be treated as a nonzero float, got {:?}",
-                outcome.events
+            assert_eq!(
+                outcome.events,
+                vec![DispatchEvent::Ack(None)],
+                "{line} should retain legacy parameter tokenization"
             );
         }
+
+        let outcome = dispatcher.process_line("M106 SNaN", true).unwrap();
+        assert!(
+            matches!(outcome.events.first(), Some(DispatchEvent::Info(message))
+                if message.contains("Unknown command")),
+            "M106 defaults S to 1.0 when no S parameter is parsed, got {:?}",
+            outcome.events
+        );
     }
 
     #[test]
