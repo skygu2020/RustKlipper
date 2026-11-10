@@ -1823,6 +1823,12 @@ impl Printer {
         if normalized.is_empty() {
             return Err(McuRegistryError::EmptyName);
         }
+        if handshake.stage() != klipper_transport::ConfigHandshakeStage::AwaitingInitialResponse {
+            return Err(McuRegistryError::SessionOperation {
+                name: normalized.to_owned(),
+                message: "config handshake must be at AwaitingInitialResponse".to_owned(),
+            });
+        }
         let mut pending = self.mcu_config_startups.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if pending.contains_key(normalized) {
