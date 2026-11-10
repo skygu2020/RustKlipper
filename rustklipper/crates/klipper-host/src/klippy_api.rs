@@ -372,7 +372,7 @@ mod tests {
 
     impl std::io::Read for TestStream {
         fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-            self.input.read(buffer)
+            std::io::Read::read(&mut self.input, buffer)
         }
     }
 
