@@ -32,22 +32,29 @@ pub struct ParsedLine {
 impl ParsedLine {
     /// Return the unparsed parameter text following the command.
     pub fn raw_parameters(&self) -> &str {
-        let mut start = self.original.len();
-        if let Some(position) = self.original.to_ascii_uppercase().find(&self.command) {
-            start = position + self.command.len();
-        }
+        let mut start = self.command.len();
         let mut end = self.original.len();
-        // A trailing checksum belongs to a numbered G-code line. On an
-        // unnumbered extended command, '*' is ordinary parameter content.
-        if self.line_number.is_some() {
+
+        // Klipper only searches past a leading line number (and strips a
+        // checksum) when the command is not already at the start of origline.
+        if self.original.get(..start).map(str::to_ascii_uppercase).as_deref()
+            != Some(self.command.as_str())
+        {
+            if let Some(position) = self.original.to_ascii_uppercase().find(&self.command) {
+                start += position;
+            } else {
+                start = self.original.len();
+            }
             if let Some(star) = self.original.rfind('*') {
-                if self.original[star + 1..].trim().chars().all(|ch| ch.is_ascii_digit())
-                    && !self.original[star + 1..].trim().is_empty()
-                {
+                // Match Python str.isdigit(): do not trim whitespace after
+                // the checksum before deciding whether it is numeric.
+                let checksum = &self.original[star + 1..];
+                if !checksum.is_empty() && checksum.chars().all(|ch| ch.is_ascii_digit()) {
                     end = star;
                 }
             }
         }
+
         let raw = &self.original[start.min(end)..end];
         raw.strip_prefix(char::is_whitespace).unwrap_or(raw)
     }
@@ -398,6 +405,20 @@ mod tests {
             single_quoted.extended_parameters().unwrap().get("MSG").map(String::as_str),
             Some(r#"hello\ world"#)
         );
+    }
+
+    #[test]
+    fn raw_parameters_match_klipper_checksum_detection_for_numbered_lines() {
+        // Klipper detects a leading line-number prefix from the command's
+        // position, even when the numeric line number itself is malformed.
+        let malformed_number = parse_line("Nabc G1 X10*45").unwrap();
+        assert_eq!(malformed_number.line_number, None);
+        assert_eq!(malformed_number.raw_parameters(), "X10");
+
+        // A checksum followed by whitespace is not a checksum according to
+        // Klipper's exact str.isdigit() check.
+        let trailing_space = parse_line("N123 G1 X10*45 ").unwrap();
+        assert_eq!(trailing_space.raw_parameters(), "X10*45 ");
     }
 
     #[test]
