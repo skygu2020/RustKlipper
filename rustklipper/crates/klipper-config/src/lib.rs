@@ -474,9 +474,11 @@ impl ConfigFileLoader {
             for (line_index, line) in data.lines().enumerate() {
                 let line_number = line_index + 1;
                 let without_comment = strip_hash_comment(line);
-                let trimmed = without_comment.trim();
-                let include_spec = trimmed.strip_prefix('[')
-                    .and_then(|value| value.strip_suffix(']'))
+                // Klipper's include detection follows ConfigParser's
+                // section-header match: it starts at column zero, captures
+                // through the first closing bracket, and ignores trailing text.
+                let include_spec = without_comment.strip_prefix('[')
+                    .and_then(|value| value.find(']').map(|close| &value[..close]))
                     .and_then(|header| header.strip_prefix("include "))
                     .map(str::trim);
                 if let Some(spec) = include_spec {
@@ -1847,6 +1849,41 @@ mod tests {
             config.get_f64_list("bed_mesh", "mesh_min", ',', Some(2)).unwrap(),
             vec![0.5, 1.25],
         );
+    }
+
+    #[test]
+    fn include_headers_match_section_prefix_and_ignore_trailing_text() {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!(
+            "rustklipper-config-include-header-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("base.cfg"), "[printer]\\nmax_velocity=200\\n").unwrap();
+
+        // ConfigParser's header match ends at the first closing bracket;
+        // trailing text does not prevent Klipper from recognizing the include.
+        fs::write(
+            dir.join("trailing.cfg"),
+            "[include base.cfg] trailing text\\n",
+        )
+        .unwrap();
+        let config = ConfigFileLoader::load(dir.join("trailing.cfg")).unwrap();
+        assert_eq!(config.get("printer", "max_velocity"), Some("200"));
+
+        // Include matching is anchored at column zero. A leading space means
+        // this is an ordinary section header, not an include directive.
+        fs::write(
+            dir.join("indented.cfg"),
+            " [include base.cfg]\\n",
+        )
+        .unwrap();
+        let config = ConfigFileLoader::load(dir.join("indented.cfg")).unwrap();
+        assert!(config.has_section("include base.cfg"));
+        assert!(config.section("printer").is_none());
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
