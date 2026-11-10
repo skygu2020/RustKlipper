@@ -48,6 +48,22 @@ struct ReactorState {
     cancelled: HashSet<TaskId>,
 }
 
+/// Allocate an ID that cannot replace a pending or currently executing task.
+/// Wrapping is supported so a long-lived host cannot silently overwrite work
+/// when the monotonically increasing counter reaches its integer limit.
+fn allocate_task_id(state: &mut ReactorState) -> TaskId {
+    loop {
+        state.next_id = state.next_id.wrapping_add(1).max(1);
+        let id = state.next_id;
+        if !state.tasks.contains_key(&id)
+            && !state.running.contains(&id)
+            && !state.cancelled.contains(&id)
+        {
+            return id;
+        }
+    }
+}
+
 
 /// A thread-safe, single-assignment result used to observe asynchronous work.
 ///
@@ -312,8 +328,7 @@ impl Reactor {
         C: FnOnce() + Send + 'static,
     {
         let mut state = self.state.lock().expect("reactor lock poisoned");
-        state.next_id = state.next_id.wrapping_add(1).max(1);
-        let id = state.next_id;
+        let id = allocate_task_id(&mut state);
         state.tasks.insert(
             id,
             Task {
@@ -504,6 +519,29 @@ pub enum ReactorError {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn task_id_wrap_skips_pending_running_and_cancelled_ids() {
+        let mut state = ReactorState {
+            next_id: u64::MAX - 1,
+            queue: BinaryHeap::new(),
+            tasks: HashMap::new(),
+            cancel_hooks: HashMap::new(),
+            running: HashSet::from([1]),
+            cancelled: HashSet::from([2]),
+        };
+        // Occupy u64::MAX without needing to construct a callback task.
+        state.tasks.insert(
+            u64::MAX,
+            Task {
+                callback: Box::new(|_| None),
+                deadline: Instant::now(),
+            },
+        );
+
+        assert_eq!(allocate_task_id(&mut state), 3);
+        assert_eq!(state.next_id, 3);
+    }
 
     #[test]
     fn callback_runs_once_and_is_removed() {
