@@ -106,6 +106,27 @@ impl PinResolver {
                 });
             }
         }
+        // An alias registered after its name was already activated would
+        // silently change the identity of that active pin. Require aliases
+        // to be established before config commands use the name.
+        if let Some(active) = self.active_pins.get(&alias) {
+            return Err(PinResolverError::PinAlreadyActive {
+                pin: alias, active: active.clone(),
+            });
+        }
+        // Reservations made before an alias declaration must follow the
+        // alias to its physical target. Check for owner conflicts first so
+        // a rejected declaration leaves both maps untouched.
+        let pending_reservation = self.reserved.get(&alias).cloned();
+        if let Some(owner) = pending_reservation.as_ref() {
+            if let Some(existing) = self.reserved.get(&pin) {
+                if existing != owner {
+                    return Err(PinResolverError::ReservationConflict {
+                        pin, owner: existing.clone(), requested: owner.clone(),
+                    });
+                }
+            }
+        }
         // A target that resolves back to this alias would create a cycle.
         // Reject it before changing either the alias map or its flattened peers.
         if alias == pin {
@@ -114,6 +135,10 @@ impl PinResolver {
         self.aliases.insert(alias.clone(), pin.clone());
         for target in self.aliases.values_mut() {
             if target.as_str() == alias.as_str() { *target = pin.clone(); }
+        }
+        if let Some(owner) = pending_reservation {
+            self.reserved.remove(&alias);
+            self.reserved.entry(pin).or_insert(owner);
         }
         Ok(())
     }
@@ -264,6 +289,54 @@ mod tests {
             Err(PinResolverError::ReservationConflict { pin, owner, requested })
                 if pin == "PA1" && owner == "status_led" && requested == "spi"
         ));
+    }
+
+    #[test]
+    fn alias_registration_moves_prior_reservation_to_physical_pin() {
+        let mut resolver = PinResolver::new(true);
+        resolver.reserve_pin("LED", "status_led").unwrap();
+
+        resolver.alias_pin("LED", "PA1").unwrap();
+        assert!(!resolver.reserved().contains_key("LED"));
+        assert_eq!(resolver.reserved().get("PA1").map(String::as_str), Some("status_led"));
+        assert!(matches!(
+            resolver.update_command("config_a pin=LED"),
+            Err(PinResolverError::ReservedPin { pin, owner })
+                if pin == "LED" && owner == "status_led"
+        ));
+    }
+
+    #[test]
+    fn alias_registration_rejects_active_name_without_mutation() {
+        let mut resolver = PinResolver::new(true);
+        resolver.update_command("config_a pin=LED").unwrap();
+
+        assert!(matches!(
+            resolver.alias_pin("LED", "PA1"),
+            Err(PinResolverError::PinAlreadyActive { pin, active })
+                if pin == "LED" && active == "LED"
+        ));
+        assert!(!resolver.aliases().contains_key("LED"));
+        assert_eq!(
+            resolver.update_command("config_b pin=LED").unwrap(),
+            "config_b pin=LED"
+        );
+    }
+
+    #[test]
+    fn alias_registration_preserves_state_on_reservation_conflict() {
+        let mut resolver = PinResolver::new(true);
+        resolver.reserve_pin("LED", "status_led").unwrap();
+        resolver.reserve_pin("PA1", "spi").unwrap();
+
+        assert!(matches!(
+            resolver.alias_pin("LED", "PA1"),
+            Err(PinResolverError::ReservationConflict { pin, owner, requested })
+                if pin == "PA1" && owner == "spi" && requested == "status_led"
+        ));
+        assert_eq!(resolver.reserved().get("LED").map(String::as_str), Some("status_led"));
+        assert_eq!(resolver.reserved().get("PA1").map(String::as_str), Some("spi"));
+        assert!(!resolver.aliases().contains_key("LED"));
     }
 
     #[test]
