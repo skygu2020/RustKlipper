@@ -116,11 +116,14 @@ impl ConfigDocument {
 
             if trimmed.starts_with('[') {
                 pending_blank_lines = 0;
-                let Some(name) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')) else {
+                // Python ConfigParser uses SECTCRE.match(), not a full-line
+                // match: the first closing bracket ends the section name and
+                // trailing text is ignored. The captured name is not trimmed.
+                let Some(close) = trimmed.find(']') else {
                     return Err(ConfigParseError::InvalidSection { filename: source, line: line_no });
                 };
-                let name = name.trim();
-                if name.is_empty() || name.contains('[') || name.contains(']') {
+                let name = &trimmed[1..close];
+                if name.is_empty() {
                     return Err(ConfigParseError::InvalidSection { filename: source, line: line_no });
                 }
                 let key = name.to_owned();
@@ -1445,9 +1448,20 @@ mod tests {
     }
 
     #[test]
+    fn section_headers_follow_configparser_match_semantics() {
+        let config = ConfigDocument::parse("[printer] trailing text\nmax_velocity=300\n").unwrap();
+        assert_eq!(config.get("printer", "max_velocity"), Some("300"));
+
+        // ConfigParser preserves whitespace inside the captured section name.
+        let spaced = ConfigDocument::parse("[ printer ]\nvalue=1\n").unwrap();
+        assert_eq!(spaced.get(" printer ", "value"), Some("1"));
+    }
+
+    #[test]
     fn validates_section_and_option_syntax() {
         assert!(matches!(ConfigDocument::parse("key=value"), Err(ConfigParseError::MissingSection { .. })));
         assert!(matches!(ConfigDocument::parse("[printer\n"), Err(ConfigParseError::InvalidSection { .. })));
+        assert!(matches!(ConfigDocument::parse("[]\n"), Err(ConfigParseError::InvalidSection { .. })));
         assert!(matches!(ConfigDocument::parse("[printer]\ninvalid"), Err(ConfigParseError::InvalidOption { .. })));
     }
 
