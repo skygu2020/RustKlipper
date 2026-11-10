@@ -622,7 +622,7 @@ mod tests {
         dispatcher.register("info", |_| Ok(json!({"state":"ready"}))).unwrap();
         let response = dispatcher.dispatch_value(json!({"id":9,"method":"info","params":{}})).unwrap();
         assert_eq!(response, json!({"id":9,"result":{"state":"ready"}}));
-        assert_eq!(dispatcher.method_names(), vec!["info"]);
+        assert_eq!(dispatcher.method_names(), vec!["gcode/subscribe_output", "info"]);
     }
 
     #[test]
@@ -828,7 +828,7 @@ mod tests {
             response,
             json!({
                 "id":5,
-                "result":{"endpoints":["gcode/script","info","list_endpoints"]}
+                "result":{"endpoints":["gcode/subscribe_output","gcode/script","info","list_endpoints"]}
             })
         );
     }
