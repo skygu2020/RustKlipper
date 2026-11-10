@@ -949,7 +949,11 @@ mod tests {
             "toolhead": {
                 "position": [1.0, 2.0, 3.0],
                 "homed_axes": "xyz"
-            }
+            },
+            // Missing and non-JSON objects remain represented in the query
+            // result, matching Klipper's empty-object status response.
+            "opaque": {},
+            "missing": {}
         }));
 
         printer.update_status_object("toolhead", json!({
