@@ -571,7 +571,7 @@ mod tests {
 
         assert!(!dispatcher.is_ready());
         // Reset removes user registrations, but Klipper built-ins remain visible.
-        assert_eq!(dispatcher.registered_commands(), vec!["M110".to_owned(), "M112".to_owned()]);
+        assert_eq!(dispatcher.registered_commands(), vec!["M110".to_owned(), "M112".to_owned(), "M115".to_owned()]);
         assert!(dispatcher.command_help().is_empty());
         let unknown = dispatcher.process_line("M999", true).unwrap();
         assert!(!unknown.handler_found);
