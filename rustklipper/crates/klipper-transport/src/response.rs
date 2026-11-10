@@ -156,7 +156,13 @@ impl ResponseWaiter {
 }
 impl Drop for ResponseWaiter {
     fn drop(&mut self) {
-        let mut state = self.state.lock().expect("response router poisoned");
+        // Destructors must not panic during unwinding. A previous panic while
+        // holding the router mutex may poison it, but waiter cleanup is still
+        // safe to perform using the poisoned guard's inner state.
+        let mut state = match self.state.lock() {
+            Ok(state) => state,
+            Err(poisoned) => poisoned.into_inner(),
+        };
         if let Some(queue) = state.pending.get_mut(&self.key) {
             queue.retain(|waiter| waiter.id != self.id);
             if queue.is_empty() {
@@ -361,6 +367,29 @@ mod tests {
         assert!(router.contains_waiter("status", Some(4), second_id));
         assert_eq!(router.pending_count("status", Some(4)), 1);
         drop(second);
+    }
+
+    #[test]
+    fn dropping_waiter_recovers_poisoned_router_mutex_without_panicking() {
+        let router = ResponseRouter::new();
+        let waiter = router.register("status", Some(17));
+        let poisoned_router = router.clone();
+
+        let panic_result = std::thread::spawn(move || {
+            let _guard = poisoned_router.state.lock().unwrap();
+            panic!("poison response router mutex");
+        }).join();
+        assert!(panic_result.is_err());
+
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            drop(waiter);
+        })).is_ok());
+
+        let state = router.state.lock().unwrap_err().into_inner();
+        assert!(!state.pending.contains_key(&ResponseKey {
+            name: "status".into(),
+            oid: Some(17),
+        }));
     }
 
     #[test]
