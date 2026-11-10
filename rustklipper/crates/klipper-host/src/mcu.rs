@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use klipper_transport::{ReliableSerialSession, SerialSettings, SessionEvent};
 use thiserror::Error;
@@ -91,6 +91,13 @@ fn remove_session_if_same<T>(
 }
 
 impl McuRegistry {
+    // Registry critical sections contain only internal bookkeeping; recover
+    // the state after poisoning so one panic cannot permanently disable MCU
+    // management. Individual session locks still have terminal-state handling.
+    fn lock_state(&self) -> MutexGuard<'_, McuRegistryState> {
+        self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -103,7 +110,7 @@ impl McuRegistry {
         let name = name.into();
         self.validate_name(&name)?;
         let generation = {
-            let mut state = self.state.lock().expect("MCU registry lock poisoned");
+            let mut state = self.lock_state();
             if state.sessions.contains_key(&name) || !state.opening.insert(name.clone()) {
                 return Err(McuRegistryError::DuplicateName { name });
             }
@@ -111,7 +118,7 @@ impl McuRegistry {
         };
 
         let opened = ReliableSerialSession::open(settings);
-        let mut state = self.state.lock().expect("MCU registry lock poisoned");
+        let mut state = self.lock_state();
         // A clear/disconnect may have happened while the OS was opening the
         // device. Never publish a session into a newer printer lifecycle.
         if !poll_generation_is_current(generation, state.generation) {
@@ -140,7 +147,7 @@ impl McuRegistry {
         if session.is_disconnected() {
             return Err(McuRegistryError::DisconnectedSession { name });
         }
-        let mut state = self.state.lock().expect("MCU registry lock poisoned");
+        let mut state = self.lock_state();
         if state.sessions.contains_key(&name) || state.opening.contains(&name) {
             return Err(McuRegistryError::DuplicateName { name });
         }
@@ -178,7 +185,7 @@ impl McuRegistry {
                     Err(payload) => {
                         guard.mark_disconnected();
                         drop(guard);
-                        let mut state = self.state.lock().expect("MCU registry lock poisoned");
+                        let mut state = self.lock_state();
                         remove_session_if_same(&mut state.sessions, name, &session);
                         std::panic::resume_unwind(payload)
                     }
@@ -191,7 +198,7 @@ impl McuRegistry {
                 let mut guard = poisoned.into_inner();
                 guard.mark_disconnected();
                 drop(guard);
-                let mut state = self.state.lock().expect("MCU registry lock poisoned");
+                let mut state = self.lock_state();
                 remove_session_if_same(&mut state.sessions, name, &session);
                 None
             }
@@ -206,7 +213,7 @@ impl McuRegistry {
         // lock order avoids deadlocking against a poll that owns a session
         // lock and needs the registry lock for panic cleanup.
         let session = {
-            let mut state = self.state.lock().expect("MCU registry lock poisoned");
+            let mut state = self.lock_state();
             // Removing one MCU must not invalidate unrelated sessions or
             // cancel serial opens reserved by other MCU names. poll_all()
             // filters this exact handle out before publishing its batch.
@@ -218,7 +225,7 @@ impl McuRegistry {
 
     pub fn clear(&self) -> Vec<String> {
         let (names, sessions) = {
-            let mut state = self.state.lock().expect("MCU registry lock poisoned");
+            let mut state = self.lock_state();
             let mut names: Vec<_> = state.sessions.keys().cloned().collect();
             names.sort();
             let sessions = state.sessions.drain().map(|(_, session)| session).collect::<Vec<_>>();
@@ -260,7 +267,7 @@ impl McuRegistry {
         // clear() runs while any serial session is being polled, the complete
         // batch belongs to an obsolete printer lifecycle and must be dropped.
         let (generation, mut sessions): (u64, Vec<_>) = {
-            let state = self.state.lock().expect("MCU registry lock poisoned");
+            let state = self.lock_state();
             (
                 state.generation,
                 state.sessions
@@ -336,7 +343,7 @@ impl McuRegistry {
         // A clear/disconnect invalidates the whole printer lifecycle. A
         // single-session removal, however, only filters that handle: events
         // and errors from unrelated MCUs remain valid for this poll cycle.
-        let mut state = self.state.lock().expect("MCU registry lock poisoned");
+        let mut state = self.lock_state();
         if !poll_generation_is_current(generation, state.generation) {
             return McuPollBatch::default();
         }
@@ -391,6 +398,22 @@ mod tests {
         assert!(Arc::ptr_eq(sessions.get("mcu").unwrap(), &replacement));
         assert!(remove_session_if_same(&mut sessions, "mcu", &replacement));
         assert!(!sessions.contains_key("mcu"));
+    }
+
+    #[test]
+    fn registry_operations_recover_poisoned_bookkeeping_lock() {
+        let registry = Arc::new(McuRegistry::new());
+        let poisoned_registry = registry.clone();
+        let panic_result = std::thread::spawn(move || {
+            let _guard = poisoned_registry.state.lock().unwrap();
+            panic!("poison MCU registry mutex");
+        }).join();
+        assert!(panic_result.is_err());
+
+        assert!(registry.session_names().is_empty());
+        assert!(registry.session_handle("mcu").is_none());
+        assert_eq!(registry.clear(), Vec::<String>::new());
+        assert_eq!(registry.poll_all(), McuPollBatch::default());
     }
 
     #[test]
