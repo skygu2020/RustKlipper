@@ -114,6 +114,7 @@ impl HostMcuConfigBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use klipper_transport::McuConfigPlan;
 
     fn dictionary() -> IdentifyDictionary {
         IdentifyDictionary::from_json(br#"{
@@ -147,21 +148,21 @@ mod tests {
         builder.add_restart_command(format!("restart_pin oid={first} value=0"));
         builder.add_init_command(format!("init_pin oid={second} value=1"));
 
-        let mut pins = PinResolver::new(true);
-        pins.alias_pin("LED", "PA1").unwrap();
         // The builder's own resolver is configured through its public API.
         let mut builder = builder;
         builder.alias_pin("LED", "PA1").unwrap();
         let plan = builder.build(&dictionary()).unwrap();
-        let mut expected_crc_input = b"allocate_oids count=2".to_vec();
-        expected_crc_input.extend_from_slice(
-            b"\nconfig_pin oid=0 pin=PA1 value=1\nconfig_pin oid=1 pin=PA0 value=0"
-        );
-        assert_eq!(
-            plan.crc(),
-            crc32fast::hash(&expected_crc_input)
-        );
-        let _ = pins;
+        let expected = McuConfigPlan::from_command_lines(
+            &dictionary(),
+            2,
+            &[
+                "config_pin oid=0 pin=PA1 value=1".to_owned(),
+                "config_pin oid=1 pin=PA0 value=0".to_owned(),
+            ],
+            &["restart_pin oid=0 value=0".to_owned()],
+            &["init_pin oid=1 value=1".to_owned()],
+        ).unwrap();
+        assert_eq!(plan.crc(), expected.crc());
     }
 
     #[test]
