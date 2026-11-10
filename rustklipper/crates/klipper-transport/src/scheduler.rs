@@ -44,6 +44,8 @@ pub enum ScheduleError {
     InvalidAckSequence { received: u64, sent: u64 },
     #[error("MCU send sequence space is exhausted")]
     SequenceExhausted,
+    #[error("command queue {0} still contains pending commands")]
+    QueueNotEmpty(u64),
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReceivedFrameResult {
@@ -163,6 +165,24 @@ impl CommandScheduler {
         }
         self.queues.entry(queue_id).or_default().upcoming.push_back(command);
         Ok(())
+    }
+
+    /// Release an idle command queue and its insertion-order slot.
+    ///
+    /// Queues with pending upcoming or ready commands cannot be removed. A
+    /// caller may safely reuse the same queue ID after successful removal;
+    /// it will receive a fresh insertion-order position on its next enqueue.
+    /// Frames already built from this queue are tracked independently and are
+    /// unaffected by removing the now-empty scheduler queue.
+    pub fn remove_queue(&mut self, queue_id: u64) -> Result<bool, ScheduleError> {
+        let Some(queue) = self.queues.get(&queue_id) else {
+            return Ok(false);
+        };
+        if !queue.upcoming.is_empty() || !queue.ready.is_empty() {
+            return Err(ScheduleError::QueueNotEmpty(queue_id));
+        }
+        self.queues.remove(&queue_id);
+        Ok(true)
     }
 
     /// Remove a command carrying this notification ID if it has not yet
@@ -413,6 +433,43 @@ mod tests {
         let mut decoder = klipper_protocol::FrameDecoder::new();
         let parsed = decoder.push(&frame.bytes);
         assert_eq!(parsed[0].payload, vec![0xA1, 0xB2, 0xC3]);
+    }
+
+    #[test]
+    fn empty_command_queue_can_be_removed_and_reused() {
+        let mut scheduler = CommandScheduler::new();
+        scheduler.enqueue(7, ScheduledCommand::new(vec![0xA1], 0, 10)).unwrap();
+        scheduler.promote_ready(0);
+        let frame = scheduler.build_frame().unwrap().unwrap();
+        assert_eq!(frame.bytes.len(), 4);
+
+        assert_eq!(scheduler.remove_queue(7), Ok(true));
+        assert_eq!(scheduler.remove_queue(7), Ok(false));
+
+        scheduler.enqueue(7, ScheduledCommand::new(vec![0xB2], 0, 10)).unwrap();
+        scheduler.promote_ready(0);
+        let next = scheduler.build_frame().unwrap().unwrap();
+        let mut decoder = FrameDecoder::new();
+        assert_eq!(decoder.push(&next.bytes)[0].payload, vec![0xB2]);
+    }
+
+    #[test]
+    fn command_queue_with_pending_commands_cannot_be_removed() {
+        let mut scheduler = CommandScheduler::new();
+        scheduler.enqueue(9, ScheduledCommand::new(vec![0xC3], 100, 200)).unwrap();
+
+        assert_eq!(
+            scheduler.remove_queue(9),
+            Err(ScheduleError::QueueNotEmpty(9))
+        );
+        assert_eq!(scheduler.queued_counts(), (1, 0));
+
+        scheduler.promote_ready(100);
+        assert_eq!(
+            scheduler.remove_queue(9),
+            Err(ScheduleError::QueueNotEmpty(9))
+        );
+        assert_eq!(scheduler.queued_counts(), (0, 1));
     }
 
     #[test]
