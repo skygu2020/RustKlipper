@@ -409,11 +409,19 @@ mod tests {
 
     #[test]
     fn raw_parameters_match_klipper_checksum_detection_for_numbered_lines() {
-        // Klipper detects a leading line-number prefix from the command's
-        // position, even when the numeric line number itself is malformed.
-        let malformed_number = parse_line("Nabc G1 X10*45").unwrap();
-        assert_eq!(malformed_number.line_number, None);
-        assert_eq!(malformed_number.raw_parameters(), "X10");
+        // A non-numeric suffix immediately after N is tokenized as part
+        // of the command (NABC), not as a malformed line-number prefix.
+        let non_numeric_prefix = parse_line("Nabc G1 X10*45").unwrap();
+        assert_eq!(non_numeric_prefix.command, "NABC");
+        assert_eq!(non_numeric_prefix.line_number, None);
+        assert_eq!(non_numeric_prefix.raw_parameters(), "G1 X10*45");
+
+        // A valid numbered line is recognized as such and has its checksum
+        // removed from the raw command parameters.
+        let numbered = parse_line("N123 G1 X10*45").unwrap();
+        assert_eq!(numbered.command, "G1");
+        assert_eq!(numbered.line_number, Some(123));
+        assert_eq!(numbered.raw_parameters(), "X10");
 
         // A checksum followed by a comment is not a checksum according
         // to Klipper's exact str.isdigit() check on the remaining suffix.
