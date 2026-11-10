@@ -5,5 +5,7 @@
 //! the upstream Moonraker HTTP, WebSocket, and JSON-RPC behavior.
 
 pub mod jsonrpc;
+pub mod server;
 
 pub use jsonrpc::{JsonRpcRouter, RpcError, RpcId, RpcRequest, RpcResponse};
+pub use server::MoonrakerHttpServer;
