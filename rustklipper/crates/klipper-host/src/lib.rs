@@ -1651,6 +1651,26 @@ impl Printer {
         self.mcus.begin_clock_calibration(name, queue_id, uptime)
     }
 
+    /// Select the dedicated queue used for periodic MCU clock synchronization.
+    pub fn set_mcu_periodic_clock_queue_id(
+        &self,
+        name: &str,
+        queue_id: u64,
+    ) -> Result<(), McuRegistryError> {
+        self.mcus.set_periodic_clock_queue_id(name, queue_id)
+    }
+
+    /// Advance one of the eight startup clock samples for an MCU.
+    /// The returned waiter represents the next sample, or None when calibrated.
+    pub fn handle_mcu_clock_calibration_response(
+        &self,
+        name: &str,
+        queue_id: u64,
+        response: klipper_transport::Response,
+    ) -> Result<Option<klipper_transport::ResponseWaiter>, McuRegistryError> {
+        self.mcus.handle_clock_calibration_response(name, queue_id, response)
+    }
+
     /// Access the cooperative host event scheduler.
     pub fn mcus(&self) -> &McuRegistry {
         &self.mcus
