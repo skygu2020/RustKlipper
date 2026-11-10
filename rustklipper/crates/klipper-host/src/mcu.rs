@@ -57,6 +57,10 @@ fn poll_generation_is_current(snapshot: u64, current: u64) -> bool {
     snapshot == current
 }
 
+fn poll_error_is_reportable(terminal_handle_detached: bool, handle_is_current: bool) -> bool {
+    terminal_handle_detached || handle_is_current
+}
+
 fn session_handle_is_current<T>(
     current: Option<&Arc<Mutex<T>>>,
     snapshot: Option<&Arc<Mutex<T>>>,
@@ -332,11 +336,13 @@ impl McuRegistry {
             }
         }
         batch.errors.retain(|error| {
-            terminal_names.contains(&error.mcu)
-                || session_handle_is_current(
+            poll_error_is_reportable(
+                terminal_names.contains(&error.mcu),
+                session_handle_is_current(
                     state.sessions.get(&error.mcu),
                     snapshot_handles.get(&error.mcu),
-                )
+                ),
+            )
         });
         batch
     }
@@ -387,6 +393,13 @@ mod tests {
     fn poll_batch_generation_check_rejects_a_cleared_registry() {
         assert!(poll_generation_is_current(7, 7));
         assert!(!poll_generation_is_current(7, 8));
+    }
+
+    #[test]
+    fn terminal_mcu_errors_survive_detach_but_stale_errors_do_not() {
+        assert!(poll_error_is_reportable(true, false));
+        assert!(poll_error_is_reportable(false, true));
+        assert!(!poll_error_is_reportable(false, false));
     }
 
     #[test]
