@@ -1111,7 +1111,7 @@ where
                         if let (Some(printer), Some(subscription)) = (printer.as_ref(), object_subscription.as_ref()) {
                             if let Some(fields) = subscription.get(&object_name) {
                                 let requested = serde_json::json!({
-                                    "objects": { object_name.clone(): fields.clone() }
+                                    "objects": { (object_name.clone()): fields.clone() }
                                 });
                                 if let Ok(snapshot) = query_printer_status(printer, &requested) {
                                     let params = serde_json::json!({
