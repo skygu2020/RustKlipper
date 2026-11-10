@@ -25,6 +25,21 @@ use thiserror::Error;
 
 type EventHandler = Arc<dyn Fn(&PrinterEvent) + Send + Sync>;
 type McuEventHandler = Arc<dyn Fn(&McuSessionEvent) + Send + Sync>;
+type McuMessageHandler = Arc<dyn Fn(&McuDecodedMessage) + Send + Sync>;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct McuDecodedMessage {
+    pub mcu: String,
+    pub name: String,
+    pub params: std::collections::BTreeMap<String, serde_json::Value>,
+    pub receive_time: f64,
+}
+
+struct McuMessageHandlerEntry {
+    mcu: Option<String>,
+    name: String,
+    handler: McuMessageHandler,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrinterState {
@@ -62,6 +77,8 @@ pub struct PrinterRunBatch {
     pub mcus: McuPollBatch,
     /// Number of MCU event callbacks isolated after panicking.
     pub mcu_handler_panics: usize,
+    /// Number of decoded-message callbacks isolated after panicking.
+    pub mcu_message_handler_panics: usize,
 }
 
 const MCU_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
@@ -429,6 +446,8 @@ pub struct Printer {
     >,
     event_handlers: Mutex<HashMap<PrinterEventKind, Vec<EventHandler>>>,
     mcu_event_handlers: Mutex<Vec<McuEventHandler>>,
+    next_mcu_message_handler_id: AtomicU64,
+    mcu_message_handlers: Mutex<HashMap<u64, McuMessageHandlerEntry>>,
     component_gcode: Mutex<HashMap<String, HashSet<String>>>,
     gcode: Mutex<GCodeDispatcher>,
     reactor: Reactor,
@@ -459,6 +478,8 @@ impl Printer {
             object_registration_transactions: Mutex::new(HashMap::new()),
             event_handlers: Mutex::new(HashMap::new()),
             mcu_event_handlers: Mutex::new(Vec::new()),
+            next_mcu_message_handler_id: AtomicU64::new(1),
+            mcu_message_handlers: Mutex::new(HashMap::new()),
             component_gcode: Mutex::new(HashMap::new()),
             gcode: Mutex::new(GCodeDispatcher::new()),
             reactor: Reactor::new(),
@@ -1622,6 +1643,72 @@ impl Printer {
             .push(Arc::new(handler));
     }
 
+    /// Register a handler for one decoded MCU protocol message.
+    ///
+    /// Set mcu to None to receive the named message from every MCU. The
+    /// returned ID can be passed to unregister_mcu_message_handler().
+    pub fn register_mcu_message_handler<F>(
+        &self,
+        mcu: Option<&str>,
+        message: impl Into<String>,
+        handler: F,
+    ) -> u64
+    where
+        F: Fn(&McuDecodedMessage) + Send + Sync + 'static,
+    {
+        let id = self.next_mcu_message_handler_id.fetch_add(1, Ordering::Relaxed);
+        let entry = McuMessageHandlerEntry {
+            mcu: mcu.map(str::trim).filter(|name| !name.is_empty()).map(str::to_owned),
+            name: message.into(),
+            handler: Arc::new(handler),
+        };
+        self.mcu_message_handlers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id, entry);
+        id
+    }
+
+    /// Remove a previously registered decoded-message handler.
+    pub fn unregister_mcu_message_handler(&self, id: u64) -> bool {
+        self.mcu_message_handlers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&id)
+            .is_some()
+    }
+
+    fn dispatch_mcu_messages(&self, events: &[McuSessionEvent]) -> usize {
+        let handlers: Vec<_> = self.mcu_message_handlers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .map(|entry| (entry.mcu.clone(), entry.name.clone(), entry.handler.clone()))
+            .collect();
+        let mut panics = 0;
+        for event in events {
+            let klipper_transport::SessionEvent::DecodedMessage {
+                name, params, receive_time,
+            } = &event.event else {
+                continue;
+            };
+            let message = McuDecodedMessage {
+                mcu: event.mcu.clone(),
+                name: name.clone(),
+                params: params.clone(),
+                receive_time: *receive_time,
+            };
+            for (mcu, expected_name, handler) in &handlers {
+                if expected_name == name && mcu.as_deref().is_none_or(|expected| expected == event.mcu) {
+                    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(&message))).is_err() {
+                        panics += 1;
+                    }
+                }
+            }
+        }
+        panics
+    }
+
     fn dispatch_mcu_events(&self, events: &[McuSessionEvent]) -> usize {
         let handlers = self.mcu_event_handlers
             .lock()
@@ -1645,10 +1732,12 @@ impl Printer {
         let reactor_callbacks = self.reactor.run_once(reactor_wait);
         let mcus = self.poll_mcus();
         let mcu_handler_panics = self.dispatch_mcu_events(&mcus.events);
+        let mcu_message_handler_panics = self.dispatch_mcu_messages(&mcus.events);
         PrinterRunBatch {
             reactor_callbacks,
             mcus,
             mcu_handler_panics,
+            mcu_message_handler_panics,
         }
     }
 
@@ -1826,6 +1915,98 @@ mod tests {
             bounded_host_wait(std::time::Duration::ZERO),
             std::time::Duration::ZERO
         );
+    }
+
+
+    #[test]
+    fn decoded_messages_route_by_mcu_and_protocol_name() {
+        let printer = Printer::new();
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let specific = received.clone();
+        printer.register_mcu_message_handler(Some("mcu0"), "status", move |message| {
+            specific.lock().unwrap().push(format!("{}:{}", message.mcu, message.name));
+        });
+        let wildcard = received.clone();
+        printer.register_mcu_message_handler(None, "status", move |message| {
+            wildcard.lock().unwrap().push(format!("all:{}", message.mcu));
+        });
+        let events = vec![
+            McuSessionEvent {
+                mcu: "mcu0".into(),
+                event: klipper_transport::SessionEvent::DecodedMessage {
+                    name: "status".into(),
+                    params: std::collections::BTreeMap::new(),
+                    receive_time: 1.0,
+                },
+            },
+            McuSessionEvent {
+                mcu: "mcu1".into(),
+                event: klipper_transport::SessionEvent::DecodedMessage {
+                    name: "status".into(),
+                    params: std::collections::BTreeMap::new(),
+                    receive_time: 2.0,
+                },
+            },
+            McuSessionEvent {
+                mcu: "mcu0".into(),
+                event: klipper_transport::SessionEvent::DecodedMessage {
+                    name: "clock".into(),
+                    params: std::collections::BTreeMap::new(),
+                    receive_time: 3.0,
+                },
+            },
+        ];
+
+        assert_eq!(printer.dispatch_mcu_messages(&events), 0);
+        assert_eq!(
+            *received.lock().unwrap(),
+            vec!["mcu0:status".to_owned(), "all:mcu0".to_owned(), "all:mcu1".to_owned()]
+        );
+    }
+
+    #[test]
+    fn decoded_message_handler_can_be_unregistered() {
+        let printer = Printer::new();
+        let called = Arc::new(AtomicBool::new(false));
+        let observed = called.clone();
+        let id = printer.register_mcu_message_handler(None, "status", move |_| {
+            observed.store(true, Ordering::SeqCst);
+        });
+
+        assert!(printer.unregister_mcu_message_handler(id));
+        assert!(!printer.unregister_mcu_message_handler(id));
+        let events = vec![McuSessionEvent {
+            mcu: "mcu0".into(),
+            event: klipper_transport::SessionEvent::DecodedMessage {
+                name: "status".into(),
+                params: std::collections::BTreeMap::new(),
+                receive_time: 1.0,
+            },
+        }];
+        assert_eq!(printer.dispatch_mcu_messages(&events), 0);
+        assert!(!called.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn panicking_decoded_message_handler_does_not_block_other_handlers() {
+        let printer = Printer::new();
+        let called = Arc::new(AtomicBool::new(false));
+        printer.register_mcu_message_handler(None, "status", |_| panic!("handler panic"));
+        let observed = called.clone();
+        printer.register_mcu_message_handler(None, "status", move |_| {
+            observed.store(true, Ordering::SeqCst);
+        });
+        let events = vec![McuSessionEvent {
+            mcu: "mcu0".into(),
+            event: klipper_transport::SessionEvent::DecodedMessage {
+                name: "status".into(),
+                params: std::collections::BTreeMap::new(),
+                receive_time: 1.0,
+            },
+        }];
+
+        assert_eq!(printer.dispatch_mcu_messages(&events), 1);
+        assert!(called.load(Ordering::SeqCst));
     }
 
     #[test]
