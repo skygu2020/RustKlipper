@@ -398,7 +398,7 @@ impl ConfigFileLoader {
         // Python opens Klipper config files with universal-newline handling.
         // Normalize CRLF here as well as in load_inner so the SAVE_CONFIG
         // header is recognized on Windows-authored configuration files.
-        let data = data.replace("\r\n", "\n");
+        let data = normalize_newlines(&data);
         let Some(marker_index) = data.find(AUTOSAVE_HEADER) else {
             return Ok(None);
         };
@@ -461,7 +461,7 @@ impl ConfigFileLoader {
             file.read_to_string(&mut data).map_err(|source| ConfigLoadError::Io {
                 path: canonical.display().to_string(), source,
             })?;
-            let data = data.replace("\r\n", "\n");
+            let data = normalize_newlines(&data);
             let mut merged = ConfigDocument::default();
             let mut buffered = Vec::new();
             let mut buffered_start_line = 1usize;
@@ -1365,6 +1365,11 @@ impl ConfigUsageTracker {
     }
 }
 
+/// Match Python's universal-newline mode for Klipper configuration files.
+fn normalize_newlines(data: &str) -> String {
+    data.replace("\r\n", "\n").replace('\r', "\n")
+}
+
 fn strip_hash_comment(line: &str) -> &str {
     // Klipper's ConfigFileReader removes everything from the first '#'
     // before handing each line to configparser, including text in quotes.
@@ -1955,6 +1960,25 @@ mod tests {
         fs::write(
             &path,
             "[printer]\r\nkinematics=cartesian\r\n#*# <---------------------- SAVE_CONFIG ---------------------->\r\n#*# DO NOT EDIT THIS BLOCK OR BELOW. The contents are auto-generated.\r\n#*#\r\n#*# [printer]\r\n#*# max_velocity = 250\r\n",
+        )
+        .unwrap();
+
+        let config = ConfigFileLoader::load(&path).unwrap();
+        assert_eq!(config.get("printer", "kinematics"), Some("cartesian"));
+        assert_eq!(config.get("printer", "max_velocity"), Some("250"));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn loads_autosave_values_from_cr_only_config_files() {
+        use std::fs;
+        let path = std::env::temp_dir().join(format!(
+            "rustklipper-config-autosave-cr-only-{}.cfg",
+            std::process::id()
+        ));
+        fs::write(
+            &path,
+            "[printer]\rkinematics=cartesian\r#*# <---------------------- SAVE_CONFIG ---------------------->\r#*# DO NOT EDIT THIS BLOCK OR BELOW. The contents are auto-generated.\r#*#\r#*# [printer]\r#*# max_velocity = 250\r",
         )
         .unwrap();
 
