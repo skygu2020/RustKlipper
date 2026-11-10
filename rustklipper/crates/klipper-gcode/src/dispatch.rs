@@ -324,7 +324,7 @@ impl GCodeDispatcher {
                 }
                 // Klipper silently accepts heater-off and fan-off requests
                 // even when no corresponding device is configured.
-                "M104" | "M140" => match command.get_f64("S", Some(0.0)) {
+                "M104" | "M140" => match parse_float_parameter(&command, "S", 0.0) {
                     Ok(value) if value == 0.0 => {}
                     Ok(_) => events.push(DispatchEvent::Info(format!(
                         "Unknown command:\"{}\"", command.command()
@@ -332,7 +332,7 @@ impl GCodeDispatcher {
                     Err(error) => events.push(DispatchEvent::Error(error.to_string())),
                 },
                 "M107" => {}
-                "M106" => match command.get_f64("S", Some(1.0)) {
+                "M106" => match parse_float_parameter(&command, "S", 1.0) {
                     Ok(value) if value == 0.0 => {}
                     Ok(_) => events.push(DispatchEvent::Info(format!(
                         "Unknown command:\"{}\"", command.command()
@@ -370,6 +370,21 @@ impl GCodeDispatcher {
     }
 }
 
+
+fn parse_float_parameter(
+    command: &GCodeCommand,
+    name: &str,
+    default: f64,
+) -> Result<f64, GCodeError> {
+    match command.get(name) {
+        Some(value) => value.parse::<f64>().map_err(|_| GCodeError::InvalidParameter {
+            line: command.commandline().to_owned(),
+            parameter: name.to_owned(),
+            value: value.to_owned(),
+        }),
+        None => Ok(default),
+    }
+}
 
 fn dispatch_mux(
     mux: &MuxRegistration,
@@ -693,6 +708,22 @@ mod tests {
             assert!(
                 outcome.events == vec![DispatchEvent::Ack(None)],
                 "{line} should be silently accepted, got {:?}",
+                outcome.events
+            );
+        }
+    }
+
+    #[test]
+    fn unconfigured_heater_and_fan_commands_match_python_non_finite_float_truthiness() {
+        let mut dispatcher = GCodeDispatcher::new();
+        dispatcher.set_ready();
+
+        for line in ["M104 SNaN", "M140 Sinf", "M106 SNaN"] {
+            let outcome = dispatcher.process_line(line, true).unwrap();
+            assert!(
+                matches!(outcome.events.first(), Some(DispatchEvent::Info(message))
+                    if message.contains("Unknown command")),
+                "{line} should be treated as a nonzero float, got {:?}",
                 outcome.events
             );
         }
