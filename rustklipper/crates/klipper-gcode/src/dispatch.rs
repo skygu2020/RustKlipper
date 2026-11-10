@@ -129,7 +129,7 @@ impl GCodeDispatcher {
                 line: format!("invalid command registration name '{name}'"),
             });
         }
-        if self.ready_handlers.contains_key(name) {
+        if name == "M110" || self.ready_handlers.contains_key(name) {
             return Err(GCodeError::MalformedCommand {
                 line: format!("gcode command {name} already registered"),
             });
@@ -218,6 +218,9 @@ impl GCodeDispatcher {
 
     pub fn registered_commands(&self) -> Vec<String> {
         let mut commands: Vec<_> = self.active_handlers().keys().cloned().collect();
+        // M110 is a built-in base command in Klipper, not a default-handler
+        // fallback, so it remains visible in the command registry at all times.
+        commands.push("M110".to_owned());
         commands.sort();
         commands
     }
@@ -578,6 +581,18 @@ mod tests {
             assert!(outcome.handler_found, "{line} should remain recognized when ready");
             assert_eq!(outcome.events, vec![DispatchEvent::Ack(None)]);
         }
+    }
+
+    #[test]
+    fn m110_is_listed_as_a_builtin_and_cannot_be_re_registered() {
+        let mut dispatcher = GCodeDispatcher::new();
+        assert!(dispatcher.registered_commands().contains(&"M110".to_owned()));
+        assert!(dispatcher
+            .register_command("M110", true, None, |_| Ok(Vec::new()))
+            .is_err());
+
+        dispatcher.set_ready();
+        assert!(dispatcher.registered_commands().contains(&"M110".to_owned()));
     }
 
     #[test]
