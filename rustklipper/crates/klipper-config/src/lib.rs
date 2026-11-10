@@ -91,6 +91,7 @@ impl ConfigDocument {
         let mut current: Option<usize> = None;
         let mut last_option: Option<(usize, usize)> = None;
         let mut last_option_indent: Option<usize> = None;
+        let mut pending_blank_lines = 0usize;
 
         for (zero_line, raw) in input.lines().enumerate() {
             let line_no = zero_line + 1 + line_offset;
@@ -98,11 +99,21 @@ impl ConfigDocument {
             let uncommented = strip_hash_comment(line);
             let trimmed = uncommented.trim();
 
-            if trimmed.is_empty() || trimmed.starts_with(';') {
+            if trimmed.is_empty() {
+                // configparser preserves blank lines inside a multiline value
+                // when another indented continuation follows, but discards
+                // trailing blank lines when joining the value.
+                if last_option.is_some() {
+                    pending_blank_lines += 1;
+                }
+                continue;
+            }
+            if trimmed.starts_with(';') {
                 continue;
             }
 
             if trimmed.starts_with('[') {
+                pending_blank_lines = 0;
                 let Some(name) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')) else {
                     return Err(ConfigParseError::InvalidSection { filename: source, line: line_no });
                 };
@@ -142,13 +153,16 @@ impl ConfigDocument {
                         let value = &mut document.sections[section_index].options[option_index].value;
                         if !value.is_empty() {
                             value.push('\n');
+                            value.extend(std::iter::repeat_n('\n', pending_blank_lines));
                         }
                         value.push_str(continuation);
                     }
+                    pending_blank_lines = 0;
                     continue;
                 }
             }
 
+            pending_blank_lines = 0;
             let option_text = strip_inline_comment(trimmed);
             let Some(delimiter) = option_text.find(|ch| ch == '=' || ch == ':') else {
                 return Err(ConfigParseError::InvalidOption {
@@ -1409,9 +1423,11 @@ mod tests {
     }
 
     #[test]
-    fn supports_multiline_values_and_ignores_blank_lines() {
-        let config = ConfigDocument::parse("[gcode_macro TEST]\n  gcode:\n    G28\n\n    M400\n").unwrap();
-        assert_eq!(config.get("gcode_macro TEST", "gcode"), Some("G28\nM400"));
+    fn supports_multiline_values_and_preserves_internal_blank_lines() {
+        let config = ConfigDocument::parse(
+            "[gcode_macro TEST]\n  gcode:\n    G28\n\n    M400\n\n",
+        ).unwrap();
+        assert_eq!(config.get("gcode_macro TEST", "gcode"), Some("G28\n\nM400"));
     }
 
     #[test]
