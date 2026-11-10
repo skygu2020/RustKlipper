@@ -108,14 +108,12 @@ impl McuRegistry {
         let mut state = self.state.lock().expect("MCU registry lock poisoned");
         // A clear/disconnect may have happened while the OS was opening the
         // device. Never publish a session into a newer printer lifecycle.
-        if state.generation != generation {
-            return match opened {
-                Ok(_) => Err(McuRegistryError::OpenCancelled { name }),
-                Err(error) => Err(McuRegistryError::OpenFailed {
-                    name,
-                    message: error.to_string(),
-                }),
-            };
+        if !poll_generation_is_current(generation, state.generation) {
+            // The operation belongs to a printer lifecycle that no longer
+            // exists. Its OS-level result is stale too: drop a successfully
+            // opened transport and report cancellation consistently.
+            drop(opened);
+            return Err(McuRegistryError::OpenCancelled { name });
         }
         state.opening.remove(&name);
         let session = opened.map_err(|error| McuRegistryError::OpenFailed {
@@ -373,6 +371,14 @@ mod tests {
     fn poll_batch_generation_check_rejects_a_cleared_registry() {
         assert!(poll_generation_is_current(7, 7));
         assert!(!poll_generation_is_current(7, 8));
+    }
+
+    #[test]
+    fn stale_serial_open_is_classified_as_cancelled_even_if_open_failed() {
+        // A clear() invalidates the whole in-flight operation. Whether the
+        // underlying OS open succeeded or failed must not leak into the new
+        // printer lifecycle as an ordinary open failure.
+        assert!(!poll_generation_is_current(3, 4));
     }
 
     #[test]
