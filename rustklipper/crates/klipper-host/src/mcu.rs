@@ -251,6 +251,7 @@ impl McuRegistry {
             .collect();
 
         let mut batch = McuPollBatch::default();
+        let mut terminal_sessions = Vec::new();
         for (name, session) in sessions {
             let session_handle = session.clone();
             let mut session = match session.lock() {
@@ -281,11 +282,17 @@ impl McuRegistry {
                         event,
                     }
                 })),
-                Ok(Err(error)) => batch.errors.push(McuPollError {
-                    mcu: name,
-                    message: error.to_string(),
-                    disconnected: session.is_disconnected(),
-                }),
+                Ok(Err(error)) => {
+                    let disconnected = session.is_disconnected();
+                    batch.errors.push(McuPollError {
+                        mcu: name.clone(),
+                        message: error.to_string(),
+                        disconnected,
+                    });
+                    if disconnected {
+                        terminal_sessions.push((name, session_handle));
+                    }
+                },
                 Err(_) => {
                     // A panic during protocol processing may leave scheduler
                     // and response-router state inconsistent. Isolate it to
@@ -316,11 +323,22 @@ impl McuRegistry {
                 snapshot_handles.get(&event.mcu),
             )
         });
+
+        // A terminally disconnected session cannot be polled or reopened
+        // under the same name while it remains registered. Detach only the
+        // exact failed handle, preserving its final error for the caller.
+        let mut terminal_names = HashSet::new();
+        for (name, session) in terminal_sessions {
+            if remove_session_if_same(&mut state.sessions, &name, &session) {
+                terminal_names.insert(name);
+            }
+        }
         batch.errors.retain(|error| {
-            session_handle_is_current(
-                state.sessions.get(&error.mcu),
-                snapshot_handles.get(&error.mcu),
-            )
+            terminal_names.contains(&error.mcu)
+                || session_handle_is_current(
+                    state.sessions.get(&error.mcu),
+                    snapshot_handles.get(&error.mcu),
+                )
         });
         batch
     }
