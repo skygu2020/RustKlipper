@@ -125,23 +125,34 @@ async fn handle_request(
         );
     }
 
-    let body = match request.into_body().collect().await {
-        Ok(body) => body.to_bytes(),
-        Err(_) => {
-            return response(
-                StatusCode::BAD_REQUEST,
-                "application/json",
-                Bytes::from_static(br#"{"error":"Invalid request body"}"#),
-            );
+    // Enforce the body limit while streaming. Collecting first and checking
+    // afterwards would still allow an untrusted peer to force an unbounded
+    // allocation before the request is rejected.
+    let mut incoming = request.into_body();
+    let mut body = bytes::BytesMut::new();
+    loop {
+        match incoming.frame().await {
+            Some(Ok(frame)) => {
+                if let Ok(data) = frame.into_data() {
+                    if body.len().saturating_add(data.len()) > MAX_JSON_RPC_BODY_BYTES {
+                        return response(
+                            StatusCode::PAYLOAD_TOO_LARGE,
+                            "application/json",
+                            Bytes::from_static(br#"{"error":"Request body too large"}"#),
+                        );
+                    }
+                    body.extend_from_slice(&data);
+                }
+            }
+            Some(Err(_)) => {
+                return response(
+                    StatusCode::BAD_REQUEST,
+                    "application/json",
+                    Bytes::from_static(br#"{"error":"Invalid request body"}"#),
+                );
+            }
+            None => break,
         }
-    };
-
-    if body.len() > MAX_JSON_RPC_BODY_BYTES {
-        return response(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "application/json",
-            Bytes::from_static(br#"{"error":"Request body too large"}"#),
-        );
     }
 
     let input = String::from_utf8_lossy(&body);
@@ -275,6 +286,18 @@ mod tests {
         let body = response.split("\r\n\r\n").nth(1).unwrap();
         let value: Value = serde_json::from_str(body).unwrap();
         assert_eq!(value["error"]["code"], json!(-32700));
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn rejects_oversized_json_rpc_body_while_streaming() {
+        let (address, task) = start_test_server().await;
+        let payload = format!(
+            r#"{{"jsonrpc":"2.0","method":"printer.test_echo","params":{{"value":"{}"}},"id":1}}"#,
+            "x".repeat(MAX_JSON_RPC_BODY_BYTES),
+        );
+        let response = post_json_rpc(address, &payload).await;
+        assert!(response.starts_with("HTTP/1.1 413"));
         task.abort();
     }
 
