@@ -1,6 +1,12 @@
 //! Klipper SerialRetryCommand retry timing and transaction lifecycle.
 use std::time::Duration;
 
+/// Add a retry delay without producing an infinite monotonic deadline.
+fn saturating_deadline(now: f64, delay: Duration) -> f64 {
+    let deadline = now + delay.as_secs_f64();
+    if deadline.is_finite() { deadline } else { f64::MAX }
+}
+
 /// Initial attempt plus five retries at 10, 20, 40, 80, and 160 milliseconds.
 #[derive(Debug, Clone)]
 pub struct RetryPolicy { retries_remaining: u8, next_delay: Duration, completed: bool }
@@ -76,7 +82,7 @@ impl RetryTransaction {
             return AckRetryDecision::Complete;
         }
         if let Some(delay) = self.policy.next_retry_delay() {
-            self.retry_at = Some(now + delay.as_secs_f64());
+            self.retry_at = Some(saturating_deadline(now, delay));
             AckRetryDecision::RetryAfter(delay)
         } else {
             self.complete = true;
@@ -107,6 +113,17 @@ impl RetryTransaction {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    #[test]
+    fn retry_deadline_stays_finite_near_f64_limit() {
+        let mut transaction = RetryTransaction::new(1, Duration::from_secs(10));
+        transaction.attempt_acked(f64::MAX - 1.0);
+        assert_eq!(transaction.retry_deadline(), Some(f64::MAX));
+        assert!(transaction.retry_deadline().unwrap().is_finite());
+        assert!(!transaction.take_due_retry(f64::MAX - 1.0));
+        assert!(transaction.take_due_retry(f64::MAX));
+    }
 
     #[test]
     fn matches_klipper_exponential_retry_schedule() {
