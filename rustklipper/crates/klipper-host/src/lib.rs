@@ -1632,6 +1632,25 @@ impl Printer {
         self.mcus.start_identify(name, queue_id, chunk_size)
     }
 
+    /// Start MCU uptime sampling after Identify has completed.
+    pub fn start_mcu_clock_calibration(
+        &self,
+        name: &str,
+        queue_id: u64,
+    ) -> Result<klipper_transport::ResponseWaiter, McuRegistryError> {
+        self.mcus.start_clock_calibration(name, queue_id)
+    }
+
+    /// Begin sequential clock calibration from the MCU uptime response.
+    pub fn begin_mcu_clock_calibration(
+        &self,
+        name: &str,
+        queue_id: u64,
+        uptime: klipper_transport::Response,
+    ) -> Result<klipper_transport::ResponseWaiter, McuRegistryError> {
+        self.mcus.begin_clock_calibration(name, queue_id, uptime)
+    }
+
     /// Access the cooperative host event scheduler.
     pub fn mcus(&self) -> &McuRegistry {
         &self.mcus
