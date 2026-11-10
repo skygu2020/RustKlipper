@@ -401,7 +401,7 @@ impl ConfigFileLoader {
         let regular_data = &data[..marker_index];
         // Klipper rejects the autosave block if an autosave-prefixed line
         // already appears before the marker; this indicates a damaged block.
-        if regular_data.contains("\\n#*# ") {
+        if regular_data.contains("\n#*# ") {
             return Ok(None);
         }
         let marker_line = regular_data.lines().count() + 1;
@@ -2022,7 +2022,7 @@ mod tests {
         ));
         fs::write(
             &path,
-            "[printer]\\nkinematics=cartesian\\n#*# stale generated line\\n#*# <---------------------- SAVE_CONFIG ---------------------->\\n#*# [printer]\\n#*# max_velocity=250\\n",
+            "[printer]\nkinematics=cartesian\n#*# stale generated line\n#*# <---------------------- SAVE_CONFIG ---------------------->\n#*# [printer]\n#*# max_velocity=250\n",
         )
         .unwrap();
 
