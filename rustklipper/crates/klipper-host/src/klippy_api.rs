@@ -1337,6 +1337,77 @@ mod async_stream_tests {
     }
 
     #[tokio::test]
+    async fn objects_subscribe_streams_status_update_notifications() {
+        let dispatcher = std::sync::Arc::new(KlippyApiDispatcher::new());
+        let printer = std::sync::Arc::new(crate::Printer::new());
+        printer.register_status_object("toolhead", json!({
+            "position": [0.0, 0.0, 0.0],
+            "homed_axes": ""
+        })).unwrap();
+        dispatcher.register_standard_endpoints(printer.clone(), "test").unwrap();
+
+        let (mut client, mut server) = tokio::io::duplex(4096);
+        let server_dispatcher = dispatcher.clone();
+        let server_task = tokio::spawn(async move {
+            serve_async_stream(&mut server, &server_dispatcher).await
+        });
+
+        let subscribe = KlippyApiCodec::encode(&json!({
+            "id": 10,
+            "method": "objects/subscribe",
+            "params": {
+                "objects": { "toolhead": ["position"] }
+            }
+        })).unwrap();
+        client.write_all(&subscribe).await.unwrap();
+
+        let mut decoder = KlippyApiCodec::default();
+        let mut messages = Vec::<Value>::new();
+        while !messages.iter().any(|message| message["id"] == 10) {
+            let mut chunk = [0u8; 512];
+            let count = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                client.read(&mut chunk)
+            ).await.unwrap().unwrap();
+            assert_ne!(count, 0, "connection closed before initial subscription response");
+            messages.extend(decoder.push(&chunk[..count]).unwrap());
+        }
+        assert_eq!(
+            messages.iter().find(|message| message["id"] == 10).unwrap()["result"]["status"]["toolhead"]["position"],
+            json!([0.0, 0.0, 0.0])
+        );
+
+        printer.update_status_object("toolhead", json!({
+            "position": [12.0, 34.0, 56.0],
+            "homed_axes": "xyz"
+        })).unwrap();
+
+        let notification = loop {
+            let mut chunk = [0u8; 512];
+            let count = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                client.read(&mut chunk)
+            ).await.unwrap().unwrap();
+            assert_ne!(count, 0, "connection closed before status notification");
+            let decoded = decoder.push(&chunk[..count]).unwrap();
+            if let Some(notification) = decoded.into_iter().find(|message| {
+                message["method"] == "notify_status_update"
+            }) {
+                break notification;
+            }
+        };
+
+        assert_eq!(
+            notification["params"]["status"]["toolhead"]["position"],
+            json!([12.0, 34.0, 56.0])
+        );
+        assert!(notification["params"]["eventtime"].as_f64().is_some());
+
+        client.shutdown().await.unwrap();
+        server_task.abort();
+    }
+
+    #[tokio::test]
     async fn reports_eof_inside_an_async_message() {
         let (mut client, mut server) = tokio::io::duplex(128);
         let server_task = tokio::spawn(async move {
