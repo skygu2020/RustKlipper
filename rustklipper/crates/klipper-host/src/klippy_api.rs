@@ -193,16 +193,16 @@ impl KlippyApiDispatcher {
         self.gcode_output.subscribe()
     }
 
-    /// Register Klippy's `objects/list` endpoint from the printer object registry.
+    /// Register Klippy's `objects/list` endpoint from the printer status registry.
     ///
-    /// Only objects currently registered by loaded host components are exposed.
+    /// Internal Rust component instances are excluded; only JSON-backed status objects are queryable.
     pub fn register_object_listing(
         &self,
         printer: std::sync::Arc<crate::Printer>,
     ) -> Result<(), KlippyApiRpcError> {
         self.register("objects/list", move |_params| {
             Ok(serde_json::json!({
-                "objects": printer.object_names(),
+                "objects": printer.status_object_names(),
             }))
         })
     }
@@ -907,20 +907,20 @@ mod tests {
     }
 
     #[test]
-    fn object_listing_endpoint_tracks_registered_objects() {
+    fn object_listing_endpoint_exposes_only_registered_status_objects() {
         let printer = std::sync::Arc::new(crate::Printer::new());
-        printer.register_object("toolhead", 1_u8).unwrap();
-        printer.register_object("gcode", 2_u8).unwrap();
+        printer.register_status_object("toolhead", json!({"position": [0.0, 0.0, 0.0]})).unwrap();
+        printer.register_object("internal_component", 2_u8).unwrap();
 
         let dispatcher = KlippyApiDispatcher::new();
         dispatcher.register_object_listing(printer.clone()).unwrap();
         let request = json!({"id":2,"method":"objects/list"});
         let response = dispatcher.dispatch_value(request.clone()).unwrap();
-        assert_eq!(response["result"]["objects"], json!(["gcode", "toolhead"]));
-
-        printer.remove_object("gcode");
-        let response = dispatcher.dispatch_value(request).unwrap();
         assert_eq!(response["result"]["objects"], json!(["toolhead"]));
+
+        printer.remove_object("toolhead");
+        let response = dispatcher.dispatch_value(request).unwrap();
+        assert_eq!(response["result"]["objects"], json!([]));
     }
 
     #[test]
