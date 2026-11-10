@@ -295,12 +295,13 @@ impl RetransmitState {
     pub fn mark_retransmission_sent(
         &mut self, sequence: u64, sent_at: f64,
     ) -> Result<(), RetransmitError> {
-        self.validate_time(sent_at)?;
+        self.check_time(sent_at)?;
         let is_oldest = self.outstanding.front()
             .is_some_and(|entry| entry.frame.sequence == sequence);
         let entry = self.outstanding.iter_mut()
             .find(|entry| entry.frame.sequence == sequence)
             .ok_or(RetransmitError::UnknownSequence(sequence))?;
+        self.last_now = Some(sent_at);
         // Only the oldest outstanding entry controls the window deadline.
         // Every frame in the retry batch shares one write-start timestamp, so
         // later entries must not move that deadline.
@@ -364,6 +365,21 @@ impl RetransmitState {
 mod tests {
     use super::*;
 
+
+    #[test]
+    fn unknown_retransmission_does_not_advance_monotonic_time() {
+        let mut state = RetransmitState::new();
+        state.track_sent(1, vec![0x10], 1.0).unwrap();
+
+        assert_eq!(
+            state.mark_retransmission_sent(99, 2.0),
+            Err(RetransmitError::UnknownSequence(99))
+        );
+        assert_eq!(
+            state.mark_retransmission_sent(1, 1.5),
+            Ok(())
+        );
+    }
 
     #[test]
     fn initial_rtt_estimate_saturates_instead_of_becoming_infinite() {
