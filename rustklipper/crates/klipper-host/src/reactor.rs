@@ -7,7 +7,7 @@
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 pub type TaskId = u64;
@@ -93,6 +93,13 @@ impl<T> Default for Completion<T> {
 }
 
 impl<T> Completion<T> {
+    fn lock_result(&self) -> MutexGuard<'_, Option<Result<T, CompletionCancelled>>> {
+        self.state
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -100,7 +107,7 @@ impl<T> Completion<T> {
     /// Complete once. A second completion returns the unused result.
     pub fn complete(&self, result: T) -> Result<(), T> {
         let (lock, ready) = &*self.state;
-        let mut current = lock.lock().expect("completion lock poisoned");
+        let mut current = self.lock_result();
         if current.is_some() {
             return Err(result);
         }
@@ -110,16 +117,12 @@ impl<T> Completion<T> {
     }
 
     pub fn is_complete(&self) -> bool {
-        self.state
-            .0
-            .lock()
-            .expect("completion lock poisoned")
-            .is_some()
+        self.lock_result().is_some()
     }
 
     pub fn is_cancelled(&self) -> bool {
         matches!(
-            self.state.0.lock().expect("completion lock poisoned").as_ref(),
+            self.lock_result().as_ref(),
             Some(Err(_))
         )
     }
@@ -127,7 +130,7 @@ impl<T> Completion<T> {
     /// Cancel a pending completion and wake all waiters.
     pub fn cancel(&self) -> bool {
         let (lock, ready) = &*self.state;
-        let mut current = lock.lock().expect("completion lock poisoned");
+        let mut current = self.lock_result();
         if current.is_some() {
             return false;
         }
@@ -141,11 +144,7 @@ impl<T> Completion<T> {
     where
         T: Clone,
     {
-        self.state
-            .0
-            .lock()
-            .expect("completion lock poisoned")
-            .as_ref()
+        self.lock_result().as_ref()
             .and_then(|value| value.as_ref().ok())
             .cloned()
     }
@@ -158,9 +157,9 @@ impl<T> Completion<T> {
         T: Clone,
     {
         let (lock, ready) = &*self.state;
-        let mut current = lock.lock().expect("completion lock poisoned");
+        let mut current = self.lock_result();
         while current.is_none() {
-            current = ready.wait(current).expect("completion lock poisoned");
+            current = ready.wait(current).unwrap_or_else(std::sync::PoisonError::into_inner);
         }
         current.as_ref().expect("completion was checked").clone()
     }
@@ -171,10 +170,10 @@ impl<T> Completion<T> {
         T: Clone,
     {
         let (lock, ready) = &*self.state;
-        let current = lock.lock().expect("completion lock poisoned");
+        let current = self.lock_result();
         let (current, _) = ready
             .wait_timeout_while(current, timeout, |value| value.is_none())
-            .expect("completion lock poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         current.clone()
     }
 }
@@ -892,6 +891,25 @@ mod tests {
         assert_eq!(dispatch.join().unwrap(), 1);
         assert_eq!(completion.result(), None);
         assert!(!reactor.unregister(id));
+    }
+
+    #[test]
+    fn completion_recovers_after_result_lock_poisoning() {
+        let completion = Completion::<u8>::new();
+        let poisoned = completion.clone();
+        let panic = std::thread::spawn(move || {
+            let _guard = poisoned.state.0.lock().unwrap();
+            panic!("poison completion result lock");
+        })
+        .join();
+        assert!(panic.is_err());
+
+        assert_eq!(completion.complete(7), Ok(()));
+        assert!(completion.is_complete());
+        assert!(!completion.is_cancelled());
+        assert_eq!(completion.result(), Some(7));
+        assert_eq!(completion.wait(), Ok(7));
+        assert_eq!(completion.wait_timeout(Duration::from_millis(1)), Some(Ok(7)));
     }
 
     #[test]
