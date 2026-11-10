@@ -83,6 +83,7 @@ pub struct RetransmitState {
     ignore_nak_sequence: u64,
     retransmit_sequence: u64,
     last_now: Option<f64>,
+    last_sent_sequence: Option<u64>,
     rtt_sample_seq: Option<u64>,
     retransmit_deadline: Option<f64>,
     wire_time_per_byte: f64,
@@ -100,6 +101,7 @@ impl Default for RetransmitState {
             ignore_nak_sequence: 0,
             retransmit_sequence: 0,
             last_now: None,
+            last_sent_sequence: None,
             rtt_sample_seq: None,
             retransmit_deadline: None,
             wire_time_per_byte: 0.0,
@@ -164,15 +166,16 @@ impl RetransmitState {
             return Err(RetransmitError::InvalidTime);
         }
         if bytes.is_empty() { return Err(RetransmitError::EmptyFrame); }
+        if self.last_sent_sequence.is_some_and(|previous| sequence <= previous) {
+            return Err(RetransmitError::SequenceNotIncreasing);
+        }
         if let Some(previous) = self.outstanding.back() {
-            if sequence <= previous.frame.sequence {
-                return Err(RetransmitError::SequenceNotIncreasing);
-            }
             if receive_time < previous.first_receive_at {
                 return Err(RetransmitError::InvalidTime);
             }
         }
         self.last_now = Some(sent_at);
+        self.last_sent_sequence = Some(sequence);
         if self.outstanding.is_empty() {
             // serialqueue.c starts the initial retry timer after the first
             // frame's estimated UART wire time, not at write() completion.
@@ -451,6 +454,26 @@ mod tests {
 
         assert_eq!(state.retransmit_deadline(), None);
         assert_eq!(state.outstanding_len(), 0);
+    }
+
+    #[test]
+    fn sent_sequence_must_keep_increasing_after_previous_frames_are_acked() {
+        let mut state = RetransmitState::new();
+        state.track_sent(10, vec![0x10], 1.0).unwrap();
+        assert_eq!(state.acknowledge(11, 1.1).unwrap().acknowledged.len(), 1);
+
+        // An empty outstanding queue must not reset sequence history. Reusing
+        // an acknowledged sequence would make cumulative ACK ownership ambiguous.
+        assert_eq!(
+            state.track_sent(10, vec![0x20], 1.2),
+            Err(RetransmitError::SequenceNotIncreasing),
+        );
+        assert_eq!(
+            state.track_sent(9, vec![0x20], 1.2),
+            Err(RetransmitError::SequenceNotIncreasing),
+        );
+        state.track_sent(11, vec![0x21], 1.2).unwrap();
+        assert_eq!(state.outstanding_len(), 1);
     }
 
     #[test]
