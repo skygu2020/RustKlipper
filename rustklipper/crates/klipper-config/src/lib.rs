@@ -458,6 +458,12 @@ impl ConfigFileLoader {
                 if let Some(spec) = include_spec {
                     flush(&mut buffered, buffered_start_line, &mut merged)?;
                     buffered_start_line = line_number + 1;
+                    if spec.is_empty() {
+                        return Err(ConfigLoadError::InvalidPattern {
+                            pattern: spec.to_owned(),
+                            message: "include pattern cannot be empty".to_owned(),
+                        });
+                    }
                     let pattern = parent.join(spec);
                     let pattern_text = pattern.to_string_lossy().into_owned();
                     let mut matches = Vec::new();
@@ -1944,6 +1950,26 @@ mod tests {
         assert_eq!(config.get("printer", "kinematics"), Some("cartesian"));
         assert!(!config.section("printer").unwrap().has_option("max_velocity"));
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn rejects_empty_include_patterns() {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!(
+            "rustklipper-config-empty-include-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("main.cfg");
+        fs::write(&path, "[include ]\\n").unwrap();
+
+        assert!(matches!(
+            ConfigFileLoader::load(&path),
+            Err(ConfigLoadError::InvalidPattern { message, .. })
+                if message == "include pattern cannot be empty"
+        ));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
