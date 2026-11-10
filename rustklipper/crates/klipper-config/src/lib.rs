@@ -858,8 +858,7 @@ impl ConfigUsageTracker {
     pub fn begin_transaction(&self) -> ConfigUsageTransaction<'_> {
         let thread_id = std::thread::current().id();
         self.transactions
-            .lock()
-            .expect("config usage transaction lock poisoned")
+            .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .entry(thread_id)
             .or_default()
             .push(ConfigUsageDelta::default());
@@ -875,8 +874,7 @@ impl ConfigUsageTracker {
         let delta = {
             let mut transactions = self
                 .transactions
-                .lock()
-                .expect("config usage transaction lock poisoned");
+                .lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let Some(stack) = transactions.get_mut(thread_id) else {
                 return;
             };
@@ -902,10 +900,9 @@ impl ConfigUsageTracker {
 
         if commit {
             self.used
-                .lock()
-                .expect("config usage lock poisoned")
+                .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
                 .extend(delta.used);
-            let mut warnings = self.warnings.lock().expect("config warning lock poisoned");
+            let mut warnings = self.warnings.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             for warning in delta.warnings {
                 if !warnings.contains(&warning) {
                     warnings.push(warning);
@@ -917,16 +914,13 @@ impl ConfigUsageTracker {
     /// Reset access history when a new configuration document is installed.
     pub fn clear(&self) {
         self.used
-            .lock()
-            .expect("config usage lock poisoned")
+            .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
         self.warnings
-            .lock()
-            .expect("config warning lock poisoned")
+            .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
         self.transactions
-            .lock()
-            .expect("config usage transaction lock poisoned")
+            .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
     }
 
@@ -959,8 +953,7 @@ impl ConfigUsageTracker {
         let thread_id = std::thread::current().id();
         let mut transactions = self
             .transactions
-            .lock()
-            .expect("config usage transaction lock poisoned");
+            .lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(delta) = transactions.get_mut(&thread_id).and_then(|stack| stack.last_mut()) {
             if !delta.warnings.contains(&warning) {
                 delta.warnings.push(warning);
@@ -968,7 +961,7 @@ impl ConfigUsageTracker {
             return;
         }
         drop(transactions);
-        let mut warnings = self.warnings.lock().expect("config warning lock poisoned");
+        let mut warnings = self.warnings.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if !warnings.contains(&warning) {
             warnings.push(warning);
         }
@@ -976,8 +969,7 @@ impl ConfigUsageTracker {
 
     pub fn warnings(&self) -> Vec<ConfigWarning> {
         self.warnings
-            .lock()
-            .expect("config warning lock poisoned")
+            .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 
@@ -996,16 +988,14 @@ impl ConfigUsageTracker {
         let thread_id = std::thread::current().id();
         let mut transactions = self
             .transactions
-            .lock()
-            .expect("config usage transaction lock poisoned");
+            .lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(delta) = transactions.get_mut(&thread_id).and_then(|stack| stack.last_mut()) {
             delta.used.insert(key);
             return;
         }
         drop(transactions);
         self.used
-            .lock()
-            .expect("config usage lock poisoned")
+            .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(key);
     }
 
@@ -1279,7 +1269,7 @@ impl ConfigUsageTracker {
             .iter()
             .map(|section| section.to_ascii_lowercase())
             .collect();
-        let used = self.used.lock().expect("config usage lock poisoned");
+        let used = self.used.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         valid.extend(used.iter().map(|(section, _)| section.clone()));
         valid.extend(
             config
@@ -1313,7 +1303,7 @@ impl ConfigUsageTracker {
 
     /// Return every option that no component has read, preserving config order.
     pub fn unused_options(&self, config: &ConfigDocument) -> Vec<UnusedConfigOption> {
-        let used = self.used.lock().expect("config usage lock poisoned");
+        let used = self.used.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         config
             .sections()
             .iter()
@@ -1651,6 +1641,40 @@ mod tests {
                 .unwrap(),
             vec![0.5, 1.25]
         );
+        assert!(tracker.unused_options(&config).is_empty());
+    }
+
+    #[test]
+    fn usage_tracker_recovers_poisoned_internal_locks() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+
+        let tracker = ConfigUsageTracker::new();
+        let config = ConfigDocument::parse(
+            "[printer]\\nkinematics=cartesian\\n[heater]\\nmax_temp=250\\n",
+        ).unwrap();
+
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = tracker.used.lock().unwrap();
+            panic!("poison usage lock");
+        }));
+        assert_eq!(tracker.get(&config, "printer", "kinematics"), Some("cartesian"));
+
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = tracker.warnings.lock().unwrap();
+            panic!("poison warning lock");
+        }));
+        tracker.deprecate("heater", "max_temp", None, None);
+        assert_eq!(tracker.warnings().len(), 1);
+
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = tracker.transactions.lock().unwrap();
+            panic!("poison transaction lock");
+        }));
+        {
+            let transaction = tracker.begin_transaction();
+            assert_eq!(tracker.get(&config, "heater", "max_temp"), Some("250"));
+            transaction.commit();
+        }
         assert!(tracker.unused_options(&config).is_empty());
     }
 
