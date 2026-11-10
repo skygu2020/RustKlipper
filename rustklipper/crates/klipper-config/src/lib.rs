@@ -395,6 +395,10 @@ impl ConfigFileLoader {
             path: path.display().to_string(),
             source,
         })?;
+        // Python opens Klipper config files with universal-newline handling.
+        // Normalize CRLF here as well as in load_inner so the SAVE_CONFIG
+        // header is recognized on Windows-authored configuration files.
+        let data = data.replace("\r\n", "\n");
         let Some(marker_index) = data.find(AUTOSAVE_HEADER) else {
             return Ok(None);
         };
@@ -1938,6 +1942,25 @@ mod tests {
         assert_eq!(config.get("printer", "kinematics"), Some("cartesian"));
         assert_eq!(config.get("printer", "max_velocity"), Some("250"));
         assert_eq!(config.get("stepper_x", "position_endstop"), Some("0"));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn loads_autosave_values_from_crlf_config_files() {
+        use std::fs;
+        let path = std::env::temp_dir().join(format!(
+            "rustklipper-config-autosave-crlf-{}.cfg",
+            std::process::id()
+        ));
+        fs::write(
+            &path,
+            "[printer]\r\nkinematics=cartesian\r\n#*# <---------------------- SAVE_CONFIG ---------------------->\r\n#*# DO NOT EDIT THIS BLOCK OR BELOW. The contents are auto-generated.\r\n#*#\r\n#*# [printer]\r\n#*# max_velocity = 250\r\n",
+        )
+        .unwrap();
+
+        let config = ConfigFileLoader::load(&path).unwrap();
+        assert_eq!(config.get("printer", "kinematics"), Some("cartesian"));
+        assert_eq!(config.get("printer", "max_velocity"), Some("250"));
         fs::remove_file(path).unwrap();
     }
 
