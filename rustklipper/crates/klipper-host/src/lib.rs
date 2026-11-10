@@ -4005,7 +4005,6 @@ mod tests {
     #[test]
     fn returning_to_configuring_starts_a_new_connection_initialization() {
         let printer = Printer::new();
-        printer.install_config(ConfigDocument::parse("[test]\nvalue=1\n").unwrap());
         let identify_events = Arc::new(AtomicUsize::new(0));
         let observed = identify_events.clone();
         printer.register_event_handler(PrinterEventKind::McuIdentify, move |_| {
