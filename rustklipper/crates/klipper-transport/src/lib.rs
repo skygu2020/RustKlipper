@@ -56,6 +56,77 @@ impl SerialSettings {
     }
 }
 
+/// Write a complete encoded byte sequence, preserving partial-write and
+/// interrupted-write semantics for serial backends.
+fn write_serial_bytes<W: Write>(writer: &mut W, bytes: &[u8]) -> std::io::Result<()> {
+    writer.write_all(bytes)
+}
+
+#[cfg(test)]
+mod serial_write_tests {
+    use super::*;
+    use std::collections::VecDeque;
+    use std::io;
+
+    struct ScriptedWriter {
+        steps: VecDeque<io::Result<usize>>,
+        output: Vec<u8>,
+    }
+
+    impl ScriptedWriter {
+        fn new(steps: Vec<io::Result<usize>>) -> Self {
+            Self { steps: steps.into(), output: Vec::new() }
+        }
+    }
+
+    impl Write for ScriptedWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            let step = self.steps.pop_front().expect("unexpected extra write")?;
+            let count = step.min(bytes.len());
+            self.output.extend_from_slice(&bytes[..count]);
+            Ok(count)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn serial_write_completes_partial_writes_without_changing_bytes() {
+        let mut writer = ScriptedWriter::new(vec![Ok(2), Ok(1), Ok(3)]);
+        write_serial_bytes(&mut writer, &[1, 2, 3, 4, 5, 6]).unwrap();
+        assert_eq!(writer.output, vec![1, 2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn serial_write_retries_interrupted_writes() {
+        let mut writer = ScriptedWriter::new(vec![
+            Err(io::Error::from(io::ErrorKind::Interrupted)),
+            Ok(2),
+            Ok(2),
+        ]);
+        write_serial_bytes(&mut writer, &[0x10, 0x20, 0x30, 0x40]).unwrap();
+        assert_eq!(writer.output, vec![0x10, 0x20, 0x30, 0x40]);
+    }
+
+    #[test]
+    fn serial_write_zero_progress_is_reported_as_write_zero() {
+        let mut writer = ScriptedWriter::new(vec![Ok(0)]);
+        let error = write_serial_bytes(&mut writer, &[0xAA]).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::WriteZero);
+    }
+
+    #[test]
+    fn serial_write_preserves_non_transient_errors() {
+        let mut writer = ScriptedWriter::new(vec![
+            Err(io::Error::from(io::ErrorKind::BrokenPipe)),
+        ]);
+        let error = write_serial_bytes(&mut writer, &[0xAA]).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+    }
+}
+
 /// A single USB serial connection to one MCU.
 #[cfg(test)]
 mod retransmission_batch_tests {
@@ -149,7 +220,7 @@ impl UsbSerialTransport {
         // maps it to tcdrain(), which blocks until the UART has transmitted
         // every byte. Klipper's serialqueue writes into the OS queue and
         // tracks the remaining wire time asynchronously.
-        self.port.write_all(encoded)?;
+        write_serial_bytes(&mut self.port, encoded)?;
         Ok(())
     }
 
