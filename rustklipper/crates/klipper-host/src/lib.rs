@@ -12,7 +12,7 @@ pub use reactor::{Completion, CompletionCancelled, Reactor, ReactorError, TaskId
 
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use klipper_config::{
@@ -368,6 +368,7 @@ pub struct Printer {
     loaded_components: Mutex<HashSet<String>>,
     component_load_lock: Mutex<()>,
     connection_initialized: AtomicBool,
+    connection_generation: AtomicU64,
     mcus: McuRegistry,
     objects: RwLock<HashMap<String, Arc<dyn Any + Send + Sync>>>,
     object_registration_transactions: Mutex<
@@ -396,6 +397,7 @@ impl Printer {
             loaded_components: Mutex::new(HashSet::new()),
             component_load_lock: Mutex::new(()),
             connection_initialized: AtomicBool::new(false),
+            connection_generation: AtomicU64::new(0),
             mcus: McuRegistry::new(),
             objects: RwLock::new(HashMap::new()),
             object_registration_transactions: Mutex::new(HashMap::new()),
@@ -482,7 +484,6 @@ impl Printer {
             .lock()
             .expect("component load lock poisoned");
         self.config_usage.clear();
-        self.connection_initialized.store(false, std::sync::atomic::Ordering::SeqCst);
         self.mcus.clear();
         let mut component_gcode = self
             .component_gcode
@@ -491,6 +492,8 @@ impl Printer {
         component_gcode.clear();
         let _lifecycle_guard = self.lifecycle_lock.lock()
             .expect("printer lifecycle lock poisoned");
+        self.connection_generation.fetch_add(1, Ordering::SeqCst);
+        self.connection_initialized.store(false, Ordering::SeqCst);
         self.gcode
             .lock()
             .expect("gcode dispatcher lock poisoned")
@@ -737,20 +740,31 @@ impl Printer {
         &self,
         registry: &ComponentRegistry,
     ) -> Result<Vec<String>, ComponentError> {
-        if self.state() != PrinterState::Configuring
-            || self
-                .connection_initialized
-                .compare_exchange(false, true, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst)
-                .is_err()
-        {
-            return Ok(Vec::new());
-        }
+        let generation = {
+            let _lifecycle_guard = self
+                .lifecycle_lock
+                .lock()
+                .expect("printer lifecycle lock poisoned");
+            if *self.state.read().expect("printer state lock poisoned")
+                != PrinterState::Configuring
+                || self
+                    .connection_initialized
+                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_err()
+            {
+                return Ok(Vec::new());
+            }
+            self.connection_generation.load(Ordering::SeqCst)
+        };
 
         let result = (|| {
             let loaded = self.load_components(registry)?;
+            if !self.is_current_connection_generation(generation) {
+                return Ok(loaded);
+            }
             self.validate_config()?;
             let Some(identify_panics) =
-                self.send_event_while_configuring(PrinterEvent::McuIdentify)
+                self.send_event_while_configuring(PrinterEvent::McuIdentify, generation)
             else {
                 return Ok(loaded);
             };
@@ -761,7 +775,7 @@ impl Printer {
                 });
             }
             let Some(connect_panics) =
-                self.send_event_while_configuring(PrinterEvent::Connect)
+                self.send_event_while_configuring(PrinterEvent::Connect, generation)
             else {
                 return Ok(loaded);
             };
@@ -773,8 +787,10 @@ impl Printer {
             }
             Ok(loaded)
         })();
-        if result.is_err() {
-            self.connection_initialized.store(false, std::sync::atomic::Ordering::SeqCst);
+        if result.is_err()
+            && self.connection_generation.load(Ordering::SeqCst) == generation
+        {
+            self.connection_initialized.store(false, Ordering::SeqCst);
         }
         result
     }
@@ -1166,14 +1182,29 @@ impl Printer {
     /// stage a clear ordering relative to shutdown/disconnect transitions:
     /// either the stage is authorized first, or the transition prevents it.
     /// Callbacks remain lock-free so they may themselves change printer state.
-    fn send_event_while_configuring(&self, event: PrinterEvent) -> Option<usize> {
+    fn is_current_connection_generation(&self, generation: u64) -> bool {
+        let _lifecycle_guard = self
+            .lifecycle_lock
+            .lock()
+            .expect("printer lifecycle lock poisoned");
+        self.connection_generation.load(Ordering::SeqCst) == generation
+            && *self.state.read().expect("printer state lock poisoned")
+                == PrinterState::Configuring
+    }
+
+    fn send_event_while_configuring(
+        &self,
+        event: PrinterEvent,
+        generation: u64,
+    ) -> Option<usize> {
         let handlers = {
             let _lifecycle_guard = self
                 .lifecycle_lock
                 .lock()
                 .expect("printer lifecycle lock poisoned");
-            if *self.state.read().expect("printer state lock poisoned")
-                != PrinterState::Configuring
+            if self.connection_generation.load(Ordering::SeqCst) != generation
+                || *self.state.read().expect("printer state lock poisoned")
+                    != PrinterState::Configuring
             {
                 return None;
             }
