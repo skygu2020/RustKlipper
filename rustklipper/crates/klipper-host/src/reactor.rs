@@ -479,6 +479,19 @@ impl Reactor {
             let next_deadline = match callback_result {
                 Ok(deadline) => deadline,
                 Err(payload) => {
+                    // A panic aborts this dispatch cycle. Restore tasks that
+                    // were temporarily removed from the heap to enforce the
+                    // once-per-cycle limit; otherwise their task records
+                    // would remain pending but become unreachable by deadline.
+                    for deferred_entry in deferred.drain(..) {
+                        if state
+                            .tasks
+                            .get(&deferred_entry.id)
+                            .is_some_and(|task| task.deadline == deferred_entry.deadline)
+                        {
+                            state.queue.push(Reverse(deferred_entry));
+                        }
+                    }
                     drop(state);
                     if let Some(cancel_hook) = cancel_hook {
                         cancel_hook();
@@ -806,6 +819,37 @@ mod tests {
         assert_eq!(reactor.run_due(dispatch_time), 1);
         assert_eq!(count.load(Ordering::SeqCst), 2);
         assert_eq!(reactor.pending_tasks(), 1);
+    }
+
+    #[test]
+    fn panic_restores_deferred_due_timer_entries() {
+        let reactor = Reactor::new();
+        let timer_count = Arc::new(AtomicUsize::new(0));
+        let observed_timer = timer_count.clone();
+        let start = Instant::now();
+
+        reactor.register_timer_at(start, move |eventtime| {
+            if observed_timer.fetch_add(1, Ordering::SeqCst) == 0 {
+                Some(eventtime)
+            } else {
+                None
+            }
+        });
+        reactor.register_callback_at(start, |_| panic!("stop dispatch cycle"));
+
+        let dispatch_time = start + Duration::from_secs(1);
+        let panic = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            reactor.run_due(dispatch_time);
+        }));
+        assert!(panic.is_err());
+
+        // The timer's repeated entry was deferred before the later callback
+        // panicked. It must remain reachable for the next dispatch cycle.
+        assert_eq!(reactor.pending_tasks(), 1);
+        assert_eq!(reactor.next_deadline(), Some(dispatch_time));
+        assert_eq!(reactor.run_due(dispatch_time), 1);
+        assert_eq!(timer_count.load(Ordering::SeqCst), 2);
+        assert_eq!(reactor.pending_tasks(), 0);
     }
 
     #[test]
