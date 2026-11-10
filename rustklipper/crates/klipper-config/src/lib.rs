@@ -114,7 +114,10 @@ impl ConfigDocument {
                 continue;
             }
 
-            if trimmed.starts_with('[') {
+            // ConfigParser.SECTCRE.match() is anchored at column zero.
+            // Do not promote an indented bracketed line to a new section:
+            // when it follows an option, it is a multiline continuation.
+            if uncommented.starts_with('[') {
                 pending_blank_lines = 0;
                 // Python ConfigParser uses SECTCRE.match(), not a full-line
                 // match: the first closing bracket ends the section name and
@@ -1478,6 +1481,21 @@ mod tests {
         // ConfigParser's SECTCRE consumes literal spaces at the edges.
         let spaced = ConfigDocument::parse("[  printer   ]\nvalue=1\n").unwrap();
         assert_eq!(spaced.get("printer", "value"), Some("1"));
+    }
+
+    #[test]
+    fn indented_bracketed_lines_remain_multiline_continuations() {
+        let config = ConfigDocument::parse(
+            "[printer]\nnotes=first line\n  [not_a_section]\nnext=still_printer\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.get("printer", "notes"),
+            Some("first line\n[not_a_section]"),
+        );
+        assert_eq!(config.get("printer", "next"), Some("still_printer"));
+        assert!(config.section("not_a_section").is_none());
     }
 
     #[test]
