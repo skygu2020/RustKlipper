@@ -103,6 +103,9 @@ impl PinResolver {
     pub fn update_command(&mut self, command: &str) -> Result<String, PinResolverError> {
         let bytes = command.as_bytes();
         let mut output = String::with_capacity(command.len());
+        // A command may contain more than one pin field. Keep activation
+        // changes local until every field has passed validation.
+        let mut candidate_active_pins = self.active_pins.clone();
         let mut cursor = 0usize;
         let mut pos = 0usize;
 
@@ -126,7 +129,7 @@ impl PinResolver {
                 }
 
                 if self.validate_aliases {
-                    if let Some(active) = self.active_pins.get(&pin_id) {
+                    if let Some(active) = candidate_active_pins.get(&pin_id) {
                         if name != active {
                             return Err(PinResolverError::AliasUsedAlongsideTarget {
                                 pin: name.to_owned(), active: active.clone(),
@@ -134,7 +137,7 @@ impl PinResolver {
                         }
                     }
                 }
-                self.active_pins.entry(pin_id.clone()).or_insert_with(|| name.to_owned());
+                candidate_active_pins.entry(pin_id.clone()).or_insert_with(|| name.to_owned());
 
                 output.push_str(&command[cursor..name_start]);
                 output.push_str(&pin_id);
@@ -145,6 +148,7 @@ impl PinResolver {
             }
         }
         output.push_str(&command[cursor..]);
+        self.active_pins = candidate_active_pins;
         Ok(output)
     }
 
@@ -204,6 +208,25 @@ mod tests {
             resolver.reserve_pin("PA1", "spi"),
             Err(PinResolverError::ReservationConflict { .. })
         ));
+    }
+
+    #[test]
+    fn failed_multi_pin_command_does_not_activate_earlier_fields() {
+        let mut resolver = PinResolver::new(true);
+        resolver.alias_pin("LED", "PA1").unwrap();
+        resolver.reserve_pin("PA2", "serial").unwrap();
+
+        assert!(matches!(
+            resolver.update_command("config_a pin=LED cs_pin=PA2"),
+            Err(PinResolverError::ReservedPin { .. })
+        ));
+
+        // The first field in the rejected command must not leave PA1 active.
+        resolver.reserved.clear();
+        assert_eq!(
+            resolver.update_command("config_b pin=PA1").unwrap(),
+            "config_b pin=PA1",
+        );
     }
 
     #[test]
