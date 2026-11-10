@@ -1324,16 +1324,50 @@ impl ConfigUsageTracker {
 }
 
 fn strip_hash_comment(line: &str) -> &str {
-    line.split_once('#').map_or(line, |(head, _)| head)
+    let mut quote = None;
+    let mut escaped = false;
+    for (index, ch) in line.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\\\' {
+            escaped = true;
+            continue;
+        }
+        match quote {
+            Some(delimiter) if ch == delimiter => quote = None,
+            Some(_) => {}
+            None if ch == '\'' || ch == '"' => quote = Some(ch),
+            None if ch == '#' => return &line[..index],
+            None => {}
+        }
+    }
+    line
 }
 
 fn strip_inline_comment(line: &str) -> &str {
-    let bytes = line.as_bytes();
-    for index in 0..bytes.len() {
-        if (bytes[index] == b';' || bytes[index] == b'#')
-            && (index == 0 || bytes[index - 1].is_ascii_whitespace())
-        {
-            return &line[..index];
+    let mut quote = None;
+    let mut escaped = false;
+    for (index, ch) in line.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\\\' {
+            escaped = true;
+            continue;
+        }
+        match quote {
+            Some(delimiter) if ch == delimiter => quote = None,
+            Some(_) => {}
+            None if ch == '\'' || ch == '"' => quote = Some(ch),
+            None if (ch == ';' || ch == '#')
+                && line[..index].chars().next_back().is_some_and(char::is_whitespace) =>
+            {
+                return &line[..index];
+            }
+            None => {}
         }
     }
     line
@@ -1342,6 +1376,23 @@ fn strip_inline_comment(line: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn comment_markers_inside_quoted_values_are_preserved() {
+        let config = ConfigDocument::parse(
+            "[gcode_macro TEST]\\nmessage: \"value #1; still text\"\\ncommand: 'RESPOND MSG=hello #world' ; real comment\\n",
+        ).unwrap();
+        assert_eq!(config.get("gcode_macro TEST", "message"), Some("\"value #1; still text\""));
+        assert_eq!(config.get("gcode_macro TEST", "command"), Some("'RESPOND MSG=hello #world'"));
+    }
+
+    #[test]
+    fn escaped_comment_markers_do_not_start_comments() {
+        let config = ConfigDocument::parse(
+            "[printer]\\nserial: /dev/serial\\#0\\n",
+        ).unwrap();
+        assert_eq!(config.get("printer", "serial"), Some("/dev/serial\\#0"));
+    }
 
     #[test]
     fn parses_sections_options_comments_and_case_insensitive_keys() {
