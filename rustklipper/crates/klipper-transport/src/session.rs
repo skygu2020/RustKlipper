@@ -975,8 +975,15 @@ impl ReliableSerialSession {
             });
         }
         let config = Self::parse_config_response(initial_response)?;
-        let action = handshake.handle_initial_response(config, firmware_restart)?;
+
+        // Do not advance the public handshake state until the selected command
+        // sequence has been accepted by the scheduler. In particular, malformed
+        // or oversized config commands must leave the handshake retryable.
+        let mut next_handshake = handshake.clone();
+        let action = next_handshake.handle_initial_response(config, firmware_restart)?;
         self.enqueue_config_action(queue_id, &action)?;
+        *handshake = next_handshake;
+
         self.request_get_config(queue_id)
     }
 
