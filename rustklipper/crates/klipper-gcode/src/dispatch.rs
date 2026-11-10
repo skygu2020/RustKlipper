@@ -62,6 +62,7 @@ pub struct GCodeDispatcher {
     /// Whether commands are being consumed from Klipper's debuginput mode.
     /// In this mode an unconfigured fan command is silently ignored.
     file_input: bool,
+    software_version: Option<String>,
 }
 
 impl GCodeDispatcher {
@@ -79,6 +80,11 @@ impl GCodeDispatcher {
     /// Configure Klipper's debuginput behavior for default command handling.
     pub fn set_file_input(&mut self, enabled: bool) {
         self.file_input = enabled;
+    }
+
+    /// Set the version reported by the built-in M115 command.
+    pub fn set_software_version(&mut self, version: Option<String>) {
+        self.software_version = version;
     }
 
     /// Clear all registered handlers and return to the initial dispatcher state.
@@ -129,7 +135,7 @@ impl GCodeDispatcher {
                 line: format!("invalid command registration name '{name}'"),
             });
         }
-        if matches!(name, "M110" | "M112") || self.ready_handlers.contains_key(name) {
+        if matches!(name, "M110" | "M112" | "M115") || self.ready_handlers.contains_key(name) {
             return Err(GCodeError::MalformedCommand {
                 line: format!("gcode command {name} already registered"),
             });
@@ -219,7 +225,7 @@ impl GCodeDispatcher {
     pub fn registered_commands(&self) -> Vec<String> {
         let mut commands: Vec<_> = self.active_handlers().keys().cloned().collect();
         // These built-in commands remain visible regardless of printer readiness.
-        commands.extend(["M110".to_owned(), "M112".to_owned()]);
+        commands.extend(["M110".to_owned(), "M112".to_owned(), "M115".to_owned()]);
         commands.sort();
         commands
     }
@@ -329,6 +335,16 @@ impl GCodeDispatcher {
                     handler_found = true;
                 }
                 "M21" | "M110" | "M112" => handler_found = true,
+                "M115" => {
+                    let version = self.software_version.as_deref().unwrap_or("None");
+                    let message = format!("FIRMWARE_NAME:Klipper FIRMWARE_VERSION:{version}");
+                    if need_ack {
+                        events.push(DispatchEvent::Ack(Some(message)));
+                    } else {
+                        events.push(DispatchEvent::Info(message));
+                    }
+                    handler_found = true;
+                }
                 _ if !self.ready => {
                     events.push(DispatchEvent::Error(self.state_message.clone()));
                 }
@@ -611,6 +627,20 @@ mod tests {
             assert!(outcome.handler_found);
             assert_eq!(outcome.events, vec![DispatchEvent::Ack(None)]);
         }
+    }
+
+    #[test]
+    fn m115_reports_configured_version_with_ack_or_info() {
+        let mut dispatcher = GCodeDispatcher::new();
+        let default = dispatcher.process_line("M115", true).unwrap();
+        assert!(default.handler_found);
+        assert_eq!(default.events, vec![DispatchEvent::Ack(Some("FIRMWARE_NAME:Klipper FIRMWARE_VERSION:None".to_owned()))]);
+
+        dispatcher.set_software_version(Some("v0.12.0-123-gabcdef".to_owned()));
+        let acknowledged = dispatcher.process_line("M115", true).unwrap();
+        assert_eq!(acknowledged.events, vec![DispatchEvent::Ack(Some("FIRMWARE_NAME:Klipper FIRMWARE_VERSION:v0.12.0-123-gabcdef".to_owned()))]);
+        let informational = dispatcher.process_line("M115", false).unwrap();
+        assert_eq!(informational.events, vec![DispatchEvent::Info("FIRMWARE_NAME:Klipper FIRMWARE_VERSION:v0.12.0-123-gabcdef".to_owned())]);
     }
 
     #[test]
