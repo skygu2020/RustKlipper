@@ -550,6 +550,37 @@ impl ReliableSerialSession {
 
     /// Queue a dictionary-encoded get_config query and return its response waiter.
     /// The caller must continue polling the session while waiting for the response.
+    fn encode_get_config_command(&self) -> Result<Vec<u8>, SessionError> {
+        let dictionary = self.dictionary.as_ref().ok_or_else(|| {
+            SessionError::Dictionary(DictionaryError::UnknownMessage("get_config".into()))
+        })?;
+        let command = dictionary.encode_command("get_config", &BTreeMap::new())?;
+        let max_payload = MESSAGE_MAX - 5;
+        if command.is_empty() {
+            return Err(SessionError::Schedule(ScheduleError::EmptyCommand));
+        }
+        if command.len() > max_payload {
+            return Err(SessionError::Schedule(ScheduleError::CommandTooLarge(command.len())));
+        }
+        Ok(command)
+    }
+
+    fn queue_get_config_command(
+        &mut self,
+        queue_id: u64,
+        command: Vec<u8>,
+    ) -> Result<ResponseWaiter, SessionError> {
+        let waiter = self.response_router.register("config", None);
+        self.enqueue_request(
+            queue_id,
+            ScheduledCommand::new(command, 0, crate::BACKGROUND_PRIORITY_CLOCK),
+            "config",
+            None,
+        )?;
+        self.scheduler.promote_ready(self.last_ack_clock);
+        Ok(waiter)
+    }
+
     pub fn request_get_config(&mut self, queue_id: u64) -> Result<ResponseWaiter, SessionError> {
         self.ensure_connected()?;
         if !matches!(
@@ -561,19 +592,8 @@ impl ReliableSerialSession {
                 actual: self.startup_stage,
             });
         }
-        let dictionary = self.dictionary.as_ref().ok_or_else(|| {
-            SessionError::Dictionary(DictionaryError::UnknownMessage("get_config".into()))
-        })?;
-        let command = dictionary.encode_command("get_config", &BTreeMap::new())?;
-        let waiter = self.response_router.register("config", None);
-        self.enqueue_request(
-            queue_id,
-            ScheduledCommand::new(command, 0, crate::BACKGROUND_PRIORITY_CLOCK),
-            "config",
-            None,
-        )?;
-        self.scheduler.promote_ready(self.last_ack_clock);
-        Ok(waiter)
+        let command = self.encode_get_config_command()?;
+        self.queue_get_config_command(queue_id, command)
     }
 
     /// Start the clock bootstrap sequence by requesting MCU uptime.
@@ -1003,6 +1023,11 @@ impl ReliableSerialSession {
         }
         let config = Self::parse_config_response(initial_response)?;
 
+        // Prepare the final query before queuing any configuration commands.
+        // A missing dictionary entry, encoding error, or oversized query must
+        // not leave the handshake advanced without a corresponding waiter.
+        let final_query = self.encode_get_config_command()?;
+
         // Do not advance the public handshake state until the selected command
         // sequence has been accepted by the scheduler. In particular, malformed
         // or oversized config commands must leave the handshake retryable.
@@ -1011,7 +1036,7 @@ impl ReliableSerialSession {
         self.enqueue_config_action(queue_id, &action)?;
         *handshake = next_handshake;
 
-        self.request_get_config(queue_id)
+        self.queue_get_config_command(queue_id, final_query)
     }
 
     /// Validate the final response and return the usable move-slot count.
