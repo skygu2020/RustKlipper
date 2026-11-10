@@ -225,8 +225,9 @@ impl KlippyApiDispatcher {
     /// Register Klipper's `objects/subscribe` endpoint.
     ///
     /// The initial response has the same eventtime/status shape as
-    /// `objects/query`. The async connection layer can use the Printer's
-    /// status-update stream to publish subsequent notifications.
+    /// `objects/query`. The async connection layer uses the Printer's
+    /// status-update stream to publish subsequent `notify_status_update`
+    /// notifications filtered to this connection's requested objects/fields.
     pub fn register_object_subscription(
         &self,
         printer: std::sync::Arc<crate::Printer>,
@@ -1401,6 +1402,7 @@ mod async_stream_tests {
             notification["params"]["status"]["toolhead"]["position"],
             json!([12.0, 34.0, 56.0])
         );
+        assert!(notification["params"]["status"]["toolhead"].get("homed_axes").is_none());
         assert!(notification["params"]["eventtime"].as_f64().is_some());
 
         client.shutdown().await.unwrap();
