@@ -1056,6 +1056,42 @@ impl Printer {
         Ok(())
     }
 
+    /// Register a JSON-backed status object for Klippy API queries.
+    ///
+    /// Components should expose externally visible fields through this API
+    /// while keeping implementation objects registered with `register_object`.
+    pub fn register_status_object(
+        &self,
+        name: impl Into<String>,
+        fields: serde_json::Value,
+    ) -> Result<(), PrinterError> {
+        let name = name.into();
+        if !fields.is_object() {
+            return Err(PrinterError::ObjectTypeMismatch { name });
+        }
+        self.register_object(name, fields)
+    }
+
+    /// Atomically replace the fields exposed by a registered status object.
+    pub fn update_status_object(
+        &self,
+        name: &str,
+        fields: serde_json::Value,
+    ) -> Result<(), PrinterError> {
+        if !fields.is_object() {
+            return Err(PrinterError::ObjectTypeMismatch { name: name.to_owned() });
+        }
+        let mut objects = self.objects.write().expect("printer object lock poisoned");
+        let current = objects.get(name).cloned().ok_or_else(|| {
+            PrinterError::ObjectNotFound { name: name.to_owned() }
+        })?;
+        if Arc::downcast::<serde_json::Value>(current).is_err() {
+            return Err(PrinterError::ObjectTypeMismatch { name: name.to_owned() });
+        }
+        objects.insert(name.to_owned(), Arc::new(fields));
+        Ok(())
+    }
+
     pub fn lookup_object<T>(&self, name: &str) -> Result<Arc<T>, PrinterError>
     where
         T: Any + Send + Sync,
@@ -4141,4 +4177,29 @@ mod tests {
         runtime.invoke_shutdown("runtime failure");
         assert_eq!(events.load(Ordering::SeqCst), 1);
     }
+    #[test]
+    fn status_objects_are_explicitly_registered_and_atomically_updated() {
+        let printer = Printer::new();
+        printer.register_status_object("toolhead", serde_json::json!({
+            "position": [0.0, 0.0, 0.0],
+            "homed_axes": ""
+        })).unwrap();
+        printer.update_status_object("toolhead", serde_json::json!({
+            "position": [10.0, 20.0, 30.0],
+            "homed_axes": "xyz"
+        })).unwrap();
+        let status = printer.lookup_object::<serde_json::Value>("toolhead").unwrap();
+        assert_eq!(status["position"], serde_json::json!([10.0, 20.0, 30.0]));
+        assert_eq!(status["homed_axes"], "xyz");
+    }
+
+    #[test]
+    fn status_object_registration_requires_an_object_value() {
+        let printer = Printer::new();
+        assert!(matches!(
+            printer.register_status_object("toolhead", serde_json::json!([1, 2, 3])),
+            Err(PrinterError::ObjectTypeMismatch { .. })
+        ));
+    }
+
 }
