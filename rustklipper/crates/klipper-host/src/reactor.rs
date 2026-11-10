@@ -182,6 +182,10 @@ impl<T> Completion<T> {
 #[derive(Default)]
 pub struct Reactor {
     state: Mutex<ReactorState>,
+    // Only one thread may dispatch callbacks at a time. try_lock in run_due
+    // keeps nested or competing dispatch attempts from running callbacks in
+    // parallel (or deadlocking when a callback re-enters the reactor).
+    dispatching: Mutex<()>,
     wake: Condvar,
 }
 
@@ -423,6 +427,11 @@ impl Reactor {
     /// Timer callbacks receive the current dispatch time and choose their next
     /// deadline. This matches Klipper's event-time based timer semantics.
     pub fn run_due(&self, now: Instant) -> usize {
+        let _dispatch_guard = match self.dispatching.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::WouldBlock) => return 0,
+            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+        };
         let mut executed = 0;
         loop {
             let next = {
@@ -582,6 +591,44 @@ mod tests {
         assert_eq!(reactor.run_due(Instant::now() + Duration::from_secs(1)), 1);
         assert_eq!(count.load(Ordering::SeqCst), 1);
         assert_eq!(reactor.pending_tasks(), 0);
+    }
+
+    #[test]
+    fn concurrent_dispatch_does_not_run_callbacks_in_parallel() {
+        use std::sync::mpsc;
+
+        let reactor = Arc::new(Reactor::new());
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let second_count = Arc::new(AtomicUsize::new(0));
+        let observed_second = second_count.clone();
+        let deadline = Instant::now();
+
+        reactor.register_callback_at(deadline, move |_| {
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        });
+        reactor.register_callback_at(deadline, move |_| {
+            observed_second.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let first_reactor = reactor.clone();
+        let first = std::thread::spawn(move || {
+            first_reactor.run_due(deadline + Duration::from_secs(1))
+        });
+        started_rx.recv().unwrap();
+
+        // A competing dispatch attempt must not execute the second callback
+        // while the first callback is still running.
+        assert_eq!(
+            reactor.run_due(deadline + Duration::from_secs(1)),
+            0
+        );
+        assert_eq!(second_count.load(Ordering::SeqCst), 0);
+
+        release_tx.send(()).unwrap();
+        assert_eq!(first.join().unwrap(), 2);
+        assert_eq!(second_count.load(Ordering::SeqCst), 1);
     }
 
 
