@@ -120,12 +120,13 @@ fn advance_ack_clock(last_ack_clock: u64, observed_ack_clock: u64) -> u64 {
 /// instead of emitting a burst of catch-up requests.
 fn next_periodic_clock_deadline(due_at: f64, now: f64) -> f64 {
     let first_due = due_at + PERIODIC_CLOCK_INTERVAL_SECONDS;
-    if first_due.is_finite() && first_due > now {
+    if first_due.is_finite() && first_due > due_at && first_due > now {
         return first_due;
     }
 
-    // Invalid or exhausted timestamps cannot produce a representable future
-    // deadline. Keep the timer finite rather than propagating infinity/NaN.
+    // Invalid, exhausted, or insufficiently precise timestamps cannot produce
+    // a representable future tick. In particular, adding a sub-second interval
+    // to a very large finite timestamp may round back to the same float.
     if !due_at.is_finite() || !now.is_finite() || !first_due.is_finite() {
         return f64::MAX;
     }
@@ -144,10 +145,14 @@ fn next_periodic_clock_deadline(due_at: f64, now: f64) -> f64 {
     // Floating-point rounding at an exact boundary can leave the computed
     // deadline equal to now; one correction preserves the strict-future
     // invariant without reintroducing an unbounded loop.
-    if next_due <= now {
+    if next_due <= now || next_due <= due_at {
         next_due += PERIODIC_CLOCK_INTERVAL_SECONDS;
     }
-    if next_due.is_finite() { next_due } else { f64::MAX }
+    if next_due.is_finite() && next_due > now && next_due > due_at {
+        next_due
+    } else {
+        f64::MAX
+    }
 }
 
 /// Compute the next serialqueue.c command wake deadline.
@@ -2343,6 +2348,16 @@ mod periodic_clock_deadline_tests {
             next_periodic_clock_deadline(0.0, f64::MAX),
             f64::MAX
         );
+    }
+
+    #[test]
+    fn periodic_deadline_does_not_repeat_when_float_precision_loses_the_interval() {
+        // At this magnitude, adding a sub-second interval rounds back to
+        // the same f64. Returning that value would leave the timer due forever.
+        let due_at = 1.0e20;
+        assert_eq!(due_at + PERIODIC_CLOCK_INTERVAL_SECONDS, due_at);
+        assert_eq!(next_periodic_clock_deadline(due_at, 0.0), f64::MAX);
+        assert_eq!(next_periodic_clock_deadline(due_at, due_at), f64::MAX);
     }
 
     #[test]
