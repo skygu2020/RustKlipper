@@ -534,10 +534,10 @@ mod tests {
 
     #[test]
     fn clock_sync_rejects_frequency_that_overflows_prediction_variance() {
-        assert_eq!(
+        assert!(matches!(
             ClockSync::new(f64::MAX, 1.0, 0),
             Err(ClockSyncError::InvalidFrequency),
-        );
+        ));
     }
 
     #[test]
