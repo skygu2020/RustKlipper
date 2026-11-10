@@ -49,6 +49,20 @@ pub struct PrinterStatus {
     pub message: String,
 }
 
+/**
+ * One cooperative Host runtime iteration.
+ *
+ * MCU polling is deliberately bounded by a short reactor wait so serial
+ * sessions continue to make progress even when no reactor timer is pending.
+ */
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PrinterRunBatch {
+    pub reactor_callbacks: usize,
+    pub mcus: McuPollBatch,
+}
+
+const MCU_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PrinterEventKind {
     ConfigLoaded,
@@ -1585,6 +1599,21 @@ impl Printer {
         self.reactor.run_once(max_wait)
     }
 
+    /// Run one cooperative Host iteration.
+    ///
+    /// The reactor wait is capped so MCU serial sessions are polled regularly;
+    /// the caller receives the complete MCU event/error batch for dispatch.
+    /// Repeated calls drive both reactor callbacks and MCU transport progress.
+    pub fn run_host_once(&self, max_wait: std::time::Duration) -> PrinterRunBatch {
+        let reactor_wait = max_wait.min(MCU_POLL_INTERVAL);
+        let reactor_callbacks = self.reactor.run_once(reactor_wait);
+        let mcus = self.poll_mcus();
+        PrinterRunBatch {
+            reactor_callbacks,
+            mcus,
+        }
+    }
+
     pub fn process_gcode_line(
         &self,
         line: &str,
@@ -1727,6 +1756,35 @@ mod tests {
         assert!(printer.mcus().session_names().is_empty());
         assert_eq!(printer.mcus().poll_all(), McuPollBatch::default());
         assert_eq!(printer.poll_mcus(), McuPollBatch::default());
+    }
+
+    #[test]
+    fn host_iteration_runs_due_reactor_callbacks_and_polls_mcus() {
+        let printer = Printer::new();
+        let called = Arc::new(AtomicBool::new(false));
+        let observed = called.clone();
+        printer.reactor().register_callback(move |_| {
+            observed.store(true, Ordering::SeqCst);
+        });
+
+        let batch = printer.run_host_once(std::time::Duration::ZERO);
+
+        assert_eq!(batch.reactor_callbacks, 1);
+        assert!(called.load(Ordering::SeqCst));
+        assert_eq!(batch.mcus, McuPollBatch::default());
+    }
+
+    #[test]
+    fn host_iteration_caps_idle_wait_for_regular_mcu_polling() {
+        let printer = Printer::new();
+        let start = std::time::Instant::now();
+
+        let batch = printer.run_host_once(std::time::Duration::from_millis(100));
+
+        assert_eq!(batch.reactor_callbacks, 0);
+        assert!(batch.mcus.events.is_empty());
+        assert!(batch.mcus.errors.is_empty());
+        assert!(start.elapsed() < std::time::Duration::from_millis(80));
     }
 
     #[test]
