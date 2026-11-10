@@ -1803,6 +1803,88 @@ mod async_stream_tests {
         server_task.abort();
     }
 
+    #[tokio::test]
+    async fn removing_status_object_notifies_subscribers_that_fields_are_missing() {
+        let dispatcher = std::sync::Arc::new(KlippyApiDispatcher::new());
+        let printer = std::sync::Arc::new(crate::Printer::new());
+        printer.register_status_object("toolhead", json!({
+            "position": [0.0, 0.0, 0.0]
+        })).unwrap();
+        dispatcher.register_standard_endpoints(printer.clone(), "test").unwrap();
+
+        let (mut client, mut server) = tokio::io::duplex(4096);
+        let server_dispatcher = dispatcher.clone();
+        let server_task = tokio::spawn(async move {
+            serve_async_stream(&mut server, &server_dispatcher).await
+        });
+        let mut decoder = KlippyApiCodec::default();
+
+        client.write_all(&KlippyApiCodec::encode(&json!({
+            "id": 1,
+            "method": "objects/subscribe",
+            "params": {
+                "objects": { "toolhead": ["position"] },
+                "response_template": { "method": "notify_status_update" }
+            }
+        })).unwrap()).await.unwrap();
+
+        let mut subscribed = false;
+        while !subscribed {
+            let mut chunk = [0u8; 512];
+            let count = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                client.read(&mut chunk)
+            ).await.unwrap().unwrap();
+            assert_ne!(count, 0);
+            subscribed = decoder.push(&chunk[..count]).unwrap().into_iter().any(|message| {
+                message["id"] == 1
+            });
+        }
+
+        // Wait until the server has installed the subscription after writing
+        // the initial response.
+        client.write_all(&KlippyApiCodec::encode(&json!({
+            "id": 2,
+            "method": "info"
+        })).unwrap()).await.unwrap();
+        let mut synchronized = false;
+        while !synchronized {
+            let mut chunk = [0u8; 512];
+            let count = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                client.read(&mut chunk)
+            ).await.unwrap().unwrap();
+            assert_ne!(count, 0);
+            synchronized = decoder.push(&chunk[..count]).unwrap().into_iter().any(|message| {
+                message["id"] == 2
+            });
+        }
+
+        assert!(printer.remove_status_object("toolhead"));
+        let notification = loop {
+            let mut chunk = [0u8; 512];
+            let count = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                client.read(&mut chunk)
+            ).await.unwrap().unwrap();
+            assert_ne!(count, 0, "connection closed before removal notification");
+            if let Some(message) = decoder.push(&chunk[..count]).unwrap().into_iter().find(|message| {
+                message["method"] == "notify_status_update"
+            }) {
+                break message;
+            }
+        };
+
+        assert_eq!(
+            notification["params"]["status"]["toolhead"]["position"],
+            Value::Null
+        );
+        assert_eq!(notification["params"]["status"]["toolhead"].as_object().unwrap().len(), 1);
+
+        client.shutdown().await.unwrap();
+        server_task.abort();
+    }
+
     #[test]
     fn objects_subscribe_rejects_non_object_response_templates() {
         let dispatcher = std::sync::Arc::new(KlippyApiDispatcher::new());
