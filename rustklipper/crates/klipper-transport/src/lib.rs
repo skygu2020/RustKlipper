@@ -110,11 +110,25 @@ impl UsbSerialTransport {
     ///
     /// A timeout is not a disconnect: it simply returns an empty frame list.
     pub fn read_frames(&mut self) -> Result<Vec<Frame>, TransportError> {
-        match self.port.read(&mut self.read_buffer) {
-            Ok(0) => Ok(Vec::new()),
-            Ok(count) => Ok(self.decoder.push(&self.read_buffer[..count])),
-            Err(error) if error.kind() == std::io::ErrorKind::TimedOut => Ok(Vec::new()),
-            Err(error) => Err(TransportError::Io(error)),
+        loop {
+            match self.port.read(&mut self.read_buffer) {
+                Ok(0) => return Ok(Vec::new()),
+                Ok(count) => return Ok(self.decoder.push(&self.read_buffer[..count])),
+                // Interrupted is transient and the read should be retried.
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                // Serial backends may report either TimedOut or WouldBlock
+                // when no bytes are currently available. Neither means that
+                // the MCU transport has disconnected.
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) =>
+                {
+                    return Ok(Vec::new());
+                }
+                Err(error) => return Err(TransportError::Io(error)),
+            }
         }
     }
 
