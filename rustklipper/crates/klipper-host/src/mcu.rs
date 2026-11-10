@@ -254,6 +254,27 @@ impl McuRegistry {
         self.with_session(name, |session| session.is_disconnected())
     }
 
+    /// Return the current startup phase for one registered MCU.
+    ///
+    /// A missing or concurrently detached MCU returns None. Session locking
+    /// and poisoned-session cleanup follow the same rules as other registry
+    /// inspection methods.
+    pub fn startup_stage(&self, name: &str) -> Option<klipper_transport::McuStartupStage> {
+        self.with_session(name, |session| session.startup_stage())
+    }
+
+    /// Snapshot startup phases for all currently registered MCUs in name order.
+    ///
+    /// Each phase is read under its own session lock, so a slow or detached
+    /// MCU cannot hold the registry lock or block inspection of other sessions.
+    pub fn startup_stages(&self) -> Vec<(String, klipper_transport::McuStartupStage)> {
+        let mut names = self.session_names();
+        names.sort();
+        names.into_iter().filter_map(|name| {
+            self.startup_stage(&name).map(|stage| (name, stage))
+        }).collect()
+    }
+
     /// Poll every registered MCU once, preserving each session's event order.
     /// A failed MCU is reported independently; other sessions are still polled.
     pub fn poll_all(&self) -> McuPollBatch {
@@ -410,6 +431,13 @@ mod tests {
         assert!(registry.session_handle("mcu").is_none());
         assert_eq!(registry.clear(), Vec::<String>::new());
         assert_eq!(registry.poll_all(), McuPollBatch::default());
+    }
+
+    #[test]
+    fn startup_stage_queries_are_empty_without_registered_sessions() {
+        let registry = McuRegistry::new();
+        assert_eq!(registry.startup_stage("mcu"), None);
+        assert!(registry.startup_stages().is_empty());
     }
 
     #[test]
