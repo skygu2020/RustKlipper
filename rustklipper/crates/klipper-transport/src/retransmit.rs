@@ -184,6 +184,10 @@ impl RetransmitState {
         if ack_sequence < self.last_ack_seq {
             return Ok(AckResult { acknowledged: Vec::new(), last_receive_sent_time: self.last_receive_sent_time, fast_retransmit: None, rtt_sample_seconds: None });
         }
+        // Keep the cumulative ACK watermark in sync for both data and empty
+        // ACKs. NAK detection uses this value to distinguish a newly advanced
+        // receive sequence from a duplicate ACK.
+        self.last_ack_seq = ack_sequence;
 
         let had_outstanding = !self.outstanding.is_empty();
         let mut acknowledged = Vec::new();
@@ -542,6 +546,25 @@ mod tests {
         let ack = state.acknowledge(2, 0.300).unwrap();
         assert_eq!(ack.rtt_sample_seconds, None);
         assert_eq!(state.srtt(), None);
+    }
+
+    #[test]
+    fn empty_ack_after_data_ack_is_recognized_as_duplicate_nak() {
+        let mut state = RetransmitState::new();
+        state.track_sent(10, vec![0x10], 0.0).unwrap();
+        state.track_sent(11, vec![0x11], 0.001);
+
+        // The data ACK advances the cumulative receive sequence and retires
+        // only the frame strictly below it.
+        assert_eq!(state.acknowledge(11, 0.010).unwrap().acknowledged.len(), 1);
+        assert_eq!(state.outstanding_len(), 1);
+
+        // An empty block at that same sequence is a duplicate ACK, not a new
+        // sequence announcement. It must immediately request the remaining
+        // outstanding frame instead of being swallowed as the first ACK.
+        let retries = state.handle_empty_ack(11, 12, 0.011).unwrap();
+        assert_eq!(retries.len(), 1);
+        assert_eq!(retries[0].sequence, 11);
     }
 
     #[test]
