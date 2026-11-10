@@ -433,6 +433,8 @@ impl Reactor {
             Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
         };
         let mut executed = 0;
+        let mut executed_ids = HashSet::new();
+        let mut deferred = Vec::new();
         loop {
             let next = {
                 let mut state = self.state.lock().expect("reactor lock poisoned");
@@ -449,6 +451,13 @@ impl Reactor {
                 if task.deadline != entry.deadline {
                     continue;
                 }
+                // A timer may choose an already-due deadline. Run each task
+                // at most once per cycle, deferring repeats so other due work
+                // is not starved and the reactor cannot spin forever.
+                if executed_ids.contains(&entry.id) {
+                    deferred.push(entry);
+                    continue;
+                }
                 let task = state
                     .tasks
                     .remove(&entry.id)
@@ -460,6 +469,7 @@ impl Reactor {
             let (entry, mut task) = next;
             let callback_result = catch_unwind(AssertUnwindSafe(|| (task.callback)(now)));
             executed += 1;
+            executed_ids.insert(entry.id);
 
             let mut state = self.state.lock().expect("reactor lock poisoned");
             state.running.remove(&entry.id);
@@ -486,6 +496,18 @@ impl Reactor {
                         id: entry.id,
                     }));
                     self.wake.notify_one();
+                }
+            }
+        }
+        if !deferred.is_empty() {
+            let mut state = self.state.lock().expect("reactor lock poisoned");
+            for entry in deferred {
+                if state
+                    .tasks
+                    .get(&entry.id)
+                    .is_some_and(|task| task.deadline == entry.deadline)
+                {
+                    state.queue.push(Reverse(entry));
                 }
             }
         }
@@ -763,6 +785,51 @@ mod tests {
         assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 
+
+    #[test]
+    fn overdue_rescheduling_timer_runs_once_per_dispatch_cycle() {
+        let reactor = Reactor::new();
+        let count = Arc::new(AtomicUsize::new(0));
+        let observed = count.clone();
+        let start = Instant::now();
+        reactor.register_timer_at(start, move |eventtime| {
+            observed.fetch_add(1, Ordering::SeqCst);
+            Some(eventtime)
+        });
+        let dispatch_time = start + Duration::from_secs(1);
+
+        assert_eq!(reactor.run_due(dispatch_time), 1);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert_eq!(reactor.pending_tasks(), 1);
+        assert_eq!(reactor.next_deadline(), Some(dispatch_time));
+
+        assert_eq!(reactor.run_due(dispatch_time), 1);
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+        assert_eq!(reactor.pending_tasks(), 1);
+    }
+
+    #[test]
+    fn overdue_rescheduling_timer_does_not_starve_other_due_callbacks() {
+        let reactor = Reactor::new();
+        let timer_count = Arc::new(AtomicUsize::new(0));
+        let observed_timer = timer_count.clone();
+        let callback_count = Arc::new(AtomicUsize::new(0));
+        let observed_callback = callback_count.clone();
+        let start = Instant::now();
+
+        reactor.register_timer_at(start, move |eventtime| {
+            observed_timer.fetch_add(1, Ordering::SeqCst);
+            Some(eventtime)
+        });
+        reactor.register_callback_at(start, move |_| {
+            observed_callback.fetch_add(1, Ordering::SeqCst);
+        });
+
+        assert_eq!(reactor.run_due(start + Duration::from_secs(1)), 2);
+        assert_eq!(timer_count.load(Ordering::SeqCst), 1);
+        assert_eq!(callback_count.load(Ordering::SeqCst), 1);
+        assert_eq!(reactor.pending_tasks(), 1);
+    }
 
     #[test]
     fn timer_callback_can_choose_its_next_deadline() {
