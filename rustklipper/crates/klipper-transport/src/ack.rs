@@ -82,7 +82,9 @@ impl AckTracker {
     pub fn contains_notify(&self, id: u64) -> bool { self.pending.contains_key(&id) }
     pub fn extend_wire_sequence(previous: u64, wire_sequence: u8) -> u64 {
         let delta = u64::from(wire_sequence & 0x0f).wrapping_sub(previous & 0x0f) & 0x0f;
-        previous + delta
+        // Extended sequence numbers must never wrap back to a small value:
+        // all ACK comparisons in the transport layer rely on monotonic ordering.
+        previous.saturating_add(delta)
     }
 }
 #[cfg(test)]
@@ -166,6 +168,13 @@ mod tests {
             sent_time: 4.0,
             receive_time: 4.1,
         });
+    }
+
+    #[test]
+    fn extended_sequence_saturates_instead_of_wrapping_at_u64_limit() {
+        assert_eq!(AckTracker::extend_wire_sequence(u64::MAX - 1, 15), u64::MAX);
+        assert_eq!(AckTracker::extend_wire_sequence(u64::MAX, 0), u64::MAX);
+        assert_eq!(AckTracker::extend_wire_sequence(u64::MAX, 1), u64::MAX);
     }
 
     #[test]
