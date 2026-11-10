@@ -581,7 +581,7 @@ mod tests {
     #[test]
     fn object_query_returns_only_requested_fields_from_json_objects() {
         let printer = std::sync::Arc::new(crate::Printer::new());
-        printer.register_object("toolhead", serde_json::json!({
+        printer.register_status_object("toolhead", serde_json::json!({
             "position": [1.0, 2.0, 3.0],
             "homed_axes": "xyz",
             "max_velocity": 300.0
@@ -606,6 +606,17 @@ mod tests {
                 "homed_axes": "xyz"
             }
         }));
+
+        printer.update_status_object("toolhead", json!({
+            "position": [4.0, 5.0, 6.0],
+            "homed_axes": "xy"
+        })).unwrap();
+        let updated = dispatcher.dispatch_value(json!({
+            "id": 10,
+            "method": "objects/query",
+            "params": { "objects": { "toolhead": ["position"] } }
+        })).unwrap();
+        assert_eq!(updated["result"]["status"]["toolhead"]["position"], json!([4.0, 5.0, 6.0]));
     }
 
     #[test]
