@@ -19,6 +19,12 @@ fn saturating_time_add(left: f64, right: f64) -> f64 {
     if sum.is_finite() { sum } else { f64::MAX }
 }
 
+/// Multiply a non-negative clock measurement without producing infinity.
+fn saturating_time_mul(value: f64, factor: f64) -> f64 {
+    let product = value * factor;
+    if product.is_finite() { product } else { f64::MAX }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackedFrame {
     pub sequence: u64,
@@ -329,7 +335,7 @@ impl RetransmitState {
     fn update_rtt(&mut self, sample: f64) {
         match (self.srtt, self.rttvar) {
             (None, _) => {
-                self.srtt = Some(sample * 10.0);
+                self.srtt = Some(saturating_time_mul(sample, 10.0));
                 self.rttvar = Some(sample / 2.0);
             }
             (Some(srtt), Some(rttvar)) => {
@@ -358,6 +364,18 @@ impl RetransmitState {
 mod tests {
     use super::*;
 
+
+    #[test]
+    fn initial_rtt_estimate_saturates_instead_of_becoming_infinite() {
+        let mut state = RetransmitState::new();
+        state.update_rtt(f64::MAX);
+
+        assert_eq!(state.srtt(), Some(f64::MAX));
+        assert_eq!(state.rttvar(), Some(f64::MAX / 2.0));
+        assert_eq!(state.rto(), MAX_RTO_SECONDS);
+        assert!(state.srtt().unwrap().is_finite());
+        assert!(state.rttvar().unwrap().is_finite());
+    }
 
     #[test]
     fn retransmission_deadlines_remain_finite_near_f64_limit() {
