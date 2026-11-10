@@ -57,10 +57,12 @@ impl AckTracker {
     /// Bind a reserved notification to its sent frame. `_sent_time` is retained
     /// for API compatibility; Klipper timestamps the event from the ACKed frame.
     pub fn mark_sent(&mut self, id: u64, required_send_seq: u64, _sent_time: f64) -> bool {
-        let Some(pending) = self.pending.get_mut(&id) else { return false; };
+        let Some(pending) = self.pending.get(&id) else { return false; };
         if pending.required_send_seq.is_some() { return false; }
+        let send_order = self.allocate_send_order();
+        let pending = self.pending.get_mut(&id).expect("reserved notification must remain registered");
         pending.required_send_seq = Some(required_send_seq);
-        pending.send_order = self.allocate_send_order();
+        pending.send_order = send_order;
         true
     }
 
