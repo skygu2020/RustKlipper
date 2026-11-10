@@ -413,6 +413,28 @@ mod tests {
     use klipper_protocol::FrameDecoder;
 
     #[test]
+    fn cloned_scheduler_keeps_queue_and_retransmit_state_independent() {
+        let mut scheduler = CommandScheduler::new();
+        scheduler.enqueue(1, ScheduledCommand::new(vec![0xA1], 0, 0)).unwrap();
+        scheduler.promote_ready(0);
+
+        let mut snapshot = scheduler.clone();
+        let frame = snapshot.build_frame().unwrap().unwrap();
+        snapshot.mark_frame_sent(&frame, 1.0).unwrap();
+
+        assert_eq!(scheduler.queued_counts(), (0, 1));
+        assert_eq!(scheduler.send_sequence(), 1);
+        assert_eq!(scheduler.retransmit_state().outstanding_len(), 0);
+        assert_eq!(snapshot.queued_counts(), (0, 0));
+        assert_eq!(snapshot.send_sequence(), 2);
+        assert_eq!(snapshot.retransmit_state().outstanding_len(), 1);
+
+        snapshot.acknowledge(2, 2.0).unwrap();
+        assert_eq!(snapshot.retransmit_state().outstanding_len(), 0);
+        assert_eq!(scheduler.retransmit_state().outstanding_len(), 0);
+    }
+
+    #[test]
     fn queue_order_counter_wrap_compacts_active_queues_without_reordering() {
         let mut scheduler = CommandScheduler::new();
         scheduler.enqueue(1, ScheduledCommand::new(vec![0xA1], 0, 500)).unwrap();
