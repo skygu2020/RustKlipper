@@ -3253,9 +3253,6 @@ mod tests {
     #[test]
     fn base_gcode_handlers_remain_available_after_shutdown() {
         let printer = Printer::new();
-        printer
-            .register_gcode_command("M112", true, None, |_| Ok(Vec::new()))
-            .unwrap();
         printer.invoke_shutdown("runtime fault");
         assert!(printer.process_gcode_line("M112", true).unwrap().handler_found);
     }
