@@ -1269,6 +1269,26 @@ impl Printer {
         names
     }
 
+    /// Return only objects backed by JSON status data for the Klippy API.
+    ///
+    /// The general object registry also contains internal Rust component
+    /// instances. Klipper's objects/list endpoint must not expose those
+    /// implementation-only objects.
+    pub fn status_object_names(&self) -> Vec<String> {
+        let objects = self.objects.read().expect("printer object lock poisoned");
+        let mut names: Vec<_> = objects
+            .iter()
+            .filter_map(|(name, object)| {
+                Arc::downcast::<serde_json::Value>(object.clone())
+                    .ok()
+                    .filter(|value| value.is_object())
+                    .map(|_| name.clone())
+            })
+            .collect();
+        names.sort();
+        names
+    }
+
     fn lock_event_handlers(
         &self,
     ) -> MutexGuard<'_, HashMap<PrinterEventKind, Vec<EventHandler>>> {
