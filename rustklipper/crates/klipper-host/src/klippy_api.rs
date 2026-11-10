@@ -290,7 +290,7 @@ impl KlippyApiDispatcher {
             // Dispatch one line at a time so the first command error stops
             // the script immediately. Processing the whole script up front
             // would execute later commands before the RPC layer sees an error.
-            for line in script.split('\\n') {
+            for line in script.split('\n') {
                 let Some(outcome) = printer.process_gcode_line(line, false) else {
                     continue;
                 };
@@ -752,7 +752,7 @@ mod tests {
         let response = dispatcher.dispatch_value(json!({
             "id": 23,
             "method": "gcode/script",
-            "params": { "script": "FAIL\\nAFTER" }
+            "params": { "script": "FAIL\nAFTER" }
         })).unwrap();
 
         assert_eq!(response["error"]["code"], json!(-32000));
