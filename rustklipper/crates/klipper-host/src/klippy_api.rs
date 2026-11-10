@@ -199,10 +199,10 @@ impl KlippyApiDispatcher {
                 ))?;
             let mut status = serde_json::Map::new();
             for (object_name, requested_fields) in requested {
-                let Some(object) = printer.lookup_object_optional::<Value>(object_name)
-                    .map_err(|error| KlippyApiRpcError::internal(error.to_string()))?
-                else {
-                    continue;
+                let object = match printer.lookup_object_optional::<Value>(object_name) {
+                    Ok(Some(object)) => object,
+                    Ok(None) | Err(crate::PrinterError::ObjectTypeMismatch { .. }) => continue,
+                    Err(error) => return Err(KlippyApiRpcError::internal(error.to_string())),
                 };
                 let Some(fields) = object.as_object() else {
                     continue;
