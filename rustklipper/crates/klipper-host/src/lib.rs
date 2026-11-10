@@ -15,7 +15,7 @@ mod reactor;
 pub use reactor::{Completion, CompletionCancelled, Reactor, ReactorError, TaskId};
 
 use std::any::Any;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
@@ -360,12 +360,14 @@ impl ComponentRegistry {
         let usage_transaction = printer.config_usage.begin_transaction();
         let tracked = printer.config_usage.track_section(section);
         let object_transaction = printer.begin_object_registration_transaction();
+        let mcu_config_transaction = printer.begin_mcu_config_registration_transaction();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             (entry.factory)(printer, &tracked)
         }));
         if generation.is_some_and(|generation| !printer.is_current_connection_generation(generation)) {
             drop(usage_transaction);
             drop(object_transaction);
+            drop(mcu_config_transaction);
             printer.remove_component_gcode_commands(name);
             printer.remove_component_mcu_message_handlers(name);
             loading.remove(name);
@@ -379,6 +381,7 @@ impl ComponentRegistry {
         if let Some(message) = failure {
             drop(usage_transaction);
             drop(object_transaction);
+            drop(mcu_config_transaction);
             printer.remove_component_gcode_commands(name);
             printer.remove_component_mcu_message_handlers(name);
             return Err(ComponentError::LoadFailed {
@@ -388,6 +391,7 @@ impl ComponentRegistry {
         }
         usage_transaction.commit();
         object_transaction.commit();
+        mcu_config_transaction.commit();
         loading.remove(name);
         loaded_set.insert(name.to_owned());
         printer.mark_component_loaded(name);
@@ -461,6 +465,28 @@ impl ComponentRegistry {
     }
 }
 
+struct McuConfigRegistrationTransaction<'a> {
+    printer: &'a Printer,
+    snapshot: BTreeMap<String, HostMcuConfigBuilder>,
+    completed: bool,
+}
+
+impl McuConfigRegistrationTransaction<'_> {
+    fn commit(mut self) {
+        self.completed = true;
+    }
+}
+
+impl Drop for McuConfigRegistrationTransaction<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            *self.printer.mcu_config_builders
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = self.snapshot.clone();
+        }
+    }
+}
+
 struct ObjectRegistrationTransaction<'a> {
     printer: &'a Printer,
     thread_id: std::thread::ThreadId,
@@ -497,6 +523,7 @@ pub struct Printer {
     connection_initialized: AtomicBool,
     connection_generation: AtomicU64,
     mcus: McuRegistry,
+    mcu_config_builders: Mutex<BTreeMap<String, HostMcuConfigBuilder>>,
     mcu_clock_startups: Mutex<HashMap<String, PendingMcuClockStartup>>,
     mcu_identify_startups: Mutex<HashMap<String, McuStartupQueueConfig>>,
     mcu_config_startups: Mutex<HashMap<String, PendingMcuConfigStartup>>,
@@ -535,6 +562,7 @@ impl Printer {
             connection_initialized: AtomicBool::new(false),
             connection_generation: AtomicU64::new(0),
             mcus: McuRegistry::new(),
+            mcu_config_builders: Mutex::new(BTreeMap::new()),
             mcu_clock_startups: Mutex::new(HashMap::new()),
             mcu_identify_startups: Mutex::new(HashMap::new()),
             mcu_config_startups: Mutex::new(HashMap::new()),
@@ -550,6 +578,49 @@ impl Printer {
             reactor: Reactor::new(),
             status_updates: tokio::sync::broadcast::channel(128).0,
         }
+    }
+
+    fn begin_mcu_config_registration_transaction(&self) -> McuConfigRegistrationTransaction<'_> {
+        let snapshot = self.mcu_config_builders
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        McuConfigRegistrationTransaction {
+            printer: self,
+            snapshot,
+            completed: false,
+        }
+    }
+
+    /// Let a component contribute declarations to the shared builder for one MCU.
+    /// Component factories run under the component-load lock, so contributions
+    /// are serialized and receive globally unique OIDs within that MCU.
+    pub fn with_mcu_config_builder<R>(
+        &self,
+        mcu: &str,
+        contribute: impl FnOnce(&mut HostMcuConfigBuilder) -> R,
+    ) -> R {
+        let mut builders = self.mcu_config_builders
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        contribute(builders.entry(mcu.to_owned()).or_default())
+    }
+
+    /// Return an immutable snapshot of the declarations accumulated for an MCU.
+    pub fn mcu_config_builder_snapshot(&self, mcu: &str) -> Option<HostMcuConfigBuilder> {
+        self.mcu_config_builders
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(mcu)
+            .cloned()
+    }
+
+    /// Discard all component-provided MCU declarations for a new config.
+    fn clear_mcu_config_builders(&self) {
+        self.mcu_config_builders
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
     }
 
     fn lock_component_load(&self) -> MutexGuard<'_, ()> {
@@ -657,6 +728,7 @@ impl Printer {
         self.connection_generation.fetch_add(1, Ordering::SeqCst);
         self.connection_initialized.store(false, Ordering::SeqCst);
         self.config_usage.clear();
+        self.clear_mcu_config_builders();
         self.clear_component_mcu_message_handlers();
         let mut component_gcode = self
             .component_gcode
