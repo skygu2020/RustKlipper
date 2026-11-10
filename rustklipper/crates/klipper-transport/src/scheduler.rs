@@ -224,13 +224,19 @@ impl CommandScheduler {
     }
 
     fn build_frame_inner(&mut self) -> Result<Option<ScheduledFrame>, ScheduleError> {
-        // Extended send sequences must remain strictly increasing for ACK and
-        // retransmission tracking. Never wrap back to zero and reuse old IDs.
-        if self.send_sequence == u64::MAX {
-            return Err(ScheduleError::SequenceExhausted);
-        }
         if !self.can_send_frame() {
             return Ok(None);
+        }
+        let has_ready_commands = self.queues.values().any(|queue| !queue.ready.is_empty());
+        if !has_ready_commands {
+            return Ok(None);
+        }
+        // Extended send sequences must remain strictly increasing for ACK and
+        // retransmission tracking. Never wrap back to zero and reuse old IDs.
+        // Check only when a frame can actually be emitted, leaving idle and
+        // flow-controlled schedulers usable at the sequence limit.
+        if self.send_sequence == u64::MAX {
+            return Err(ScheduleError::SequenceExhausted);
         }
         let mut payload = Vec::with_capacity(MESSAGE_PAYLOAD_MAX);
         let mut notify_ids = Vec::new();
@@ -840,5 +846,25 @@ mod tests {
         s.enqueue(1, ScheduledCommand::new(vec![1], 0, 0)).unwrap();
         s.promote_ready(0);
         assert!(s.build_frame().unwrap().is_none());
+    }
+
+    #[test]
+    fn exhausted_sequence_only_errors_when_a_frame_is_ready_to_send() {
+        let mut scheduler = CommandScheduler::new();
+        scheduler.send_sequence = u64::MAX;
+
+        assert!(scheduler.build_frame().unwrap().is_none());
+
+        scheduler.enqueue(1, ScheduledCommand::new(vec![0x7a], 0, 0)).unwrap();
+        scheduler.promote_ready(0);
+        assert!(matches!(
+            scheduler.build_frame(),
+            Err(ScheduleError::SequenceExhausted),
+        ));
+        assert_eq!(
+            scheduler.queues[&1].ready.front().unwrap().bytes,
+            vec![0x7a],
+            "sequence exhaustion must not consume a queued command",
+        );
     }
 }
