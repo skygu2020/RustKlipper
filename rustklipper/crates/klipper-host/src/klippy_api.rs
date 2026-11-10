@@ -166,6 +166,20 @@ pub struct KlippyApiDispatcher {
 impl KlippyApiDispatcher {
     pub fn new() -> Self { Self::default() }
 
+    /// Register Klippy's `objects/list` endpoint from the printer object registry.
+    ///
+    /// Only objects currently registered by loaded host components are exposed.
+    pub fn register_object_listing(
+        &self,
+        printer: std::sync::Arc<crate::Printer>,
+    ) -> Result<(), KlippyApiRpcError> {
+        self.register("objects/list", move |_params| {
+            Ok(serde_json::json!({
+                "objects": printer.object_names(),
+            }))
+        })
+    }
+
     /// Register the Klippy `info` endpoint from the live printer lifecycle.
     ///
     /// `software_version` identifies this Rust host implementation; it is not
@@ -463,6 +477,23 @@ mod tests {
         let response = dispatcher.dispatch_value(json!({"id":9,"method":"info","params":{}})).unwrap();
         assert_eq!(response, json!({"id":9,"result":{"state":"ready"}}));
         assert_eq!(dispatcher.method_names(), vec!["info"]);
+    }
+
+    #[test]
+    fn object_listing_endpoint_tracks_registered_objects() {
+        let printer = std::sync::Arc::new(crate::Printer::new());
+        printer.register_object("toolhead", 1_u8).unwrap();
+        printer.register_object("gcode", 2_u8).unwrap();
+
+        let dispatcher = KlippyApiDispatcher::new();
+        dispatcher.register_object_listing(printer.clone()).unwrap();
+        let request = json!({"id":2,"method":"objects/list"});
+        let response = dispatcher.dispatch_value(request.clone()).unwrap();
+        assert_eq!(response["result"]["objects"], json!(["gcode", "toolhead"]));
+
+        printer.remove_object("gcode");
+        let response = dispatcher.dispatch_value(request).unwrap();
+        assert_eq!(response["result"]["objects"], json!(["toolhead"]));
     }
 
     #[test]
