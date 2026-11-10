@@ -442,6 +442,14 @@ impl Printer {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    fn lock_object_registration_transactions(
+        &self,
+    ) -> MutexGuard<'_, HashMap<std::thread::ThreadId, Vec<Vec<(String, Arc<dyn Any + Send + Sync>)>>>> {
+        self.object_registration_transactions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     pub fn state(&self) -> PrinterState {
         *self.state.read().expect("printer state lock poisoned")
     }
@@ -956,9 +964,7 @@ impl Printer {
 
     fn begin_object_registration_transaction(&self) -> ObjectRegistrationTransaction<'_> {
         let thread_id = std::thread::current().id();
-        self.object_registration_transactions
-            .lock()
-            .expect("object registration transaction lock poisoned")
+        self.lock_object_registration_transactions()
             .entry(thread_id)
             .or_default()
             .push(Vec::new());
@@ -975,10 +981,7 @@ impl Printer {
         commit: bool,
     ) {
         let registered = {
-            let mut transactions = self
-                .object_registration_transactions
-                .lock()
-                .expect("object registration transaction lock poisoned");
+            let mut transactions = self.lock_object_registration_transactions();
             let Some(stack) = transactions.get_mut(thread_id) else {
                 return;
             };
@@ -1028,9 +1031,7 @@ impl Printer {
         }
         let thread_id = std::thread::current().id();
         if let Some(transaction) = self
-            .object_registration_transactions
-            .lock()
-            .expect("object registration transaction lock poisoned")
+            .lock_object_registration_transactions()
             .get_mut(&thread_id)
             .and_then(|stack| stack.last_mut())
         {
@@ -1485,6 +1486,28 @@ mod tests {
     use super::*;
     use klipper_gcode::DispatchEvent;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    #[test]
+    fn object_registration_transactions_recover_after_poisoning() {
+        let printer = Printer::new();
+        let poisoned = printer.object_registration_transactions.lock().unwrap();
+        let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = poisoned;
+            panic!("poison object registration transaction lock");
+        }));
+        assert!(panic_result.is_err());
+
+        let transaction = printer.begin_object_registration_transaction();
+        printer.register_object("temporary", 7_u8).unwrap();
+        drop(transaction);
+        assert!(matches!(
+            printer.lookup_object::<u8>("temporary"),
+            Err(PrinterError::ObjectNotFound { .. })
+        ));
+
+        printer.register_object("permanent", 9_u8).unwrap();
+        assert_eq!(*printer.lookup_object::<u8>("permanent").unwrap(), 9);
+    }
 
     #[test]
     fn component_load_lock_recovers_after_poisoning() {
