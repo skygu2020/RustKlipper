@@ -11,6 +11,14 @@ pub const MAX_RTO_SECONDS: f64 = 5.0;
 pub const DEFAULT_RTO_SECONDS: f64 = 0.250;
 pub const DUP_ACK_THRESHOLD: u8 = 3;
 
+/// Add non-negative clock durations without allowing a finite timestamp to
+/// turn into infinity near the f64 limit. An effectively unreachable deadline
+/// is represented by the largest finite timestamp.
+fn saturating_time_add(left: f64, right: f64) -> f64 {
+    let sum = left + right;
+    if sum.is_finite() { sum } else { f64::MAX }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackedFrame {
     pub sequence: u64,
@@ -162,7 +170,7 @@ impl RetransmitState {
         if self.outstanding.is_empty() {
             // serialqueue.c starts the initial retry timer after the first
             // frame's estimated UART wire time, not at write() completion.
-            self.retransmit_deadline = Some(receive_time + self.rto);
+            self.retransmit_deadline = Some(saturating_time_add(receive_time, self.rto));
         }
         if self.rtt_sample_seq.is_none() {
             self.rtt_sample_seq = Some(sequence);
@@ -226,7 +234,7 @@ impl RetransmitState {
             let oldest_wire_time = self.outstanding.front().map_or(0.0, |entry| {
                 self.wire_time_per_byte * entry.frame.bytes.len() as f64
             });
-            self.retransmit_deadline = Some(now + self.rto + oldest_wire_time);
+            self.retransmit_deadline = Some(saturating_time_add(saturating_time_add(now, self.rto), oldest_wire_time));
         }
 
         Ok(AckResult { acknowledged, last_receive_sent_time: self.last_receive_sent_time, fast_retransmit: None, rtt_sample_seconds })
@@ -261,7 +269,7 @@ impl RetransmitState {
         let first_frame_wire_time = self.outstanding.front().map_or(0.0, |entry| {
             self.wire_time_per_byte * (entry.frame.bytes.len() + 1) as f64
         });
-        self.retransmit_deadline = Some(now + self.rto + first_frame_wire_time);
+        self.retransmit_deadline = Some(saturating_time_add(saturating_time_add(now, self.rto), first_frame_wire_time));
         for entry in &mut self.outstanding {
             entry.frame.transmissions = entry.frame.transmissions.saturating_add(1);
             entry.retransmitted = true;
@@ -294,7 +302,7 @@ impl RetransmitState {
             let first_frame_wire_time =
                 self.wire_time_per_byte * (entry.frame.bytes.len() + 1) as f64;
             self.retransmit_deadline =
-                Some(sent_at + self.rto + first_frame_wire_time);
+                Some(saturating_time_add(saturating_time_add(sent_at, self.rto), first_frame_wire_time));
         }
         Ok(())
     }
@@ -349,6 +357,20 @@ impl RetransmitState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    #[test]
+    fn retransmission_deadlines_remain_finite_near_f64_limit() {
+        let mut state = RetransmitState::new();
+        let near_limit = f64::MAX - 1.0;
+        state.track_sent_with_receive_time(1, vec![0x01], near_limit, near_limit).unwrap();
+        assert_eq!(state.retransmit_deadline(), Some(f64::MAX));
+
+        let retries = state.retransmit_all(near_limit);
+        assert_eq!(retries.len(), 1);
+        assert_eq!(state.retransmit_deadline(), Some(f64::MAX));
+        assert!(state.retransmit_deadline().unwrap().is_finite());
+    }
 
     #[test]
     fn single_frame_ack_initializes_rtt_estimator() {
