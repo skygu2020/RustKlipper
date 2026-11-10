@@ -220,10 +220,21 @@ impl GCodeDispatcher {
     /// Execute a multi-line script in order without per-line ACKs, matching
     /// Klipper's `run_script` / `run_script_from_command` behavior.
     pub fn process_script(&self, script: &str) -> Vec<DispatchOutcome> {
-        script
-            .split('\n')
-            .filter_map(|line| self.process_line(line, false))
-            .collect()
+        let mut outcomes = Vec::new();
+        for line in script.split('\n') {
+            let Some(outcome) = self.process_line(line, false) else {
+                continue;
+            };
+            let failed = outcome.events.iter()
+                .any(|event| matches!(event, DispatchEvent::Error(_)));
+            outcomes.push(outcome);
+            if failed {
+                // Klipper script execution stops at the first command error;
+                // later lines must not run after a failed command.
+                break;
+            }
+        }
+        outcomes
     }
 
     pub fn dispatch(
@@ -606,6 +617,31 @@ mod tests {
         assert!(results.iter().all(|result| !result.acknowledged));
     }
 
+
+    #[test]
+    fn script_stops_after_the_first_command_error() {
+        let mut dispatcher = GCodeDispatcher::new();
+        dispatcher.set_ready();
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        dispatcher.register_command("FAIL", false, None, |_| {
+            Err(GCodeError::MalformedCommand {
+                line: "FAIL".to_owned(),
+            })
+        }).unwrap();
+
+        let observed = calls.clone();
+        dispatcher.register_command("AFTER", false, None, move |_| {
+            observed.lock().unwrap().push("AFTER".to_owned());
+            Ok(Vec::new())
+        }).unwrap();
+
+        let outcomes = dispatcher.process_script("FAIL\nAFTER");
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].command, "FAIL");
+        assert!(matches!(outcomes[0].events.first(), Some(DispatchEvent::Error(_))));
+        assert!(calls.lock().unwrap().is_empty());
+    }
 
     #[test]
     fn panicking_command_handler_becomes_error_event_and_dispatcher_recovers() {
