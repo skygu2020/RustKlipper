@@ -162,6 +162,7 @@ impl KlippyApiRpcError {
 pub struct KlippyApiDispatcher {
     methods: std::sync::RwLock<std::collections::HashMap<String, KlippyApiMethod>>,
     gcode_output: tokio::sync::broadcast::Sender<String>,
+    status_printer: std::sync::RwLock<Option<std::sync::Arc<crate::Printer>>>,
 }
 
 impl Default for KlippyApiDispatcher {
@@ -176,6 +177,7 @@ impl KlippyApiDispatcher {
         let dispatcher = Self {
             methods: std::sync::RwLock::new(std::collections::HashMap::new()),
             gcode_output,
+            status_printer: std::sync::RwLock::new(None),
         };
         // Output subscription is connection-local in the async transport.
         // Validate the optional response template here; the stream adapter
@@ -229,6 +231,8 @@ impl KlippyApiDispatcher {
         &self,
         printer: std::sync::Arc<crate::Printer>,
     ) -> Result<(), KlippyApiRpcError> {
+        *self.status_printer.write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(printer.clone());
         self.register("objects/subscribe", move |params| {
             query_printer_status(&printer, &params)
         })
@@ -1041,7 +1045,12 @@ where
     let mut codec = KlippyApiCodec::default();
     let mut chunk = [0u8; 8192];
     let mut output = dispatcher.subscribe_gcode_output();
-    let mut output_template: Option<serde_json::Map<String, Value>> = None;
+    let mut output_template: Option<Map<String, Value>> = None;
+    let printer = dispatcher.status_printer.read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    // Subscribe before handling requests to avoid a gap after the initial snapshot.
+    let mut status_updates = printer.as_ref().map(|printer| printer.subscribe_status_updates());
+    let mut object_subscription: Option<Map<String, Value>> = None;
 
     loop {
         tokio::select! {
@@ -1058,59 +1067,90 @@ where
                 }
 
                 for message in codec.push(&chunk[..count])? {
-                    let subscription_template = if message.get("method").and_then(Value::as_str)
-                        == Some("gcode/subscribe_output")
-                    {
-                        let params = message.get("params").cloned().unwrap_or_else(|| {
-                            Value::Object(serde_json::Map::new())
-                        });
+                    let method = message.get("method").and_then(Value::as_str);
+                    let output_template_request = if method == Some("gcode/subscribe_output") {
+                        let params = message.get("params").cloned().unwrap_or_else(|| Value::Object(Map::new()));
                         Some(gcode_output_response_template(&params))
-                    } else {
-                        None
-                    };
+                    } else { None };
+                    let object_subscription_request = if method == Some("objects/subscribe") {
+                        Some(message.get("params").cloned().unwrap_or_else(|| Value::Object(Map::new())))
+                    } else { None };
 
                     let response = dispatcher.dispatch_value(message);
                     if let Some(response) = response {
-                        let accepted = !response.get("error").is_some();
+                        let accepted = response.get("error").is_none();
                         let encoded = KlippyApiCodec::encode(&response)?;
                         writer.write_all(&encoded).await?;
                         writer.flush().await?;
 
                         if accepted {
-                            if let Some(Ok(template)) = subscription_template {
-                                // Subscribe at the request boundary so output
-                                // emitted before this request is not replayed.
+                            if let Some(Ok(template)) = output_template_request {
                                 output = dispatcher.subscribe_gcode_output();
                                 output_template = Some(template);
                             }
+                            if let (Some(params), Some(_)) = (object_subscription_request, status_updates.as_ref()) {
+                                if let Some(objects) = params.get("objects").and_then(Value::as_object) {
+                                    object_subscription = Some(objects.clone());
+                                }
+                            }
                         }
-                    } else if let Some(Ok(template)) = subscription_template {
-                        // Notifications still execute the endpoint handler.
+                    } else if let Some(Ok(template)) = output_template_request {
                         output = dispatcher.subscribe_gcode_output();
                         output_template = Some(template);
                     }
                 }
             }
+            event = async {
+                match status_updates.as_mut() {
+                    Some(receiver) => receiver.recv().await,
+                    None => std::future::pending().await,
+                }
+            }, if status_updates.is_some() && object_subscription.is_some() => {
+                match event {
+                    Ok(object_name) => {
+                        if let (Some(printer), Some(subscription)) = (printer.as_ref(), object_subscription.as_ref()) {
+                            if let Some(fields) = subscription.get(&object_name) {
+                                let requested = serde_json::json!({
+                                    "objects": { object_name.clone(): fields.clone() }
+                                });
+                                if let Ok(snapshot) = query_printer_status(printer, &requested) {
+                                    let params = serde_json::json!({
+                                        "eventtime": snapshot["eventtime"],
+                                        "status": snapshot["status"]
+                                    });
+                                    let encoded = KlippyApiCodec::encode_notification("notify_status_update", params)?;
+                                    writer.write_all(&encoded).await?;
+                                    writer.flush().await?;
+                                }
+                            }
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        if let (Some(printer), Some(subscription)) = (printer.as_ref(), object_subscription.as_ref()) {
+                            let requested = Value::Object(Map::from_iter([
+                                ("objects".to_owned(), Value::Object(subscription.clone()))
+                            ]));
+                            if let Ok(snapshot) = query_printer_status(printer, &requested) {
+                                let encoded = KlippyApiCodec::encode_notification("notify_status_update", snapshot)?;
+                                writer.write_all(&encoded).await?;
+                                writer.flush().await?;
+                            }
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => status_updates = None,
+                }
+            }
             event = output.recv(), if output_template.is_some() => {
                 match event {
                     Ok(response) => {
-                        let mut notification = output_template.clone()
-                            .expect("output template is present while subscribed");
-                        notification.insert(
-                            "params".to_owned(),
-                            serde_json::json!({ "response": response }),
-                        );
+                        let mut notification = output_template.clone().expect("output template is present while subscribed");
+                        notification.insert("params".to_owned(), serde_json::json!({ "response": response }));
                         let encoded = KlippyApiCodec::encode(&Value::Object(notification))?;
                         writer.write_all(&encoded).await?;
                         writer.flush().await?;
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        // A slow client may miss old console lines; keep the
-                        // connection alive and deliver subsequent output.
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                        output_template = None;
-                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => output_template = None,
                 }
             }
         }
