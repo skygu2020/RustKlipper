@@ -114,6 +114,115 @@ impl KlippyApiCodec {
     }
 }
 
+
+/// A method implementation registered with the host-side Klippy API dispatcher.
+pub type KlippyApiMethod = std::sync::Arc<
+    dyn Fn(Value) -> Result<Value, KlippyApiRpcError> + Send + Sync + 'static,
+>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KlippyApiRpcError {
+    pub code: i64,
+    pub message: String,
+}
+
+impl KlippyApiRpcError {
+    pub fn new(code: i64, message: impl Into<String>) -> Self {
+        Self { code, message: message.into() }
+    }
+
+    pub fn method_not_found(method: &str) -> Self {
+        Self::new(-32601, format!("Method not found: {method}"))
+    }
+
+    pub fn invalid_request(message: impl Into<String>) -> Self {
+        Self::new(-32600, message)
+    }
+
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self::new(-32000, message)
+    }
+}
+
+/// Thread-safe method registry and JSON-RPC-style request dispatcher.
+///
+/// It deliberately owns no socket or runtime. A transport adapter can call
+/// `dispatch_value` for messages received over Unix sockets, Windows named
+/// pipes, TCP, or an in-process channel.
+#[derive(Default)]
+pub struct KlippyApiDispatcher {
+    methods: std::sync::RwLock<std::collections::HashMap<String, KlippyApiMethod>>,
+}
+
+impl KlippyApiDispatcher {
+    pub fn new() -> Self { Self::default() }
+
+    pub fn register<F>(&self, name: impl Into<String>, handler: F) -> Result<(), KlippyApiRpcError>
+    where
+        F: Fn(Value) -> Result<Value, KlippyApiRpcError> + Send + Sync + 'static,
+    {
+        let name = name.into();
+        if name.trim().is_empty() {
+            return Err(KlippyApiRpcError::invalid_request("method name cannot be empty"));
+        }
+        let mut methods = self.methods.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if methods.contains_key(&name) {
+            return Err(KlippyApiRpcError::invalid_request(format!("Method already registered: {name}")));
+        }
+        methods.insert(name, std::sync::Arc::new(handler));
+        Ok(())
+    }
+
+    pub fn unregister(&self, name: &str) -> bool {
+        self.methods.write().unwrap_or_else(std::sync::PoisonError::into_inner).remove(name).is_some()
+    }
+
+    pub fn method_names(&self) -> Vec<String> {
+        let mut names: Vec<_> = self.methods.read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys().cloned().collect();
+        names.sort();
+        names
+    }
+
+    /// Dispatch one decoded JSON object. Notifications execute their handler
+    /// but intentionally produce no response, matching Moonruster's client.
+    pub fn dispatch_value(&self, value: Value) -> Option<Value> {
+        let id = value.as_object().and_then(|object| object.get("id")).cloned();
+        let request = match KlippyApiRequest::from_value(value) {
+            Ok(request) => request,
+            Err(error) => {
+                return Some(rpc_error_response(id.unwrap_or(Value::Null),
+                    KlippyApiRpcError::invalid_request(error.to_string())));
+            }
+        };
+        let notification = request.is_notification();
+        let handler = self.methods.read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&request.method).cloned();
+        let result = match handler {
+            Some(handler) => handler(request.params),
+            None => Err(KlippyApiRpcError::method_not_found(&request.method)),
+        };
+        if notification { return None; }
+        let id = request.id.unwrap_or(Value::Null);
+        Some(match result {
+            Ok(result) => serde_json::json!({"id": id, "result": result}),
+            Err(error) => rpc_error_response(id, error),
+        })
+    }
+}
+
+fn rpc_error_response(id: Value, error: KlippyApiRpcError) -> Value {
+    serde_json::json!({
+        "id": id,
+        "error": {
+            "code": error.code,
+            "message": error.message,
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,5 +288,44 @@ mod tests {
         assert_eq!(decoder.push(&response).unwrap(), vec![json!({"id":7,"result":{"state":"ready"}})]);
         let notification = KlippyApiCodec::encode_notification("process_gcode_response", json!({"response":"ok"})).unwrap();
         assert_eq!(decoder.push(&notification).unwrap(), vec![json!({"method":"process_gcode_response","params":{"response":"ok"}})]);
+    }
+
+    #[test]
+    fn dispatcher_registers_methods_and_returns_results() {
+        let dispatcher = KlippyApiDispatcher::new();
+        dispatcher.register("info", |_| Ok(json!({"state":"ready"}))).unwrap();
+        let response = dispatcher.dispatch_value(json!({"id":9,"method":"info","params":{}})).unwrap();
+        assert_eq!(response, json!({"id":9,"result":{"state":"ready"}}));
+        assert_eq!(dispatcher.method_names(), vec!["info"]);
+    }
+
+    #[test]
+    fn dispatcher_returns_method_not_found_error() {
+        let dispatcher = KlippyApiDispatcher::new();
+        let response = dispatcher.dispatch_value(json!({"id":3,"method":"missing"})).unwrap();
+        assert_eq!(response["id"], json!(3));
+        assert_eq!(response["error"]["code"], json!(-32601));
+    }
+
+    #[test]
+    fn dispatcher_suppresses_notification_responses() {
+        let dispatcher = KlippyApiDispatcher::new();
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = calls.clone();
+        dispatcher.register("notify", move |_| {
+            observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Value::Null)
+        }).unwrap();
+        assert!(dispatcher.dispatch_value(json!({"method":"notify","params":{}})).is_none());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn dispatcher_rejects_duplicate_method_names() {
+        let dispatcher = KlippyApiDispatcher::new();
+        dispatcher.register("info", |_| Ok(Value::Null)).unwrap();
+        assert!(dispatcher.register("info", |_| Ok(Value::Null)).is_err());
+        assert!(dispatcher.unregister("info"));
+        assert!(!dispatcher.unregister("info"));
     }
 }
