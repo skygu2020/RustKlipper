@@ -458,7 +458,14 @@ mod tests {
             }
             let value: Value = serde_json::from_slice(&request).unwrap();
             assert_eq!(value["method"], "info");
-            stream.write_all(br#"{"id":41,"result":{"state":"ready"}}"#).await.unwrap();
+            let first = br#"{"id":41,"result":{"state":"ready"}}"#;
+            let second = br#"{"method":"notify_status_update","params":{"state":"ready"}}"#;
+            // Deliberately fragment the first frame and coalesce the second.
+            stream.write_all(&first[..12]).await.unwrap();
+            tokio::task::yield_now().await;
+            stream.write_all(&first[12..]).await.unwrap();
+            stream.write_all(&[0x03]).await.unwrap();
+            stream.write_all(second).await.unwrap();
             stream.write_all(&[0x03]).await.unwrap();
         });
 
@@ -484,6 +491,12 @@ mod tests {
         let ClientMessage::Text(text) = message else { panic!("expected Klippy JSON response"); };
         let value: Value = serde_json::from_str(&text).unwrap();
         assert_eq!(value, json!({"id": 41, "result": {"state": "ready"}}));
+
+        let notification = tokio::time::timeout(std::time::Duration::from_secs(1), websocket.next())
+            .await.unwrap().unwrap().unwrap();
+        let ClientMessage::Text(text) = notification else { panic!("expected host notification"); };
+        let value: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["method"], "notify_status_update");
 
         websocket.close(None).await.unwrap();
         task.abort();
