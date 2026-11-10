@@ -11,6 +11,28 @@ struct PendingAck { required_send_seq: Option<u64>, send_order: u64, sender: Sen
 #[derive(Debug, Default)]
 pub struct AckTracker { next_id: u64, next_send_order: u64, pending: BTreeMap<u64, PendingAck> }
 impl AckTracker {
+    /// Allocate a monotonically increasing command-order key. If the counter
+    /// reaches its limit, compact the still-pending sent notifications first
+    /// so wraparound cannot reorder ACK delivery.
+    fn allocate_send_order(&mut self) -> u64 {
+        if self.next_send_order == u64::MAX {
+            let mut ordered: Vec<(u64, u64)> = self.pending.iter()
+                .filter_map(|(id, pending)| pending.required_send_seq
+                    .map(|_| (pending.send_order, *id)))
+                .collect();
+            ordered.sort_unstable();
+            for (order, (_, id)) in ordered.iter().enumerate() {
+                if let Some(pending) = self.pending.get_mut(id) {
+                    pending.send_order = order as u64;
+                }
+            }
+            self.next_send_order = ordered.len() as u64;
+        }
+        let order = self.next_send_order;
+        self.next_send_order += 1;
+        order
+    }
+
     pub fn new() -> Self { Self::default() }
     pub fn register(&mut self, required_send_seq: u64) -> (u64, Receiver<AckEvent>) {
         loop {
@@ -19,8 +41,7 @@ impl AckTracker {
         }
         let id = self.next_id;
         let (tx, rx) = mpsc::channel();
-        let send_order = self.next_send_order;
-        self.next_send_order = self.next_send_order.wrapping_add(1);
+        let send_order = self.allocate_send_order();
         self.pending.insert(id, PendingAck { required_send_seq: Some(required_send_seq), send_order, sender: tx });
         (id, rx)
     }
@@ -39,8 +60,7 @@ impl AckTracker {
         let Some(pending) = self.pending.get_mut(&id) else { return false; };
         if pending.required_send_seq.is_some() { return false; }
         pending.required_send_seq = Some(required_send_seq);
-        pending.send_order = self.next_send_order;
-        self.next_send_order = self.next_send_order.wrapping_add(1);
+        pending.send_order = self.allocate_send_order();
         true
     }
 
@@ -129,6 +149,22 @@ mod tests {
         assert_eq!(completed.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![900, 2]);
         assert_eq!(earlier_id.recv().unwrap().sent_time, 99.0);
         assert_eq!(later_id.recv().unwrap().sent_time, 99.0);
+    }
+
+    #[test]
+    fn send_order_counter_wrap_compacts_pending_notifications_without_reordering() {
+        let mut tracker = AckTracker::new();
+        let later = tracker.register_notify(2).unwrap();
+        let earlier = tracker.register_notify(900).unwrap();
+
+        tracker.next_send_order = u64::MAX;
+        assert!(tracker.mark_sent(900, 10, 1.0));
+        assert!(tracker.mark_sent(2, 11, 1.1));
+
+        let completed = tracker.acknowledge_events(12, false, 99.0, 2.0);
+        assert_eq!(completed.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![900, 2]);
+        assert!(earlier.recv().is_ok());
+        assert!(later.recv().is_ok());
     }
 
     #[test]
