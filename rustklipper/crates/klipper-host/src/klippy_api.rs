@@ -189,11 +189,6 @@ impl KlippyApiDispatcher {
         self.gcode_output.subscribe()
     }
 
-    fn publish_gcode_output(&self, response: String) {
-        // No listeners is a normal condition before a client subscribes.
-        let _ = self.gcode_output.send(response);
-    }
-
     /// Register Klippy's `objects/list` endpoint from the printer object registry.
     ///
     /// Only objects currently registered by loaded host components are exposed.
@@ -1013,28 +1008,16 @@ mod async_stream_tests {
         })).unwrap();
         client.write_all(&script).await.unwrap();
 
-        let mut received = Vec::new();
-        while received.len() < 2 {
+        let mut messages = Vec::new();
+        while !messages.iter().any(|message| {
+            message["method"] == "process_gcode_response"
+        }) || !messages.iter().any(|message| message["id"] == 2) {
             let mut chunk = [0u8; 256];
             let count = client.read(&mut chunk).await.unwrap();
-            received.extend_from_slice(&chunk[..count]);
-            let messages = decoder.push(&chunk[..count]).unwrap();
-            for message in messages {
-                if message["method"] == "process_gcode_response"
-                    || message["id"] == 2
-                {
-                    // Keep only the decoded messages below; this branch
-                    // intentionally drains the codec incrementally.
-                }
-            }
-            if let Ok(messages) = decoder.push(&[]) {
-                if !messages.is_empty() { break; }
-            }
-            if received.len() > 1024 { break; }
+            assert_ne!(count, 0, "connection closed before script output arrived");
+            messages.extend(decoder.push(&chunk[..count]).unwrap());
         }
 
-        let mut final_decoder = KlippyApiCodec::default();
-        let messages = final_decoder.push(&received).unwrap();
         assert!(messages.contains(&json!({
             "method": "process_gcode_response",
             "params": { "response": "// temperature is 205" }
