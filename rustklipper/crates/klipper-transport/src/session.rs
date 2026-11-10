@@ -791,21 +791,37 @@ impl ReliableSerialSession {
                 reason: "no startup clock sample is currently expected".into(),
             }));
         }
-        let update = self.update_owned_clock_sync(&response, true)?;
-        if let Some(update) = update {
-            self.apply_clock_update(update, response.receive_time)?;
+        // A failed next-query enqueue must not consume this sample. Keep a
+        // snapshot of the regression state because processing the response
+        // mutates ClockSync before the next request is accepted by the queue.
+        let previous_clock_sync = self.clock_sync.clone();
+        let result = (|| {
+            let update = self.update_owned_clock_sync(&response, true)?;
+            if let Some(update) = update {
+                self.apply_clock_update(update, response.receive_time)?;
+            }
+
+            let remaining = self.clock_calibration_remaining - 1;
+            if remaining == 0 {
+                self.clock_calibration_remaining = 0;
+                self.startup_stage = McuStartupStage::ClockReady;
+                self.periodic_clock_queue_id.get_or_insert(queue_id);
+                self.next_periodic_clock_at = Some(response.receive_time);
+                return Ok(None);
+            }
+
+            let waiter = self.request_get_clock(queue_id)?;
+            self.clock_calibration_remaining = remaining;
+            self.startup_stage = McuStartupStage::CalibratingClock {
+                remaining_samples: remaining,
+            };
+            Ok(Some(waiter))
+        })();
+
+        if result.is_err() {
+            self.clock_sync = previous_clock_sync;
         }
-        self.clock_calibration_remaining -= 1;
-        if self.clock_calibration_remaining == 0 {
-            self.startup_stage = McuStartupStage::ClockReady;
-            self.periodic_clock_queue_id.get_or_insert(queue_id);
-            self.next_periodic_clock_at = Some(response.receive_time);
-            return Ok(None);
-        }
-        self.startup_stage = McuStartupStage::CalibratingClock {
-            remaining_samples: self.clock_calibration_remaining,
-        };
-        self.request_get_clock(queue_id).map(Some)
+        result
     }
 
     /// Current MCU clock synchronizer, available after uptime initialization.
