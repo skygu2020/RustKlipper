@@ -749,20 +749,22 @@ impl Printer {
         let result = (|| {
             let loaded = self.load_components(registry)?;
             self.validate_config()?;
-            if self.state() != PrinterState::Configuring {
+            let Some(identify_panics) =
+                self.send_event_while_configuring(PrinterEvent::McuIdentify)
+            else {
                 return Ok(loaded);
-            }
-            let identify_panics = self.send_event(PrinterEvent::McuIdentify);
+            };
             if identify_panics > 0 {
                 return Err(ComponentError::EventHandlerPanicked {
                     event: PrinterEventKind::McuIdentify,
                     count: identify_panics,
                 });
             }
-            if self.state() != PrinterState::Configuring {
+            let Some(connect_panics) =
+                self.send_event_while_configuring(PrinterEvent::Connect)
+            else {
                 return Ok(loaded);
-            }
-            let connect_panics = self.send_event(PrinterEvent::Connect);
+            };
             if connect_panics > 0 {
                 return Err(ComponentError::EventHandlerPanicked {
                     event: PrinterEventKind::Connect,
@@ -1153,17 +1155,50 @@ impl Printer {
     /// A panicking handler is isolated from the remaining handlers. The return
     /// value is the number of handlers that panicked.
     pub fn send_event(&self, event: PrinterEvent) -> usize {
-        let handlers = self
-            .event_handlers
+        let handlers = self.event_handlers_for(event.kind());
+        Self::dispatch_event_handlers(&event, handlers)
+    }
+
+    /// Atomically authorize a connection-stage event against the configuring
+    /// state, then invoke its callbacks without holding the lifecycle lock.
+    ///
+    /// Taking the handler snapshot while holding the lifecycle lock gives this
+    /// stage a clear ordering relative to shutdown/disconnect transitions:
+    /// either the stage is authorized first, or the transition prevents it.
+    /// Callbacks remain lock-free so they may themselves change printer state.
+    fn send_event_while_configuring(&self, event: PrinterEvent) -> Option<usize> {
+        let handlers = {
+            let _lifecycle_guard = self
+                .lifecycle_lock
+                .lock()
+                .expect("printer lifecycle lock poisoned");
+            if *self.state.read().expect("printer state lock poisoned")
+                != PrinterState::Configuring
+            {
+                return None;
+            }
+            self.event_handlers_for(event.kind())
+        };
+        Some(Self::dispatch_event_handlers(&event, handlers))
+    }
+
+    fn event_handlers_for(&self, kind: PrinterEventKind) -> Vec<Arc<dyn Fn(&PrinterEvent) + Send + Sync>> {
+        self.event_handlers
             .lock()
             .expect("printer event handler lock poisoned")
-            .get(&event.kind())
+            .get(&kind)
             .cloned()
-            .unwrap_or_default();
+            .unwrap_or_default()
+    }
+
+    fn dispatch_event_handlers(
+        event: &PrinterEvent,
+        handlers: Vec<Arc<dyn Fn(&PrinterEvent) + Send + Sync>>,
+    ) -> usize {
         handlers
             .into_iter()
             .filter(|handler| {
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(&event)))
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(event)))
                     .is_err()
             })
             .count()
@@ -2598,6 +2633,36 @@ mod tests {
             vec!["fan".to_owned()]
         );
         assert_eq!(printer.state(), PrinterState::Shutdown);
+        assert_eq!(connects.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn disconnect_during_identify_prevents_connect_event() {
+        let printer = Arc::new(Printer::new());
+        printer.install_config(ConfigDocument::parse("[fan]\\npin=PA0\\n").unwrap());
+        let disconnect_printer = printer.clone();
+        printer.register_event_handler(PrinterEventKind::McuIdentify, move |_| {
+            disconnect_printer.disconnect();
+        });
+        let connects = Arc::new(AtomicUsize::new(0));
+        let observed = connects.clone();
+        printer.register_event_handler(PrinterEventKind::Connect, move |_| {
+            observed.fetch_add(1, Ordering::SeqCst);
+        });
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register("fan", |printer, section| {
+                printer
+                    .register_object("fan", section.get("pin").unwrap().to_owned())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        assert_eq!(
+            printer.initialize_components(&registry).unwrap(),
+            vec!["fan".to_owned()]
+        );
+        assert_eq!(printer.state(), PrinterState::Disconnected);
         assert_eq!(connects.load(Ordering::SeqCst), 0);
     }
 
