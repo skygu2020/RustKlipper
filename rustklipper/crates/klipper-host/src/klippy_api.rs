@@ -1470,6 +1470,7 @@ mod async_stream_tests {
             serve_async_stream(&mut server, &server_dispatcher).await
         });
 
+        let mut decoder = KlippyApiCodec::default();
         client.write_all(&KlippyApiCodec::encode(&json!({
             "method": "objects/subscribe",
             "params": {
@@ -1477,11 +1478,31 @@ mod async_stream_tests {
             }
         })).unwrap()).await.unwrap();
 
+        // Notifications have no response. A following request/response pair
+        // acts as a synchronization barrier so the subscription is installed
+        // before the test publishes its status update.
+        client.write_all(&KlippyApiCodec::encode(&json!({
+            "id": 99,
+            "method": "info"
+        })).unwrap()).await.unwrap();
+
+        let mut barrier_received = false;
+        while !barrier_received {
+            let mut chunk = [0u8; 512];
+            let count = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                client.read(&mut chunk)
+            ).await.unwrap().unwrap();
+            assert_ne!(count, 0, "connection closed before subscription synchronization response");
+            barrier_received = decoder.push(&chunk[..count]).unwrap().into_iter().any(|message| {
+                message["id"] == json!(99) && message["result"]["state"] == json!("startup")
+            });
+        }
+
         printer.update_status_object("toolhead", json!({
             "position": [4.0, 5.0, 6.0]
         })).unwrap();
 
-        let mut decoder = KlippyApiCodec::default();
         let notification = loop {
             let mut chunk = [0u8; 512];
             let count = tokio::time::timeout(
