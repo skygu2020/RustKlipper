@@ -554,9 +554,8 @@ mod tests {
         dispatcher.reset();
 
         assert!(!dispatcher.is_ready());
-        // Reset removes user registrations, but the built-in M110 command
-        // remains part of a freshly initialized Klipper dispatcher.
-        assert_eq!(dispatcher.registered_commands(), vec!["M110".to_owned()]);
+        // Reset removes user registrations, but Klipper built-ins remain visible.
+        assert_eq!(dispatcher.registered_commands(), vec!["M110".to_owned(), "M112".to_owned()]);
         assert!(dispatcher.command_help().is_empty());
         let unknown = dispatcher.process_line("M999", true).unwrap();
         assert!(!unknown.handler_found);
@@ -594,6 +593,24 @@ mod tests {
 
         dispatcher.set_ready();
         assert!(dispatcher.registered_commands().contains(&"M110".to_owned()));
+    }
+
+    #[test]
+    fn m112_is_a_listed_builtin_and_is_recognized_before_and_after_ready() {
+        let mut dispatcher = GCodeDispatcher::new();
+        assert!(dispatcher.registered_commands().contains(&"M112".to_owned()));
+        assert!(dispatcher
+            .register_command("M112", true, None, |_| Ok(Vec::new()))
+            .is_err());
+
+        for ready in [false, true] {
+            if ready {
+                dispatcher.set_ready();
+            }
+            let outcome = dispatcher.process_line("M112", true).unwrap();
+            assert!(outcome.handler_found);
+            assert_eq!(outcome.events, vec![DispatchEvent::Ack(None)]);
+        }
     }
 
     #[test]
