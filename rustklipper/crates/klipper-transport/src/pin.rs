@@ -64,6 +64,18 @@ impl PinResolver {
     ) -> Result<(), PinResolverError> {
         let alias = alias.into();
         let mut pin = pin.into();
+        if alias.is_empty()
+            || alias.chars().any(char::is_whitespace)
+            || alias.chars().any(|c| matches!(c, '^' | '~' | '!' | ':'))
+        {
+            return Err(PinResolverError::InvalidAliasTarget(alias));
+        }
+        if pin.is_empty()
+            || pin.chars().any(|c| matches!(c, '^' | '~' | '!' | ':'))
+            || pin.chars().any(char::is_whitespace)
+        {
+            return Err(PinResolverError::InvalidAliasTarget(pin));
+        }
         if let Some(existing) = self.aliases.get(&alias) {
             if existing != &pin {
                 return Err(PinResolverError::AliasConflict {
@@ -71,13 +83,13 @@ impl PinResolver {
                 });
             }
         }
-        if pin.chars().any(|c| matches!(c, '^' | '~' | '!' | ':'))
-            || pin.chars().any(char::is_whitespace)
-        {
-            return Err(PinResolverError::InvalidAliasTarget(pin));
-        }
         if let Some(target) = self.aliases.get(&pin) {
             pin = target.clone();
+        }
+        // A target that resolves back to this alias would create a cycle.
+        // Reject it before changing either the alias map or its flattened peers.
+        if alias == pin {
+            return Err(PinResolverError::InvalidAliasTarget(pin));
         }
         self.aliases.insert(alias.clone(), pin.clone());
         for target in self.aliases.values_mut() {
@@ -224,6 +236,27 @@ mod tests {
             resolver.update_command("config_b pin=PA1").unwrap(),
             "config_b pin=PA1",
         );
+    }
+
+    #[test]
+    fn rejects_empty_aliases_and_alias_cycles_without_mutation() {
+        let mut resolver = PinResolver::new(true);
+        assert!(matches!(
+            resolver.alias_pin("", "PA1"),
+            Err(PinResolverError::InvalidAliasTarget(_))
+        ));
+        assert!(matches!(
+            resolver.alias_pin("LED", ""),
+            Err(PinResolverError::InvalidAliasTarget(_))
+        ));
+
+        resolver.alias_pin("LED", "STATUS").unwrap();
+        assert!(matches!(
+            resolver.alias_pin("STATUS", "LED"),
+            Err(PinResolverError::InvalidAliasTarget(_))
+        ));
+        assert_eq!(resolver.aliases().get("LED").map(String::as_str), Some("STATUS"));
+        assert!(!resolver.aliases().contains_key("STATUS"));
     }
 
     #[test]
