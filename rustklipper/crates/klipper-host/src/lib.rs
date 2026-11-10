@@ -388,6 +388,8 @@ impl Drop for ObjectRegistrationTransaction<'_> {
 }
 
 pub struct Printer {
+    // Monotonic origin used for Klipper-compatible eventtime values.
+    start_time: std::time::Instant,
     // Serializes lifecycle transitions with G-code dispatcher snapshots.
     // Handlers are always invoked after this lock is released.
     lifecycle_lock: Mutex<()>,
@@ -420,6 +422,7 @@ impl Default for Printer {
 impl Printer {
     pub fn new() -> Self {
         Self {
+            start_time: std::time::Instant::now(),
             lifecycle_lock: Mutex::new(()),
             state: RwLock::new(PrinterState::Startup),
             state_message: RwLock::new("Printer is not ready".to_owned()),
@@ -452,6 +455,12 @@ impl Printer {
         self.object_registration_transactions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Seconds elapsed since this printer instance was created, using a
+    /// monotonic clock suitable for Klipper status timestamps.
+    pub fn eventtime(&self) -> f64 {
+        self.start_time.elapsed().as_secs_f64()
     }
 
     pub fn state(&self) -> PrinterState {
