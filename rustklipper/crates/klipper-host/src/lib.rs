@@ -4010,7 +4010,7 @@ mod tests {
         printer.register_event_handler(PrinterEventKind::McuIdentify, move |_| {
             observed.fetch_add(1, Ordering::SeqCst);
         });
-        printer.install_config(ConfigDocument::parse("[fan]\\npin=PA0\\n").unwrap());
+        printer.install_config(ConfigDocument::parse("[fan]\npin=PA0\n").unwrap());
         let mut registry = ComponentRegistry::new();
         registry
             .register("fan", |printer, section| {
