@@ -282,20 +282,30 @@ impl UartTiming {
     /// Reset the estimated output deadline after the transport discards its
     /// pending driver bytes (for example before Klipper's sync-prefixed retry).
     pub fn reset_idle(&mut self, now: f64) {
-        self.idle_until = now;
+        if now.is_finite() {
+            self.idle_until = now;
+        }
     }
 
     /// Extend the estimated idle deadline when the OS reports queued bytes.
     /// This takes the maximum with the existing reservation so bytes already
     /// represented by our own frame reservations are not counted twice.
+    /// Invalid host timestamps are ignored rather than poisoning future timing.
     pub fn observe_pending(&mut self, now: f64, pending_bytes: usize) {
+        if !now.is_finite() {
+            return;
+        }
         self.idle_until = self.idle_until.max(
             saturating_host_time_add(now, self.seconds_for_bytes(pending_bytes)),
         );
     }
 
     /// Reserve UART time including bytes already pending in the host driver.
+    /// An invalid timestamp leaves the existing reservation unchanged.
     pub fn reserve_transmission(&mut self, now: f64, pending_bytes: usize, frame_bytes: usize) -> f64 {
+        if !now.is_finite() {
+            return self.idle_until;
+        }
         let pending_until = saturating_host_time_add(now, self.seconds_for_bytes(pending_bytes));
         let start = now.max(self.idle_until).max(pending_until);
         self.idle_until = saturating_host_time_add(start, self.seconds_for_bytes(frame_bytes));
@@ -338,6 +348,26 @@ mod tests {
         let deadline = uart.reserve_transmission(near_limit, usize::MAX, usize::MAX);
         assert_eq!(deadline, f64::MAX);
         assert!(uart.idle_until().is_finite());
+    }
+
+    #[test]
+    fn invalid_uart_timestamps_do_not_corrupt_reservations() {
+        let mut uart = UartTiming::new(115_200).unwrap();
+        uart.reserve_transmission(2.0, 0, 100);
+        let reserved = uart.idle_until();
+
+        uart.reset_idle(f64::NAN);
+        assert_eq!(uart.idle_until(), reserved);
+        uart.reset_idle(f64::INFINITY);
+        assert_eq!(uart.idle_until(), reserved);
+
+        uart.observe_pending(f64::NAN, 1000);
+        uart.observe_pending(f64::NEG_INFINITY, 1000);
+        assert_eq!(uart.idle_until(), reserved);
+
+        assert_eq!(uart.reserve_transmission(f64::NAN, 1000, 1000), reserved);
+        assert_eq!(uart.reserve_transmission(f64::INFINITY, 1000, 1000), reserved);
+        assert_eq!(uart.idle_until(), reserved);
     }
 
     #[test]
