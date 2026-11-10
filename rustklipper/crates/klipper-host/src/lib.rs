@@ -154,7 +154,7 @@ pub enum PrinterEventKind {
     RestartRequested,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum PrinterEvent {
     ConfigLoaded,
     McuIdentify,
@@ -162,7 +162,7 @@ pub enum PrinterEvent {
     Ready,
     Shutdown { reason: String },
     Disconnect,
-    RestartRequested { result: String },
+    RestartRequested { result: String, last_move_time: f64 },
 }
 
 /// Motion-queue operations required before a ready printer can restart.
@@ -170,6 +170,8 @@ pub enum PrinterEvent {
 /// Implementations are supplied by the host-side toolhead/motion subsystem.
 /// The host does not emulate motion when no implementation is registered.
 pub trait RestartMotion: Send + Sync {
+    /// Return the toolhead's current last-move timestamp in Klipper print-time seconds.
+    fn last_move_time(&self) -> f64;
     /// Queue a dwell before waiting for outstanding motion to complete.
     fn dwell(&self, duration: std::time::Duration);
     /// Block until all queued moves have completed.
@@ -1202,10 +1204,14 @@ impl Printer {
         };
 
         if was_ready {
-            self.send_event(PrinterEvent::RestartRequested { result: result.clone() });
             let motion = self.restart_motion.read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
+            let last_move_time = motion.as_ref().map_or(0.0, |motion| motion.last_move_time());
+            self.send_event(PrinterEvent::RestartRequested {
+                result: result.clone(),
+                last_move_time,
+            });
             if let Some(motion) = motion {
                 motion.dwell(std::time::Duration::from_millis(500));
                 motion.wait_moves();
@@ -5402,7 +5408,7 @@ mod tests {
         let observed = Arc::new(Mutex::new(Vec::new()));
         let event_results = observed.clone();
         printer.register_event_handler(PrinterEventKind::RestartRequested, move |event| {
-            if let PrinterEvent::RestartRequested { result } = event {
+            if let PrinterEvent::RestartRequested { result, .. } = event {
                 event_results.lock().unwrap().push(result.clone());
             }
         });
@@ -5476,6 +5482,8 @@ mod tests {
         }
 
         impl RestartMotion for RecordingMotion {
+            fn last_move_time(&self) -> f64 { 12.5 }
+
             fn dwell(&self, duration: std::time::Duration) {
                 self.steps.lock().unwrap().push(format!("dwell:{}", duration.as_millis()));
             }
@@ -5489,8 +5497,10 @@ mod tests {
         printer.set_ready();
         let steps = Arc::new(Mutex::new(Vec::new()));
         let observed = steps.clone();
-        printer.register_event_handler(PrinterEventKind::RestartRequested, move |_| {
-            observed.lock().unwrap().push("restart_event".to_owned());
+        printer.register_event_handler(PrinterEventKind::RestartRequested, move |event| {
+            if let PrinterEvent::RestartRequested { last_move_time, .. } = event {
+                observed.lock().unwrap().push(format!("restart_event:{last_move_time}"));
+            }
         });
         printer.set_restart_motion(Arc::new(RecordingMotion { steps: steps.clone() }));
 
@@ -5499,7 +5509,7 @@ mod tests {
         assert_eq!(
             *steps.lock().unwrap(),
             vec![
-                "restart_event".to_owned(),
+                "restart_event:12.5".to_owned(),
                 "dwell:500".to_owned(),
                 "wait_moves".to_owned(),
             ]
@@ -5515,7 +5525,7 @@ mod tests {
         let events = Arc::new(Mutex::new(Vec::new()));
         let observed = events.clone();
         printer.register_event_handler(PrinterEventKind::RestartRequested, move |event| {
-            if let PrinterEvent::RestartRequested { result } = event {
+            if let PrinterEvent::RestartRequested { result, .. } = event {
                 observed.lock().unwrap().push(result.clone());
             }
         });
