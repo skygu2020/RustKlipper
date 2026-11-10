@@ -262,8 +262,7 @@ impl McuRegistry {
                     let mut guard = poisoned.into_inner();
                     guard.mark_disconnected();
                     drop(guard);
-                    let mut state = self.state.lock().expect("MCU registry lock poisoned");
-                    remove_session_if_same(&mut state.sessions, &name, &session_handle);
+                    terminal_sessions.push((name.clone(), session_handle));
                     batch.errors.push(McuPollError {
                         mcu: name,
                         message: "MCU session lock poisoned after a panic".to_owned(),
@@ -299,8 +298,7 @@ impl McuRegistry {
                     // this MCU and require a fresh serial session.
                     session.mark_disconnected();
                     drop(session);
-                    let mut state = self.state.lock().expect("MCU registry lock poisoned");
-                    remove_session_if_same(&mut state.sessions, &name, &session_handle);
+                    terminal_sessions.push((name.clone(), session_handle));
                     batch.errors.push(McuPollError {
                         mcu: name,
                         message: "MCU session poll panicked".to_owned(),
@@ -313,7 +311,7 @@ impl McuRegistry {
         // A clear/disconnect invalidates the whole printer lifecycle. A
         // single-session removal, however, only filters that handle: events
         // and errors from unrelated MCUs remain valid for this poll cycle.
-        let state = self.state.lock().expect("MCU registry lock poisoned");
+        let mut state = self.state.lock().expect("MCU registry lock poisoned");
         if !poll_generation_is_current(generation, state.generation) {
             return McuPollBatch::default();
         }
