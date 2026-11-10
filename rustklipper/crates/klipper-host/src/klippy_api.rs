@@ -235,6 +235,7 @@ impl KlippyApiDispatcher {
         *self.status_printer.write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(printer.clone());
         self.register("objects/subscribe", move |params| {
+            object_status_response_template(&params)?;
             query_printer_status(&printer, &params)
         })
     }
@@ -429,6 +430,18 @@ impl KlippyApiDispatcher {
             Ok(result) => serde_json::json!({"id": id, "result": result}),
             Err(error) => rpc_error_response(id, error),
         })
+    }
+}
+
+fn object_status_response_template(
+    params: &Value,
+) -> Result<Map<String, Value>, KlippyApiRpcError> {
+    match params.get("response_template") {
+        None => Ok(Map::new()),
+        Some(Value::Object(template)) => Ok(template.clone()),
+        Some(_) => Err(KlippyApiRpcError::invalid_request(
+            "objects/subscribe response_template must be an object"
+        )),
     }
 }
 
@@ -1052,6 +1065,7 @@ where
     // Subscribe before handling requests to avoid a gap after the initial snapshot.
     let mut status_updates = printer.as_ref().map(|printer| printer.subscribe_status_updates());
     let mut object_subscription: Option<Map<String, Value>> = None;
+    let mut object_subscription_template: Option<Map<String, Value>> = None;
 
     loop {
         tokio::select! {
@@ -1090,8 +1104,12 @@ where
                                 output_template = Some(template);
                             }
                             if let (Some(params), Some(_)) = (object_subscription_request, status_updates.as_ref()) {
-                                if let Some(objects) = params.get("objects").and_then(Value::as_object) {
+                                if let (Ok(template), Some(objects)) = (
+                                    object_status_response_template(&params),
+                                    params.get("objects").and_then(Value::as_object),
+                                ) {
                                     object_subscription = Some(objects.clone());
+                                    object_subscription_template = Some(template);
                                 }
                             }
                         }
@@ -1108,8 +1126,12 @@ where
                             (object_subscription_request, printer.as_ref())
                         {
                             if query_printer_status(printer, &params).is_ok() {
-                                if let Some(objects) = params.get("objects").and_then(Value::as_object) {
+                                if let (Ok(template), Some(objects)) = (
+                                    object_status_response_template(&params),
+                                    params.get("objects").and_then(Value::as_object),
+                                ) {
                                     object_subscription = Some(objects.clone());
+                                    object_subscription_template = Some(template);
                                 }
                             }
                         }
@@ -1134,7 +1156,10 @@ where
                                         "eventtime": snapshot["eventtime"],
                                         "status": snapshot["status"]
                                     });
-                                    let encoded = KlippyApiCodec::encode_notification("notify_status_update", params)?;
+                                    let mut notification = object_subscription_template.clone()
+                                        .expect("object response template is present while subscribed");
+                                    notification.insert("params".to_owned(), params);
+                                    let encoded = KlippyApiCodec::encode(&Value::Object(notification))?;
                                     writer.write_all(&encoded).await?;
                                     writer.flush().await?;
                                 }
@@ -1147,7 +1172,10 @@ where
                                 ("objects".to_owned(), Value::Object(subscription.clone()))
                             ]));
                             if let Ok(snapshot) = query_printer_status(printer, &requested) {
-                                let encoded = KlippyApiCodec::encode_notification("notify_status_update", snapshot)?;
+                                let mut notification = object_subscription_template.clone()
+                                    .expect("object response template is present while subscribed");
+                                notification.insert("params".to_owned(), snapshot);
+                                let encoded = KlippyApiCodec::encode(&Value::Object(notification))?;
                                 writer.write_all(&encoded).await?;
                                 writer.flush().await?;
                             }
@@ -1372,7 +1400,8 @@ mod async_stream_tests {
             "id": 10,
             "method": "objects/subscribe",
             "params": {
-                "objects": { "toolhead": ["position"] }
+                "objects": { "toolhead": ["position"] },
+                "response_template": { "method": "notify_status_update", "source": "printer" }
             }
         })).unwrap();
         client.write_all(&subscribe).await.unwrap();
@@ -1441,7 +1470,10 @@ mod async_stream_tests {
 
         client.write_all(&KlippyApiCodec::encode(&json!({
             "method": "objects/subscribe",
-            "params": { "objects": { "toolhead": ["position"] } }
+            "params": {
+                "objects": { "toolhead": ["position"] },
+                "response_template": { "method": "notify_status_update" }
+            }
         })).unwrap()).await.unwrap();
 
         printer.update_status_object("toolhead", json!({
