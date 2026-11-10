@@ -841,6 +841,24 @@ mod tests {
     }
 
     #[test]
+    fn stale_wire_sequence_does_not_advance_receive_window_or_look_future() {
+        let mut scheduler = CommandScheduler::new();
+        let first = Frame { sequence: 4, payload: vec![0x55] };
+        scheduler.handle_received_frame(&first, 0.01).unwrap();
+
+        // A response carrying the preceding cumulative ACK sequence is still
+        // a valid data frame. It must not be expanded into sequence 19 and
+        // rejected as an ACK beyond the host's send window.
+        let stale = Frame { sequence: 3, payload: vec![0x66] };
+        let received = scheduler.handle_received_frame(&stale, 0.02).unwrap();
+
+        assert_eq!(received.receive_sequence, 3);
+        assert!(received.has_payload);
+        assert_eq!(scheduler.receive_sequence(), 4);
+        assert_eq!(scheduler.send_sequence(), 4);
+    }
+
+    #[test]
     fn only_empty_ack_advances_last_ack_sequence_for_window_accounting() {
         let mut s = CommandScheduler::new();
         s.enqueue(1, ScheduledCommand::new(vec![0x41], 0, 1)).unwrap();
