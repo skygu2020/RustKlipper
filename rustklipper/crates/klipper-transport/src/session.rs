@@ -1829,6 +1829,35 @@ mod exhausted_transaction_tests {
         assert!(pending.is_empty());
     }
 
+
+    #[test]
+    fn response_with_missing_or_different_oid_does_not_consume_sent_request() {
+        let mut pending = VecDeque::from([
+            PendingResponseSend {
+                transaction_id: 41,
+                name: "status".into(),
+                oid: Some(3),
+            },
+            PendingResponseSend {
+                transaction_id: 42,
+                name: "status".into(),
+                oid: None,
+            },
+        ]);
+
+        assert!(take_matching_response_send(&mut pending, "status", None).is_some_and(
+            |entry| entry.transaction_id == 42
+        ));
+        assert!(take_matching_response_send(&mut pending, "status", Some(4)).is_none());
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending.front().unwrap().transaction_id, 41);
+
+        assert!(take_matching_response_send(&mut pending, "status", Some(3)).is_some_and(
+            |entry| entry.transaction_id == 41
+        ));
+        assert!(pending.is_empty());
+    }
+
     #[test]
     fn same_frame_response_completion_suppresses_retry_exhausted_event() {
         let router = ResponseRouter::new();
