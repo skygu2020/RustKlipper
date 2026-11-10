@@ -287,7 +287,13 @@ impl KlippyApiDispatcher {
                 .ok_or_else(|| KlippyApiRpcError::invalid_request(
                     "gcode/script requires a string script parameter"
                 ))?;
-            for outcome in printer.process_gcode_script(script) {
+            // Dispatch one line at a time so the first command error stops
+            // the script immediately. Processing the whole script up front
+            // would execute later commands before the RPC layer sees an error.
+            for line in script.split('\\n') {
+                let Some(outcome) = printer.process_gcode_line(line, false) else {
+                    continue;
+                };
                 for event in &outcome.events {
                     let response = match event {
                         DispatchEvent::Raw(message) => Some(message.clone()),
@@ -721,6 +727,36 @@ mod tests {
 
         assert_eq!(response, json!({ "id": 21, "result": {} }));
         assert_eq!(*calls.lock().unwrap(), vec!["FIRST", "SECOND"]);
+    }
+
+    #[test]
+    fn gcode_script_endpoint_stops_after_the_first_command_error() {
+        let printer = std::sync::Arc::new(crate::Printer::new());
+        printer.set_ready();
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        printer.register_gcode_command("FAIL", false, None, |_| {
+            Err(klipper_gcode::GCodeError::MalformedCommand {
+                line: "FAIL".to_owned(),
+            })
+        }).unwrap();
+
+        let observed = calls.clone();
+        printer.register_gcode_command("AFTER", false, None, move |_| {
+            observed.lock().unwrap().push("AFTER".to_owned());
+            Ok(Vec::new())
+        }).unwrap();
+
+        let dispatcher = KlippyApiDispatcher::new();
+        dispatcher.register_gcode_script(printer).unwrap();
+        let response = dispatcher.dispatch_value(json!({
+            "id": 23,
+            "method": "gcode/script",
+            "params": { "script": "FAIL\\nAFTER" }
+        })).unwrap();
+
+        assert_eq!(response["error"]["code"], json!(-32000));
+        assert_eq!(*calls.lock().unwrap(), Vec::<String>::new());
     }
 
     #[test]
