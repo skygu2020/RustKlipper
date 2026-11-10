@@ -477,9 +477,14 @@ impl ReliableSerialSession {
     }
 
     /// Install the MCU-provided dictionary after identify has completed.
+    ///
+    /// Installing or replacing the dictionary must not move an already
+    /// progressing session back to an earlier startup phase.
     pub fn set_dictionary(&mut self, dictionary: IdentifyDictionary) {
         self.dictionary = Some(dictionary);
-        self.startup_stage = McuStartupStage::Identified;
+        if self.startup_stage == McuStartupStage::AwaitingIdentify {
+            self.startup_stage = McuStartupStage::Identified;
+        }
     }
 
     pub fn has_dictionary(&self) -> bool { self.dictionary.is_some() }
@@ -1869,6 +1874,43 @@ mod receive_timestamp_tests {
     #[test]
     fn receive_timestamp_never_precedes_session_start() {
         assert_eq!(adjusted_receive_time(0.001, 0.001, 10), 0.0);
+    }
+}
+
+#[cfg(test)]
+mod dictionary_install_stage_tests {
+    use super::McuStartupStage;
+
+    fn stage_after_dictionary_install(stage: McuStartupStage) -> McuStartupStage {
+        if stage == McuStartupStage::AwaitingIdentify {
+            McuStartupStage::Identified
+        } else {
+            stage
+        }
+    }
+
+    #[test]
+    fn first_dictionary_install_advances_identify_stage() {
+        assert_eq!(
+            stage_after_dictionary_install(McuStartupStage::AwaitingIdentify),
+            McuStartupStage::Identified
+        );
+    }
+
+    #[test]
+    fn dictionary_replacement_preserves_later_startup_stages() {
+        let stages = [
+            McuStartupStage::Identified,
+            McuStartupStage::AwaitingUptime,
+            McuStartupStage::CalibratingClock { remaining_samples: 4 },
+            McuStartupStage::ClockReady,
+            McuStartupStage::Configuring,
+            McuStartupStage::Ready,
+        ];
+
+        for stage in stages {
+            assert_eq!(stage_after_dictionary_install(stage), stage);
+        }
     }
 }
 
