@@ -1788,7 +1788,7 @@ impl Printer {
         let mut errors = Vec::new();
         for event in events {
             if !matches!(
-                event.event,
+                &event.event,
                 klipper_transport::SessionEvent::IdentifyProgress {
                     progress: klipper_transport::IdentifyProgress::Complete { .. }
                 }
