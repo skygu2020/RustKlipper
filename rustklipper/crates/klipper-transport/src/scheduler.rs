@@ -429,7 +429,7 @@ mod tests {
         assert_eq!(snapshot.send_sequence(), 2);
         assert_eq!(snapshot.retransmit_state().outstanding_len(), 1);
 
-        snapshot.acknowledge(2, 2.0).unwrap();
+        snapshot.acknowledge_at(2, frame.bytes.len(), 2.0).unwrap();
         assert_eq!(snapshot.retransmit_state().outstanding_len(), 0);
         assert_eq!(scheduler.retransmit_state().outstanding_len(), 0);
     }
