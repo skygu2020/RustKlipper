@@ -1155,11 +1155,19 @@ where
                                     object_status_response_template(&params),
                                     params.get("objects").and_then(Value::as_object),
                                 ) {
-                                    object_subscription = Some(objects.clone());
-                                    object_subscription_template = Some(template);
-                                    object_subscription_cache = status_cache_from_snapshot(
-                                        response.get("result").unwrap_or(&Value::Null)
-                                    );
+                                    if objects.is_empty() {
+                                        // An empty objects map cancels this connection's
+                                        // previous subscription.
+                                        object_subscription = None;
+                                        object_subscription_template = None;
+                                        object_subscription_cache.clear();
+                                    } else {
+                                        object_subscription = Some(objects.clone());
+                                        object_subscription_template = Some(template);
+                                        object_subscription_cache = status_cache_from_snapshot(
+                                            response.get("result").unwrap_or(&Value::Null)
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -1180,9 +1188,15 @@ where
                                     object_status_response_template(&params),
                                     params.get("objects").and_then(Value::as_object),
                                 ) {
-                                    object_subscription = Some(objects.clone());
-                                    object_subscription_template = Some(template);
-                                    object_subscription_cache = status_cache_from_snapshot(&snapshot);
+                                    if objects.is_empty() {
+                                        object_subscription = None;
+                                        object_subscription_template = None;
+                                        object_subscription_cache.clear();
+                                    } else {
+                                        object_subscription = Some(objects.clone());
+                                        object_subscription_template = Some(template);
+                                        object_subscription_cache = status_cache_from_snapshot(&snapshot);
+                                    }
                                 }
                             }
                         }
@@ -1624,6 +1638,73 @@ mod async_stream_tests {
             notification["params"]["status"]["toolhead"]["position"],
             json!([4.0, 5.0, 6.0])
         );
+
+        client.shutdown().await.unwrap();
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn empty_objects_subscription_cancels_previous_subscription() {
+        let dispatcher = std::sync::Arc::new(KlippyApiDispatcher::new());
+        let printer = std::sync::Arc::new(crate::Printer::new());
+        printer.register_status_object("toolhead", json!({
+            "position": [0.0, 0.0, 0.0]
+        })).unwrap();
+        dispatcher.register_standard_endpoints(printer.clone(), "test").unwrap();
+
+        let (mut client, mut server) = tokio::io::duplex(4096);
+        let server_dispatcher = dispatcher.clone();
+        let server_task = tokio::spawn(async move {
+            serve_async_stream(&mut server, &server_dispatcher).await
+        });
+        let mut decoder = KlippyApiCodec::default();
+
+        let subscribe = KlippyApiCodec::encode(&json!({
+            "id": 1,
+            "method": "objects/subscribe",
+            "params": { "objects": { "toolhead": ["position"] } }
+        })).unwrap();
+        client.write_all(&subscribe).await.unwrap();
+        let mut received_initial = false;
+        while !received_initial {
+            let mut chunk = [0u8; 512];
+            let count = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                client.read(&mut chunk)
+            ).await.unwrap().unwrap();
+            assert_ne!(count, 0);
+            received_initial = decoder.push(&chunk[..count]).unwrap().into_iter().any(|message| {
+                message["id"] == 1
+            });
+        }
+
+        let unsubscribe = KlippyApiCodec::encode(&json!({
+            "id": 2,
+            "method": "objects/subscribe",
+            "params": { "objects": {} }
+        })).unwrap();
+        client.write_all(&unsubscribe).await.unwrap();
+        let mut received_unsubscribe = false;
+        while !received_unsubscribe {
+            let mut chunk = [0u8; 512];
+            let count = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                client.read(&mut chunk)
+            ).await.unwrap().unwrap();
+            assert_ne!(count, 0);
+            received_unsubscribe = decoder.push(&chunk[..count]).unwrap().into_iter().any(|message| {
+                message["id"] == 2 && message["result"]["status"].as_object().is_some_and(|status| status.is_empty())
+            });
+        }
+
+        printer.update_status_object("toolhead", json!({
+            "position": [9.0, 8.0, 7.0]
+        })).unwrap();
+        let mut chunk = [0u8; 512];
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            client.read(&mut chunk)
+        ).await.is_err(), "status notification was sent after the subscription was cancelled");
 
         client.shutdown().await.unwrap();
         server_task.abort();
