@@ -177,7 +177,11 @@ async fn serve_websocket(
                     break;
                 }
 
-                if let Some(output) = router.handle_json(&text) {
+                let output = match manager.handle_control_message(&text, &connection) {
+                    Some(output) => output,
+                    None => router.handle_json(&text),
+                };
+                if let Some(output) = output {
                     websocket.send(Message::Text(output.into())).await?;
                 }
             }
@@ -321,6 +325,38 @@ mod tests {
         task.abort();
     }
 
+    #[tokio::test]
+    async fn websocket_exposes_id_and_identification_methods() {
+        let mut router = JsonRpcRouter::new();
+        router.register("printer.test_echo", |params| Ok(params)).unwrap();
+        let manager = WebSocketManager::new();
+        let server = MoonrakerHttpServer::bind_with_websocket_manager(
+            "127.0.0.1:0".parse().unwrap(), Arc::new(router), Arc::clone(&manager),
+        ).await.unwrap();
+        let address = server.local_addr().unwrap();
+        let task = tokio::spawn(server.run());
+        let (mut websocket, _) = connect_async(format!("ws://{address}/websocket")).await.unwrap();
+        websocket.send(ClientMessage::Text(
+            r#"{"jsonrpc":"2.0","method":"server.websocket.id","id":1}"#.into(),
+        )).await.unwrap();
+        let message = websocket.next().await.unwrap().unwrap();
+        let ClientMessage::Text(text) = message else { panic!("expected id response"); };
+        let value: Value = serde_json::from_str(&text).unwrap();
+        let connection_id = value["result"]["websocket_id"].as_u64().unwrap();
+        websocket.send(ClientMessage::Text(
+            r#"{"jsonrpc":"2.0","method":"server.connection.identify","params":{"client_name":"fluidd","version":"1.0","type":"web","url":"http://localhost"},"id":2}"#.into(),
+        )).await.unwrap();
+        let message = websocket.next().await.unwrap().unwrap();
+        let ClientMessage::Text(text) = message else { panic!("expected identify response"); };
+        let value: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["result"]["connection_id"], connection_id);
+        let clients = manager.clients();
+        assert_eq!(clients.len(), 1);
+        assert_eq!(clients[0].name, "fluidd");
+        assert!(clients[0].identified);
+        websocket.close(None).await.unwrap();
+        task.abort();
+    }
     #[tokio::test]
     async fn websocket_receives_server_notifications() {
         let mut router = JsonRpcRouter::new();
