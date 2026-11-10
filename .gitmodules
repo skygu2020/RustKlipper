@@ -1,0 +1,3 @@
+[submodule "rustklipper/vendor/moonruster"]
+	path = rustklipper/vendor/moonruster
+	url = https://github.com/Rusti3D/moonruster.git
