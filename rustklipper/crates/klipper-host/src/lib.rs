@@ -2014,6 +2014,23 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     #[test]
+    fn managed_mcu_clock_startup_reports_missing_session() {
+        let printer = Printer::new();
+        assert!(matches!(
+            printer.start_managed_mcu_clock_calibration(" mcu ", 4, 5),
+            Err(McuRegistryError::SessionNotFound { name }) if name == "mcu"
+        ));
+        assert!(printer.mcu_clock_startups.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn host_iteration_reports_no_errors_without_pending_mcu_startups() {
+        let printer = Printer::new();
+        let batch = printer.run_host_once(std::time::Duration::ZERO);
+        assert!(batch.mcu_startup_errors.is_empty());
+    }
+
+    #[test]
     fn object_registration_transactions_recover_after_poisoning() {
         let printer = Printer::new();
         let poisoned = printer.object_registration_transactions.lock().unwrap();
