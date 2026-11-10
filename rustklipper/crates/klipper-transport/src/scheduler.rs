@@ -224,19 +224,19 @@ impl CommandScheduler {
     }
 
     fn build_frame_inner(&mut self) -> Result<Option<ScheduledFrame>, ScheduleError> {
-        if !self.can_send_frame() {
-            return Ok(None);
-        }
         let has_ready_commands = self.queues.values().any(|queue| !queue.ready.is_empty());
         if !has_ready_commands {
             return Ok(None);
         }
         // Extended send sequences must remain strictly increasing for ACK and
         // retransmission tracking. Never wrap back to zero and reuse old IDs.
-        // Check only when a frame can actually be emitted, leaving idle and
-        // flow-controlled schedulers usable at the sequence limit.
+        // Report exhaustion only when queued work actually needs a sequence;
+        // an idle scheduler remains usable at the sequence limit.
         if self.send_sequence == u64::MAX {
             return Err(ScheduleError::SequenceExhausted);
+        }
+        if !self.can_send_frame() {
+            return Ok(None);
         }
         let mut payload = Vec::with_capacity(MESSAGE_PAYLOAD_MAX);
         let mut notify_ids = Vec::new();
