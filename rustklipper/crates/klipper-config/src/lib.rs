@@ -109,6 +109,9 @@ impl ConfigDocument {
                 continue;
             }
             if trimmed.starts_with(';') {
+                if last_option.is_some() {
+                    pending_blank_lines += 1;
+                }
                 continue;
             }
 
@@ -153,8 +156,8 @@ impl ConfigDocument {
                         let value = &mut document.sections[section_index].options[option_index].value;
                         if !value.is_empty() {
                             value.push('\n');
-                            value.extend(std::iter::repeat_n('\n', pending_blank_lines));
                         }
+                        value.extend(std::iter::repeat_n('\n', pending_blank_lines));
                         value.push_str(continuation);
                     }
                     pending_blank_lines = 0;
@@ -1428,6 +1431,10 @@ mod tests {
             "[gcode_macro TEST]\n  gcode:\n    G28\n\n    M400\n\n",
         ).unwrap();
         assert_eq!(config.get("gcode_macro TEST", "gcode"), Some("G28\n\nM400"));
+
+        let empty_value =
+            ConfigDocument::parse("[gcode_macro TEST]\n  gcode:\n\n    G28\n").unwrap();
+        assert_eq!(empty_value.get("gcode_macro TEST", "gcode"), Some("\nG28"));
     }
 
     #[test]
