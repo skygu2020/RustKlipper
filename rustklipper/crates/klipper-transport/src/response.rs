@@ -1,6 +1,6 @@
 //! Name/oid based routing for decoded MCU responses.
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use serde_json::Value;
 
@@ -36,11 +36,18 @@ pub struct ResponseWaiter {
 pub enum WaitError { Timeout, Disconnected }
 
 impl ResponseRouter {
+    // Router operations preserve their invariants across ordinary panics while
+    // holding the mutex. Recovering the inner state keeps unrelated waiters
+    // usable; ResponseWaiter::drop uses the same policy during unwinding.
+    fn lock_state(&self) -> MutexGuard<'_, RouterState> {
+        self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     pub fn new() -> Self { Self::default() }
     pub fn register(&self, name: impl Into<String>, oid: Option<u32>) -> ResponseWaiter {
         let key = ResponseKey { name: name.into(), oid };
         let (tx, rx) = mpsc::channel();
-        let mut state = self.state.lock().expect("response router poisoned");
+        let mut state = self.lock_state();
         // Waiter IDs are global across response keys. Skip zero and any
         // still-live ID after wraparound so an old waiter cannot alias a new one.
         loop {
@@ -61,7 +68,7 @@ impl ResponseRouter {
     /// Claimed waiters are reserved for the request transaction that owns them.
     pub fn dispatch(&self, response: Response) -> bool {
         let key = ResponseKey { name: response.name.clone(), oid: response.oid };
-        let mut state = self.state.lock().expect("response router poisoned");
+        let mut state = self.lock_state();
         let Some(queue) = state.pending.get_mut(&key) else { return false; };
         // A waiter may have timed out or been dropped. Skip disconnected
         // unclaimed receivers without allowing one stale waiter to block later FIFO waiters.
@@ -84,7 +91,7 @@ impl ResponseRouter {
     /// waiter registration order for requests sharing the same response key.
     pub fn dispatch_to_waiter(&self, response: Response, waiter_id: u64) -> bool {
         let key = ResponseKey { name: response.name.clone(), oid: response.oid };
-        let mut state = self.state.lock().expect("response router poisoned");
+        let mut state = self.lock_state();
         let Some(queue) = state.pending.get_mut(&key) else { return false; };
         let Some(index) = queue.iter().position(|waiter| waiter.id == waiter_id && waiter.claimed) else {
             return false;
@@ -101,7 +108,7 @@ impl ResponseRouter {
     /// other requests with the same response name and OID remain active.
     pub fn claim_oldest(&self, name: &str, oid: Option<u32>) -> Option<u64> {
         let key = ResponseKey { name: name.to_owned(), oid };
-        let mut state = self.state.lock().expect("response router poisoned");
+        let mut state = self.lock_state();
         let queue = state.pending.get_mut(&key)?;
         let waiter = queue.iter_mut().find(|waiter| !waiter.claimed)?;
         waiter.claimed = true;
@@ -111,7 +118,7 @@ impl ResponseRouter {
     /// Remove one exact waiter by its stable registration ID.
     pub fn cancel_waiter(&self, name: &str, oid: Option<u32>, id: u64) -> bool {
         let key = ResponseKey { name: name.to_owned(), oid };
-        let mut state = self.state.lock().expect("response router poisoned");
+        let mut state = self.lock_state();
         let Some(queue) = state.pending.get_mut(&key) else { return false; };
         let before = queue.len();
         queue.retain(|waiter| waiter.id != id);
@@ -126,13 +133,13 @@ impl ResponseRouter {
     /// insufficient when multiple requests share the same response key.
     pub fn contains_waiter(&self, name: &str, oid: Option<u32>, id: u64) -> bool {
         let key = ResponseKey { name: name.to_owned(), oid };
-        self.state.lock().expect("response router poisoned").pending
+        self.lock_state().pending
             .get(&key)
             .is_some_and(|queue| queue.iter().any(|waiter| waiter.id == id))
     }
 
     pub fn pending_count(&self, name: &str, oid: Option<u32>) -> usize {
-        self.state.lock().expect("response router poisoned").pending
+        self.lock_state().pending
             .get(&ResponseKey { name: name.into(), oid }).map_or(0, VecDeque::len)
     }
 }
@@ -390,6 +397,26 @@ mod tests {
             name: "status".into(),
             oid: Some(17),
         }));
+    }
+
+    #[test]
+    fn router_operations_recover_poisoned_mutex_and_remain_usable() {
+        let router = ResponseRouter::new();
+        let poisoned_router = router.clone();
+
+        let panic_result = std::thread::spawn(move || {
+            let _guard = poisoned_router.state.lock().unwrap();
+            panic!("poison response router mutex");
+        }).join();
+        assert!(panic_result.is_err());
+
+        let waiter = router.register("status", Some(21));
+        let waiter_id = router.claim_oldest("status", Some(21)).unwrap();
+        assert!(router.contains_waiter("status", Some(21), waiter_id));
+        assert_eq!(router.pending_count("status", Some(21)), 1);
+        assert!(router.dispatch_to_waiter(response("status", Some(21)), waiter_id));
+        assert_eq!(waiter.wait(Duration::from_millis(1)).unwrap().oid, Some(21));
+        assert_eq!(router.pending_count("status", Some(21)), 0);
     }
 
     #[test]
