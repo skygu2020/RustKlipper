@@ -23,6 +23,8 @@ pub enum KlippyApiCodecError {
     MissingMethod,
     #[error("Klippy API request params must be a JSON object")]
     ExpectedParamsObject,
+    #[error("Klippy API request id must be a string, number, or null")]
+    InvalidId,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -37,13 +39,19 @@ impl KlippyApiRequest {
         let object = value.as_object().ok_or(KlippyApiCodecError::ExpectedObject)?;
         let method = object.get("method").and_then(Value::as_str)
             .ok_or(KlippyApiCodecError::MissingMethod)?.to_owned();
+        let id = object.get("id").cloned();
+        if id.as_ref().is_some_and(|id| {
+            !id.is_null() && !id.is_string() && !id.is_number()
+        }) {
+            return Err(KlippyApiCodecError::InvalidId);
+        }
         let params = match object.get("params") {
             None => Value::Object(Map::new()),
             Some(Value::Object(params)) => Value::Object(params.clone()),
             Some(_) => return Err(KlippyApiCodecError::ExpectedParamsObject),
         };
         Ok(Self {
-            id: object.get("id").cloned(),
+            id,
             method,
             params,
         })
@@ -729,6 +737,33 @@ mod tests {
                 "params": params
             })).unwrap_err();
             assert_eq!(error, KlippyApiCodecError::ExpectedParamsObject);
+        }
+    }
+
+    #[test]
+    fn rejects_request_ids_outside_json_rpc_scalar_types() {
+        for id in [
+            json!(true),
+            json!(false),
+            json!([]),
+            json!({ "nested": 1 }),
+        ] {
+            let error = KlippyApiRequest::from_value(json!({
+                "id": id,
+                "method": "info"
+            })).unwrap_err();
+            assert_eq!(error, KlippyApiCodecError::InvalidId);
+        }
+    }
+
+    #[test]
+    fn accepts_string_numeric_and_null_request_ids() {
+        for id in [json!("client-1"), json!(42), json!(1.5), Value::Null] {
+            let request = KlippyApiRequest::from_value(json!({
+                "id": id,
+                "method": "info"
+            })).unwrap();
+            assert!(request.id.is_some());
         }
     }
 
