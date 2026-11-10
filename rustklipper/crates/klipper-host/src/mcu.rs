@@ -280,6 +280,42 @@ impl McuRegistry {
         }
     }
 
+    /// Queue the initial uptime query after Identify has installed the dictionary.
+    /// The caller owns the returned waiter and may wait without holding a session lock.
+    pub fn start_clock_calibration(
+        &self,
+        name: &str,
+        queue_id: u64,
+    ) -> Result<klipper_transport::ResponseWaiter, McuRegistryError> {
+        let name = normalize_mcu_name(name.to_owned())?;
+        match self.with_session(&name, |session| session.start_clock_calibration(queue_id)) {
+            Some(Ok(waiter)) => Ok(waiter),
+            Some(Err(error)) => Err(McuRegistryError::SessionOperation {
+                name,
+                message: error.to_string(),
+            }),
+            None => Err(McuRegistryError::SessionNotFound { name }),
+        }
+    }
+
+    /// Consume the uptime response and queue the first startup get_clock sample.
+    pub fn begin_clock_calibration(
+        &self,
+        name: &str,
+        queue_id: u64,
+        uptime: klipper_transport::Response,
+    ) -> Result<klipper_transport::ResponseWaiter, McuRegistryError> {
+        let name = normalize_mcu_name(name.to_owned())?;
+        match self.with_session(&name, |session| session.begin_clock_calibration(queue_id, uptime)) {
+            Some(Ok(waiter)) => Ok(waiter),
+            Some(Err(error)) => Err(McuRegistryError::SessionOperation {
+                name,
+                message: error.to_string(),
+            }),
+            None => Err(McuRegistryError::SessionNotFound { name }),
+        }
+    }
+
     /// Return the current startup phase for one registered MCU.
     ///
     /// A missing or concurrently detached MCU returns None. Session locking
