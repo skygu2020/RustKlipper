@@ -1860,13 +1860,13 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("base.cfg"), "[printer]\\nmax_velocity=200\\n").unwrap();
+        fs::write(dir.join("base.cfg"), "[printer]\nmax_velocity=200\n").unwrap();
 
         // ConfigParser's header match ends at the first closing bracket;
         // trailing text does not prevent Klipper from recognizing the include.
         fs::write(
             dir.join("trailing.cfg"),
-            "[include base.cfg] trailing text\\n",
+            "[include base.cfg] trailing text\n",
         )
         .unwrap();
         let config = ConfigFileLoader::load(dir.join("trailing.cfg")).unwrap();
@@ -1876,7 +1876,7 @@ mod tests {
         // this is an ordinary section header, not an include directive.
         fs::write(
             dir.join("indented.cfg"),
-            " [include base.cfg]\\n",
+            " [include base.cfg]\n",
         )
         .unwrap();
         let config = ConfigFileLoader::load(dir.join("indented.cfg")).unwrap();
