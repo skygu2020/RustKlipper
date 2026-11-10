@@ -114,7 +114,6 @@ impl HostMcuConfigBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use klipper_transport::McuConfigPlan;
 
     fn dictionary() -> IdentifyDictionary {
         IdentifyDictionary::from_json(br#"{
