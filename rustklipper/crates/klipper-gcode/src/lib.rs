@@ -432,18 +432,21 @@ mod tests {
 
     #[test]
     fn get_f64_matches_python_float_non_finite_parsing() {
-        let nan_command = GCodeCommand::new(parse_line("SET_VALUE VALUE=nan").unwrap());
+        // Extended command parameters must go through the same shell-style
+        // parsing path used by registered Klipper commands.
+        let nan_command =
+            GCodeCommand::new_for_dispatch(parse_line("SET_VALUE VALUE=nan").unwrap()).unwrap();
         assert!(nan_command.get_f64("VALUE", None).unwrap().is_nan());
 
         let positive_infinity =
-            GCodeCommand::new(parse_line("SET_VALUE VALUE=inf").unwrap());
+            GCodeCommand::new_for_dispatch(parse_line("SET_VALUE VALUE=inf").unwrap()).unwrap();
         assert_eq!(
             positive_infinity.get_f64("VALUE", None).unwrap(),
             f64::INFINITY
         );
 
         let negative_infinity =
-            GCodeCommand::new(parse_line("SET_VALUE VALUE=-inf").unwrap());
+            GCodeCommand::new_for_dispatch(parse_line("SET_VALUE VALUE=-inf").unwrap()).unwrap();
         assert_eq!(
             negative_infinity.get_f64("VALUE", None).unwrap(),
             f64::NEG_INFINITY
