@@ -1264,6 +1264,52 @@ mod async_stream_tests {
     use serde_json::json;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+    #[test]
+    fn object_subscription_notifications_include_only_changed_fields() {
+        let initial = json!({
+            "eventtime": 1.0,
+            "status": {
+                "toolhead": {
+                    "position": [0.0, 0.0, 0.0],
+                    "homed_axes": ""
+                },
+                "motion_report": {
+                    "live_position": [1.0, 2.0, 3.0]
+                }
+            }
+        });
+        let mut cache = status_cache_from_snapshot(&initial);
+
+        let update = json!({
+            "eventtime": 2.0,
+            "status": {
+                "toolhead": {
+                    "position": [0.0, 0.0, 0.0],
+                    "homed_axes": "xyz",
+                    "new_field": true
+                },
+                "motion_report": {
+                    "live_position": [1.0, 2.0, 3.0]
+                }
+            }
+        });
+        assert_eq!(
+            changed_status_snapshot(&update, &mut cache),
+            Some(json!({
+                "eventtime": 2.0,
+                "status": {
+                    "toolhead": {
+                        "homed_axes": "xyz",
+                        "new_field": true
+                    }
+                }
+            }))
+        );
+
+        // Re-reading the same snapshot must not generate a duplicate event.
+        assert_eq!(changed_status_snapshot(&update, &mut cache), None);
+    }
+
     #[tokio::test]
     async fn serves_requests_and_suppresses_notifications() {
         let dispatcher = std::sync::Arc::new(KlippyApiDispatcher::new());
