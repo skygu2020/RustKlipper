@@ -235,13 +235,17 @@ fn due_retry_transaction_ids(
     transactions: &HashMap<u64, PendingRetryRequest>,
     now: f64,
 ) -> Vec<u64> {
-    transactions.iter()
+    let mut due: Vec<_> = transactions.iter()
         .filter_map(|(id, pending)| {
             pending.transaction.retry_deadline()
                 .filter(|deadline| now >= *deadline)
                 .map(|_| *id)
         })
-        .collect()
+        .collect();
+    // HashMap iteration order is randomized. Stable transaction ordering keeps
+    // simultaneously due retries deterministic across polls and process runs.
+    due.sort_unstable();
+    due
 }
 
 fn periodic_clock_deadline(
@@ -2268,6 +2272,25 @@ mod combined_poll_deadline_tests {
 #[cfg(test)]
 mod due_retry_selection_tests {
     use super::*;
+
+    #[test]
+    fn due_retry_transaction_ids_are_sorted_deterministically() {
+        let mut transactions = HashMap::new();
+        for id in [9, 2, 7] {
+            let mut transaction = RetryTransaction::new(1, Duration::from_millis(10));
+            transaction.attempt_acked(1.0);
+            transactions.insert(id, PendingRetryRequest {
+                queue_id: id,
+                command: ScheduledCommand::new(vec![id as u8], 0, 0),
+                name: "status".into(),
+                oid: None,
+                waiter_id: id,
+                transaction,
+            });
+        }
+
+        assert_eq!(due_retry_transaction_ids(&transactions, 1.010), vec![2, 7, 9]);
+    }
 
     #[test]
     fn selecting_due_retry_does_not_consume_its_deadline() {
