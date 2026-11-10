@@ -76,15 +76,18 @@ impl PinResolver {
         {
             return Err(PinResolverError::InvalidAliasTarget(pin));
         }
+        // Resolve the requested target before checking whether this alias
+        // already exists. Equivalent registrations through another alias
+        // must remain idempotent after alias chains have been flattened.
+        if let Some(target) = self.aliases.get(&pin) {
+            pin = target.clone();
+        }
         if let Some(existing) = self.aliases.get(&alias) {
             if existing != &pin {
                 return Err(PinResolverError::AliasConflict {
                     alias, existing: existing.clone(), requested: pin,
                 });
             }
-        }
-        if let Some(target) = self.aliases.get(&pin) {
-            pin = target.clone();
         }
         // A target that resolves back to this alias would create a cycle.
         // Reject it before changing either the alias map or its flattened peers.
@@ -227,6 +230,18 @@ mod tests {
             resolver.update_command("config_b pin=PA1").unwrap(),
             "config_b pin=PA1",
         );
+    }
+
+    #[test]
+    fn equivalent_alias_registration_is_idempotent_after_chain_resolution() {
+        let mut resolver = PinResolver::new(true);
+        resolver.alias_pin("LED", "PA1").unwrap();
+        resolver.alias_pin("STATUS", "LED").unwrap();
+
+        // STATUS already resolves to PA1; registering the same mapping via
+        // the physical target must not be treated as a conflicting remap.
+        assert!(resolver.alias_pin("STATUS", "PA1").is_ok());
+        assert_eq!(resolver.aliases().get("STATUS").map(String::as_str), Some("PA1"));
     }
 
     #[test]
