@@ -154,7 +154,7 @@ impl WebSocketManager {
             Ok(json!({"websocket_id": connection.id()}))
         } else {
             let params = object.get("params").and_then(Value::as_object);
-            let required = |key: &str| params.and_then(|p| p.get(key)).and_then(Value::as_str);
+            let required = |key: &str| params.and_then(|p| p.get(key)).and_then(Value::as_str).map(str::to_owned);
             match (required("client_name"), required("version"), required("type"), required("url")) {
                 (Some(name), Some(version), Some(client_type), Some(url)) => {
                     if connection.identify(name, version, client_type, url) {
