@@ -16,6 +16,10 @@ pub enum McuRegistryError {
     OpenCancelled { name: String },
     #[error("MCU '{name}' session is already disconnected")]
     DisconnectedSession { name: String },
+    #[error("MCU '{name}' is not registered")]
+    SessionNotFound { name: String },
+    #[error("failed to start MCU '{name}' identify: {message}")]
+    SessionOperation { name: String, message: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -252,6 +256,28 @@ impl McuRegistry {
 
     pub fn is_disconnected(&self, name: &str) -> Option<bool> {
         self.with_session(name, |session| session.is_disconnected())
+    }
+
+    /// Start the bootstrap identify exchange for one registered MCU.
+    /// The caller chooses a scheduler queue shared by all identify chunks.
+    pub fn start_identify(
+        &self,
+        name: &str,
+        queue_id: u64,
+        chunk_size: u8,
+    ) -> Result<(), McuRegistryError> {
+        let name = normalize_mcu_name(name.to_owned())?;
+        let result = self.with_session(&name, |session| {
+            session.request_identify_chunk(queue_id, 0, chunk_size)
+        });
+        match result {
+            Some(Ok(())) => Ok(()),
+            Some(Err(error)) => Err(McuRegistryError::SessionOperation {
+                name,
+                message: error.to_string(),
+            }),
+            None => Err(McuRegistryError::SessionNotFound { name }),
+        }
     }
 
     /// Return the current startup phase for one registered MCU.
