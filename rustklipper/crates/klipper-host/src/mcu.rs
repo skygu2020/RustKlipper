@@ -159,9 +159,7 @@ impl McuRegistry {
         &self,
         name: &str,
     ) -> Option<Arc<Mutex<ReliableSerialSession>>> {
-        self.state
-            .lock()
-            .expect("MCU registry lock poisoned")
+        self.lock_state()
             .sessions
             .get(name)
             .cloned()
@@ -245,9 +243,7 @@ impl McuRegistry {
 
     pub fn session_names(&self) -> Vec<String> {
         let mut names: Vec<_> = self
-            .state
-            .lock()
-            .expect("MCU registry lock poisoned")
+            .lock_state()
             .sessions
             .keys()
             .cloned()
