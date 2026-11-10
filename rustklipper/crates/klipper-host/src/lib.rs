@@ -1781,6 +1781,15 @@ impl Printer {
         Ok(())
     }
 
+    fn clear_mcu_startup_for(&self, name: &str) {
+        self.mcu_identify_startups.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(name);
+        self.mcu_clock_startups.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(name);
+    }
+
     fn start_clock_calibration_for_identified_mcus(
         &self,
         events: &[McuSessionEvent],
@@ -2058,6 +2067,9 @@ impl Printer {
         let reactor_wait = bounded_host_wait(max_wait);
         let reactor_callbacks = self.reactor.run_once(reactor_wait);
         let mcus = self.poll_mcus();
+        for error in mcus.errors.iter().filter(|error| error.disconnected) {
+            self.clear_mcu_startup_for(&error.mcu);
+        }
         let mut mcu_startup_errors = self.start_clock_calibration_for_identified_mcus(&mcus.events);
         mcu_startup_errors.extend(self.advance_mcu_clock_startups());
         let mcu_handler_panics = self.dispatch_mcu_events(&mcus.events);
@@ -2117,6 +2129,27 @@ mod tests {
             printer.start_managed_mcu_identify(" mcu ", 1, 64, 2, 3),
             Err(McuRegistryError::SessionNotFound { name }) if name == "mcu"
         ));
+        assert!(printer.mcu_identify_startups.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn identify_completion_consumes_configuration_even_when_clock_start_fails() {
+        let printer = Printer::new();
+        printer.mcu_identify_startups.lock().unwrap().insert(
+            "mcu".to_owned(),
+            McuStartupQueueConfig { uptime_queue_id: 2, periodic_clock_queue_id: 3 },
+        );
+        let events = [McuSessionEvent {
+            mcu: "mcu".to_owned(),
+            event: klipper_transport::SessionEvent::IdentifyProgress {
+                progress: klipper_transport::IdentifyProgress::Complete {
+                    version: "test".to_owned(),
+                },
+            },
+        }];
+        let errors = printer.start_clock_calibration_for_identified_mcus(&events);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].mcu, "mcu");
         assert!(printer.mcu_identify_startups.lock().unwrap().is_empty());
     }
 
