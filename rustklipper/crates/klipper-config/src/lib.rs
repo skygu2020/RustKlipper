@@ -2041,7 +2041,7 @@ mod tests {
         ));
         fs::write(
             &path,
-            "[printer]\\nkinematics=cartesian\\n#*# <---------------------- SAVE_CONFIG ---------------------->\\n#*# [printer]\\n#*# max_velocity=250\\n",
+            "[printer]\nkinematics=cartesian\n#*# <---------------------- SAVE_CONFIG ---------------------->\n#*# [printer]\n#*# max_velocity=250\n",
         )
         .unwrap();
 
