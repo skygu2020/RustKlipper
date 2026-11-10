@@ -375,7 +375,7 @@ pub enum ConfigLoadError {
 pub struct ConfigFileLoader;
 
 pub const AUTOSAVE_HEADER: &str =
-    "#*# <---------------------- SAVE_CONFIG ---------------------->";
+    "#*# <---------------------- SAVE_CONFIG ---------------------->\n#*# DO NOT EDIT THIS BLOCK OR BELOW. The contents are auto-generated.\n#*#";
 
 impl ConfigFileLoader {
     pub fn load(path: impl AsRef<std::path::Path>) -> Result<ConfigDocument, ConfigLoadError> {
@@ -1956,7 +1956,7 @@ mod tests {
         .unwrap();
         fs::write(
             dir.join("main.cfg"),
-            "[include base.cfg]\n#*# <---------------------- SAVE_CONFIG ---------------------->\n#*# [printer]\n#*# kinematics=delta\n#*# max_velocity=250\n",
+            "[include base.cfg]\n#*# <---------------------- SAVE_CONFIG ---------------------->\n#*# DO NOT EDIT THIS BLOCK OR BELOW. The contents are auto-generated.\n#*#\n#*# [printer]\n#*# kinematics=delta\n#*# max_velocity=250\n",
         )
         .unwrap();
         let config = ConfigFileLoader::load(dir.join("main.cfg")).unwrap();
@@ -1975,7 +1975,7 @@ mod tests {
         ));
         fs::write(
             &path,
-            "[printer]\nkinematics=cartesian\n#*# <---------------------- SAVE_CONFIG ---------------------->\n#*# [printer]\n#*# max_velocity = 250\n",
+            "[printer]\nkinematics=cartesian\n#*# <---------------------- SAVE_CONFIG ---------------------->\n#*# DO NOT EDIT THIS BLOCK OR BELOW. The contents are auto-generated.\n#*#\n#*# [printer]\n#*# max_velocity = 250\n",
         )
         .unwrap();
         let config = ConfigFileLoader::load(&path).unwrap();
@@ -1999,7 +1999,7 @@ mod tests {
         ));
         fs::write(
             &path,
-            "[printer]\nkinematics=cartesian\n#*# <---------------------- SAVE_CONFIG ---------------------->\n#*# [bed_mesh]\n#*# profile = default\n",
+            "[printer]\nkinematics=cartesian\n#*# <---------------------- SAVE_CONFIG ---------------------->\n#*# DO NOT EDIT THIS BLOCK OR BELOW. The contents are auto-generated.\n#*#\n#*# [bed_mesh]\n#*# profile = default\n",
         )
         .unwrap();
         let config = ConfigFileLoader::load(&path).unwrap();
@@ -2022,7 +2022,26 @@ mod tests {
         ));
         fs::write(
             &path,
-            "[printer]\nkinematics=cartesian\n#*# stale generated line\n#*# <---------------------- SAVE_CONFIG ---------------------->\n#*# [printer]\n#*# max_velocity=250\n",
+            "[printer]\nkinematics=cartesian\n#*# stale generated line\n#*# <---------------------- SAVE_CONFIG ---------------------->\n#*# DO NOT EDIT THIS BLOCK OR BELOW. The contents are auto-generated.\n#*#\n#*# [printer]\n#*# max_velocity=250\n",
+        )
+        .unwrap();
+
+        let config = ConfigFileLoader::load(&path).unwrap();
+        assert_eq!(config.get("printer", "kinematics"), Some("cartesian"));
+        assert!(!config.section("printer").unwrap().has_option("max_velocity"));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn ignores_bare_save_config_marker_without_standard_header() {
+        use std::fs;
+        let path = std::env::temp_dir().join(format!(
+            "rustklipper-config-autosave-bare-marker-{}.cfg",
+            std::process::id()
+        ));
+        fs::write(
+            &path,
+            "[printer]\\nkinematics=cartesian\\n#*# <---------------------- SAVE_CONFIG ---------------------->\\n#*# [printer]\\n#*# max_velocity=250\\n",
         )
         .unwrap();
 
@@ -2041,7 +2060,7 @@ mod tests {
         ));
         fs::write(
             &path,
-            "[printer]\nkinematics=cartesian\n#*# <---------------------- SAVE_CONFIG ---------------------->\n#*# [printer]\n#*# <---------------------- SAVE_CONFIG ---------------------->\n",
+            "[printer]\nkinematics=cartesian\n#*# <---------------------- SAVE_CONFIG ---------------------->\n#*# DO NOT EDIT THIS BLOCK OR BELOW. The contents are auto-generated.\n#*#\n#*# [printer]\n#*# <---------------------- SAVE_CONFIG ---------------------->\n",
         )
         .unwrap();
         let config = ConfigFileLoader::load(&path).unwrap();
