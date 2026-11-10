@@ -1377,11 +1377,11 @@ mod tests {
     }
 
     #[test]
-    fn escaped_comment_markers_do_not_start_comments() {
+    fn hash_comments_are_stripped_even_after_an_escape_like_klipper() {
         let config = ConfigDocument::parse(
             "[printer]\nserial: /dev/serial\\#0\n",
         ).unwrap();
-        assert_eq!(config.get("printer", "serial"), Some("/dev/serial\\#0"));
+        assert_eq!(config.get("printer", "serial"), Some("/dev/serial\\"));
     }
 
     #[test]
