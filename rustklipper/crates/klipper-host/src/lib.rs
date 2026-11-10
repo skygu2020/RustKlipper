@@ -358,6 +358,9 @@ impl Drop for ObjectRegistrationTransaction<'_> {
 }
 
 pub struct Printer {
+    // Serializes lifecycle transitions with G-code dispatcher snapshots.
+    // Handlers are always invoked after this lock is released.
+    lifecycle_lock: Mutex<()>,
     state: RwLock<PrinterState>,
     state_message: RwLock<String>,
     config: RwLock<Option<Arc<ConfigDocument>>>,
@@ -385,6 +388,7 @@ impl Default for Printer {
 impl Printer {
     pub fn new() -> Self {
         Self {
+            lifecycle_lock: Mutex::new(()),
             state: RwLock::new(PrinterState::Startup),
             state_message: RwLock::new("Printer is not ready".to_owned()),
             config: RwLock::new(None),
@@ -485,6 +489,8 @@ impl Printer {
             .lock()
             .expect("component G-code ownership lock poisoned");
         component_gcode.clear();
+        let _lifecycle_guard = self.lifecycle_lock.lock()
+            .expect("printer lifecycle lock poisoned");
         self.gcode
             .lock()
             .expect("gcode dispatcher lock poisoned")
@@ -501,10 +507,10 @@ impl Printer {
         // ConfigLoaded callbacks may register component-owned G-code commands.
         drop(component_gcode);
         *self.config.write().expect("printer config lock poisoned") = Some(Arc::new(config));
-        self.set_configuring();
+        self.set_configuring_locked();
+        drop(_lifecycle_guard);
         // Event handlers may initialize or load components; release the
-        // lifecycle lock before invoking user callbacks to avoid reentrant
-        // acquisition of component_load_lock.
+        // component load lock before invoking user callbacks.
         drop(_load_guard);
         self.send_event(PrinterEvent::ConfigLoaded);
     }
@@ -772,6 +778,12 @@ impl Printer {
     }
 
     pub fn set_configuring(&self) {
+        let _lifecycle_guard = self.lifecycle_lock.lock()
+            .expect("printer lifecycle lock poisoned");
+        self.set_configuring_locked();
+    }
+
+    fn set_configuring_locked(&self) {
         {
             let mut state = self.state.write().expect("printer state lock poisoned");
             if matches!(*state, PrinterState::Shutdown | PrinterState::Disconnected) {
@@ -791,6 +803,8 @@ impl Printer {
     }
 
     pub fn set_ready(&self) {
+        let _lifecycle_guard = self.lifecycle_lock.lock()
+            .expect("printer lifecycle lock poisoned");
         {
             let mut state = self.state.write().expect("printer state lock poisoned");
             if matches!(
@@ -817,6 +831,8 @@ impl Printer {
     /// had reached the ready state.
     pub fn invoke_shutdown(&self, reason: impl Into<String>) {
         let reason = reason.into();
+        let _lifecycle_guard = self.lifecycle_lock.lock()
+            .expect("printer lifecycle lock poisoned");
         let was_ready = {
             let mut state = self.state.write().expect("printer state lock poisoned");
             if matches!(*state, PrinterState::Shutdown | PrinterState::Disconnected) {
@@ -852,6 +868,8 @@ impl Printer {
     }
 
     pub fn disconnect(&self) {
+        let _lifecycle_guard = self.lifecycle_lock.lock()
+            .expect("printer lifecycle lock poisoned");
         {
             let mut state = self.state.write().expect("printer state lock poisoned");
             if *state == PrinterState::Disconnected {
@@ -1335,7 +1353,13 @@ impl Printer {
         line: &str,
         need_ack: bool,
     ) -> Option<DispatchOutcome> {
-        let dispatcher = self.gcode_dispatcher().clone();
+        // Snapshot state and dispatcher atomically with respect to lifecycle
+        // transitions, then release the lock before executing user handlers.
+        let dispatcher = {
+            let _lifecycle_guard = self.lifecycle_lock.lock()
+                .expect("printer lifecycle lock poisoned");
+            self.gcode_dispatcher().clone()
+        };
         dispatcher.process_line(line, need_ack)
     }
 
