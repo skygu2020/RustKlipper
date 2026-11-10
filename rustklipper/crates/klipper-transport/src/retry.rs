@@ -121,8 +121,10 @@ mod tests {
         transaction.attempt_acked(f64::MAX - 1.0);
         assert_eq!(transaction.retry_deadline(), Some(f64::MAX));
         assert!(transaction.retry_deadline().unwrap().is_finite());
-        assert!(!transaction.take_due_retry(f64::MAX - 1.0));
+        // At this magnitude, subtracting one is rounded back to f64::MAX,
+        // so the representable deadline is already due at the current time.
         assert!(transaction.take_due_retry(f64::MAX));
+        assert_eq!(transaction.retry_deadline(), None);
     }
 
     #[test]
