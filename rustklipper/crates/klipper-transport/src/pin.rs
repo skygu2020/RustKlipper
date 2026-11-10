@@ -14,6 +14,8 @@ pub enum PinResolverError {
     AliasUsedAlongsideTarget { pin: String, active: String },
     #[error("pin {pin} is reserved for {owner}")]
     ReservedPin { pin: String, owner: String },
+    #[error("pin {pin} is already active as {active}; cannot reserve it")]
+    PinAlreadyActive { pin: String, active: String },
 }
 
 /// Resolves board pin aliases and validates alias use in MCU config commands.
@@ -46,6 +48,14 @@ impl PinResolver {
     ) -> Result<(), PinResolverError> {
         let pin = pin.into();
         let reserve_name = reserve_name.into();
+        // Klipper does not permit reserving a pin after a config command has
+        // already activated it. Check before mutating the reservation map.
+        if let Some(active) = self.active_pins.get(&pin) {
+            return Err(PinResolverError::PinAlreadyActive {
+                pin,
+                active: active.clone(),
+            });
+        }
         if let Some(existing) = self.reserved.get(&pin) {
             if existing != &reserve_name {
                 return Err(PinResolverError::ReservationConflict {
@@ -196,6 +206,37 @@ mod tests {
             resolver.update_command("config_b pin=LED"),
             Err(PinResolverError::AliasUsedAlongsideTarget { .. })
         ));
+    }
+
+    #[test]
+    fn active_pins_cannot_be_reserved_after_config_activation() {
+        let mut resolver = PinResolver::new(true);
+        resolver.update_command("config_a pin=PA1").unwrap();
+
+        assert!(matches!(
+            resolver.reserve_pin("PA1", "serial"),
+            Err(PinResolverError::PinAlreadyActive {
+                pin,
+                active,
+            }) if pin == "PA1" && active == "PA1"
+        ));
+        assert!(!resolver.reserved().contains_key("PA1"));
+    }
+
+    #[test]
+    fn active_alias_target_cannot_be_reserved_after_alias_activation() {
+        let mut resolver = PinResolver::new(true);
+        resolver.alias_pin("LED", "PA1").unwrap();
+        resolver.update_command("config_a pin=LED").unwrap();
+
+        assert!(matches!(
+            resolver.reserve_pin("PA1", "serial"),
+            Err(PinResolverError::PinAlreadyActive {
+                pin,
+                active,
+            }) if pin == "PA1" && active == "LED"
+        ));
+        assert!(!resolver.reserved().contains_key("PA1"));
     }
 
     #[test]
