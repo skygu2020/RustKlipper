@@ -55,6 +55,9 @@ impl ClockUpdate {
         }
         let clock = self.queue_conv_clock as f64
             + (host_time - self.queue_conv_time) * self.queue_frequency;
+        if !clock.is_finite() {
+            return Err(ClockSyncError::InvalidTimestamp);
+        }
         Ok(clock.max(0.0) as u64)
     }
 }
@@ -455,6 +458,25 @@ mod tests {
             rejected_outlier: false,
         };
         assert_eq!(update.queue_clock_at(f64::NAN), Err(ClockSyncError::InvalidTimestamp));
+    }
+
+    #[test]
+    fn queue_clock_conversion_rejects_arithmetic_overflow() {
+        let update = ClockUpdate {
+            queue_frequency: 2.0,
+            queue_conv_time: -f64::MAX,
+            queue_conv_clock: 0,
+            estimate: ClockEstimate {
+                sample_time: 0.0,
+                clock: 0.0,
+                frequency: 2.0,
+            },
+            rejected_outlier: false,
+        };
+        assert_eq!(
+            update.queue_clock_at(f64::MAX),
+            Err(ClockSyncError::InvalidTimestamp),
+        );
     }
 
     #[test]
