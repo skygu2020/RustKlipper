@@ -245,6 +245,33 @@ impl KlippyApiDispatcher {
         })
     }
 
+    /// Register Klipper's `gcode/script` endpoint.
+    ///
+    /// Scripts are executed in order by the host-side G-code dispatcher. The
+    /// endpoint returns an empty object on success, matching Klippy's API
+    /// response shape; the first command error is returned as an RPC error.
+    pub fn register_gcode_script(
+        &self,
+        printer: std::sync::Arc<crate::Printer>,
+    ) -> Result<(), KlippyApiRpcError> {
+        self.register("gcode/script", move |params| {
+            let script = params
+                .get("script")
+                .and_then(Value::as_str)
+                .ok_or_else(|| KlippyApiRpcError::invalid_request(
+                    "gcode/script requires a string script parameter"
+                ))?;
+            for outcome in printer.process_gcode_script(script) {
+                if let Some(DispatchEvent::Error(message)) = outcome.events.iter()
+                    .find(|event| matches!(event, DispatchEvent::Error(_)))
+                {
+                    return Err(KlippyApiRpcError::internal(message.clone()));
+                }
+            }
+            Ok(serde_json::json!({}))
+        })
+    }
+
     /// Register Klipper's emergency-stop endpoint.
     ///
     /// The call transitions the printer into shutdown and returns an empty
@@ -556,6 +583,45 @@ mod tests {
         let response = dispatcher.dispatch_value(json!({"id":9,"method":"info","params":{}})).unwrap();
         assert_eq!(response, json!({"id":9,"result":{"state":"ready"}}));
         assert_eq!(dispatcher.method_names(), vec!["info"]);
+    }
+
+    #[test]
+    fn gcode_script_endpoint_executes_commands_in_order() {
+        let printer = std::sync::Arc::new(crate::Printer::new());
+        printer.set_ready();
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        for name in ["FIRST", "SECOND"] {
+            let calls = calls.clone();
+            printer.register_gcode_command(name, false, None, move |_| {
+                calls.lock().unwrap().push(name.to_owned());
+                Ok(Vec::new())
+            }).unwrap();
+        }
+
+        let dispatcher = KlippyApiDispatcher::new();
+        dispatcher.register_gcode_script(printer).unwrap();
+        let response = dispatcher.dispatch_value(json!({
+            "id": 21,
+            "method": "gcode/script",
+            "params": { "script": "FIRST\\nSECOND" }
+        })).unwrap();
+
+        assert_eq!(response, json!({ "id": 21, "result": {} }));
+        assert_eq!(*calls.lock().unwrap(), vec!["FIRST", "SECOND"]);
+    }
+
+    #[test]
+    fn gcode_script_endpoint_rejects_missing_or_non_string_script() {
+        let dispatcher = KlippyApiDispatcher::new();
+        dispatcher.register_gcode_script(std::sync::Arc::new(crate::Printer::new())).unwrap();
+        for params in [json!({}), json!({ "script": 42 })] {
+            let response = dispatcher.dispatch_value(json!({
+                "id": 22,
+                "method": "gcode/script",
+                "params": params
+            })).unwrap();
+            assert_eq!(response["error"]["code"], json!(-32600));
+        }
     }
 
     #[test]
