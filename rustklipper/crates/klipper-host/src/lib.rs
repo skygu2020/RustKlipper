@@ -1213,7 +1213,7 @@ impl Printer {
         Some(Self::dispatch_event_handlers(&event, handlers))
     }
 
-    fn event_handlers_for(&self, kind: PrinterEventKind) -> Vec<Arc<dyn Fn(&PrinterEvent) + Send + Sync>> {
+    fn event_handlers_for(&self, kind: PrinterEventKind) -> Vec<EventHandler> {
         self.event_handlers
             .lock()
             .expect("printer event handler lock poisoned")
@@ -2635,6 +2635,35 @@ mod tests {
             })
         ));
         assert_eq!(called.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn disconnect_during_component_loading_prevents_connection_events() {
+        let printer = Arc::new(Printer::new());
+        printer.install_config(ConfigDocument::parse("[fan]\\npin=PA0\\n").unwrap());
+        let identifies = Arc::new(AtomicUsize::new(0));
+        let connects = Arc::new(AtomicUsize::new(0));
+        let seen_identifies = identifies.clone();
+        let seen_connects = connects.clone();
+        printer.register_event_handler(PrinterEventKind::McuIdentify, move |_| {
+            seen_identifies.fetch_add(1, Ordering::SeqCst);
+        });
+        printer.register_event_handler(PrinterEventKind::Connect, move |_| {
+            seen_connects.fetch_add(1, Ordering::SeqCst);
+        });
+        let disconnect_printer = printer.clone();
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register("fan", move |_, _| {
+                disconnect_printer.disconnect();
+                Ok(())
+            })
+            .unwrap();
+
+        assert!(printer.initialize_components(&registry).unwrap().is_empty());
+        assert_eq!(printer.state(), PrinterState::Disconnected);
+        assert_eq!(identifies.load(Ordering::SeqCst), 0);
+        assert_eq!(connects.load(Ordering::SeqCst), 0);
     }
 
     #[test]
