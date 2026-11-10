@@ -62,8 +62,10 @@ impl KlippyApiRequest {
         })
     }
 
+    /// Klipper treats both an omitted id and an explicit JSON null id as
+    /// notifications; neither form receives a response frame.
     pub fn is_notification(&self) -> bool {
-        self.id.is_none()
+        self.id.as_ref().is_none_or(Value::is_null)
     }
 }
 
@@ -812,6 +814,13 @@ mod tests {
         let notification = KlippyApiRequest::from_value(json!({"method":"process_status_update"})).unwrap();
         assert!(notification.is_notification());
         assert_eq!(notification.params, json!({}));
+
+        let null_id_notification = KlippyApiRequest::from_value(json!({
+            "id": null,
+            "method": "process_status_update"
+        })).unwrap();
+        assert!(null_id_notification.is_notification());
+        assert_eq!(null_id_notification.id, Some(Value::Null));
     }
 
     #[test]
@@ -1016,6 +1025,25 @@ mod tests {
             "objects/query",
             "objects/subscribe"
         ]));
+    }
+
+    #[test]
+    fn dispatcher_suppresses_responses_for_explicit_null_ids() {
+        let dispatcher = KlippyApiDispatcher::new();
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = calls.clone();
+        dispatcher.register("notify", move |_| {
+            observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Value::Null)
+        }).unwrap();
+
+        let response = dispatcher.dispatch_value(json!({
+            "id": null,
+            "method": "notify"
+        }));
+
+        assert!(response.is_none());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[test]
