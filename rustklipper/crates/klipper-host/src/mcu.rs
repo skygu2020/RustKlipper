@@ -53,6 +53,17 @@ pub struct McuRegistry {
     state: Mutex<McuRegistryState>,
 }
 
+fn remove_session_if_same(
+    state: &Mutex<McuRegistryState>,
+    name: &str,
+    session: &Arc<Mutex<ReliableSerialSession>>,
+) {
+    let mut state = state.lock().expect("MCU registry lock poisoned");
+    if state.sessions.get(name).is_some_and(|current| Arc::ptr_eq(current, session)) {
+        state.sessions.remove(name);
+    }
+}
+
 impl McuRegistry {
     pub fn new() -> Self {
         Self::default()
@@ -128,8 +139,19 @@ impl McuRegistry {
         callback: impl FnOnce(&mut ReliableSerialSession) -> R,
     ) -> Option<R> {
         let session = self.session_handle(name)?;
-        let mut session = session.lock().ok()?;
-        Some(callback(&mut session))
+        match session.lock() {
+            Ok(mut guard) => Some(callback(&mut guard)),
+            Err(poisoned) => {
+                // A panicking callback may have left the session's protocol
+                // state partially mutated. Treat it as terminal and remove
+                // this exact handle from the registry before returning.
+                let mut guard = poisoned.into_inner();
+                guard.mark_disconnected();
+                drop(guard);
+                remove_session_if_same(&self.state, name, &session);
+                None
+            }
+        }
     }
 
     pub fn remove_session(
@@ -185,7 +207,23 @@ impl McuRegistry {
 
         let mut batch = McuPollBatch::default();
         for (name, session) in sessions {
-            let mut session = session.lock().expect("MCU session lock poisoned");
+            let mut session = match session.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => {
+                    // Do not let one panicked session take down polling for
+                    // every other MCU. Its state is no longer trustworthy.
+                    let mut guard = poisoned.into_inner();
+                    guard.mark_disconnected();
+                    drop(guard);
+                    remove_session_if_same(&self.state, &name, &session);
+                    batch.errors.push(McuPollError {
+                        mcu: name,
+                        message: "MCU session lock poisoned after a panic".to_owned(),
+                        disconnected: true,
+                    });
+                    continue;
+                }
+            };
             match session.poll() {
                 Ok(events) => batch.events.extend(events.into_iter().map(|event| {
                     McuSessionEvent {
@@ -215,6 +253,20 @@ impl McuRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_poison_cleanup_does_not_remove_a_replacement_session() {
+        let mut sessions = HashMap::new();
+        let old = Arc::new(Mutex::new(1_u8));
+        let replacement = Arc::new(Mutex::new(2_u8));
+        sessions.insert("mcu".to_owned(), replacement.clone());
+
+        if sessions.get("mcu").is_some_and(|current| Arc::ptr_eq(current, &old)) {
+            sessions.remove("mcu");
+        }
+
+        assert!(Arc::ptr_eq(sessions.get("mcu").unwrap(), &replacement));
+    }
 
     #[test]
     fn registry_starts_empty_and_polls_without_errors() {
