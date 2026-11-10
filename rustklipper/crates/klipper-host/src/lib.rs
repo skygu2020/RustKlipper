@@ -2358,6 +2358,16 @@ impl Printer {
     pub fn run_host_once(&self, max_wait: std::time::Duration) -> PrinterRunBatch {
         let reactor_wait = bounded_host_wait(max_wait);
         let reactor_callbacks = self.reactor.run_once(reactor_wait);
+        // A restart requested by a reactor callback ends this Host iteration
+        // immediately. Do not start another MCU poll or advance startup work
+        // after the process has been asked to exit.
+        if let Some(exit_reason) = self.exit_reason() {
+            return PrinterRunBatch {
+                reactor_callbacks,
+                exit_reason: Some(exit_reason),
+                ..PrinterRunBatch::default()
+            };
+        }
         let mcus = self.poll_mcus();
         for error in mcus.errors.iter().filter(|error| error.disconnected) {
             self.clear_mcu_startup_for(&error.mcu);
@@ -5384,6 +5394,24 @@ mod tests {
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0].command, "RESTART");
         assert_eq!(printer.exit_reason().as_deref(), Some("restart"));
+    }
+
+    #[test]
+    fn host_iteration_stops_before_mcu_poll_after_reactor_restart() {
+        let printer = Printer::new();
+        let callback_printer = Arc::new(printer);
+        let requested_printer = callback_printer.clone();
+        callback_printer.reactor().register_callback(move || {
+            requested_printer.request_exit("restart");
+        });
+
+        let batch = callback_printer.run_host_once(std::time::Duration::ZERO);
+
+        assert_eq!(batch.reactor_callbacks, 1);
+        assert_eq!(batch.exit_reason.as_deref(), Some("restart"));
+        assert_eq!(batch.mcus, McuPollBatch::default());
+        assert!(batch.mcu_configured.is_empty());
+        assert!(batch.mcu_startup_errors.is_empty());
     }
 
     #[test]
