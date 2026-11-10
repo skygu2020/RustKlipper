@@ -321,7 +321,14 @@ impl KlippyApiDispatcher {
         software_version: impl Into<String>,
     ) -> Result<(), KlippyApiRpcError> {
         let software_version = software_version.into();
-        self.register("info", move |_params| {
+        self.register("info", move |params| {
+            // Klipper accepts arbitrary client metadata, but the top-level
+            // client_info value must be a JSON object when supplied.
+            if params.get("client_info").is_some_and(|value| !value.is_object()) {
+                return Err(KlippyApiRpcError::invalid_request(
+                    "info client_info parameter must be an object"
+                ));
+            }
             let status = printer.status();
             let state = match status.state {
                 crate::PrinterState::Startup | crate::PrinterState::Configuring => "startup",
@@ -1112,6 +1119,48 @@ mod tests {
         let disconnected = dispatcher.dispatch_value(request).unwrap();
         assert_eq!(disconnected["result"]["state"], "error");
         assert_eq!(disconnected["result"]["state_message"], "Printer is disconnected");
+    }
+
+    #[test]
+    fn printer_info_accepts_arbitrary_client_metadata_objects() {
+        let printer = std::sync::Arc::new(crate::Printer::new());
+        let dispatcher = KlippyApiDispatcher::new();
+        dispatcher
+            .register_printer_info(printer, "RustKlipper 0.1.0")
+            .unwrap();
+
+        let response = dispatcher.dispatch_value(json!({
+            "id": 1,
+            "method": "info",
+            "params": {
+                "client_info": {
+                    "name": "test-client",
+                    "version": "1.2.3",
+                    "custom": { "feature": true }
+                }
+            }
+        })).unwrap();
+        assert_eq!(response["result"]["software_version"], "RustKlipper 0.1.0");
+    }
+
+    #[test]
+    fn printer_info_rejects_non_object_client_metadata() {
+        let printer = std::sync::Arc::new(crate::Printer::new());
+        let dispatcher = KlippyApiDispatcher::new();
+        dispatcher
+            .register_printer_info(printer, "RustKlipper 0.1.0")
+            .unwrap();
+
+        let response = dispatcher.dispatch_value(json!({
+            "id": 1,
+            "method": "info",
+            "params": { "client_info": "not-an-object" }
+        })).unwrap();
+        assert_eq!(response["error"]["code"], -32600);
+        assert_eq!(
+            response["error"]["message"],
+            "info client_info parameter must be an object"
+        );
     }
 
     #[test]
