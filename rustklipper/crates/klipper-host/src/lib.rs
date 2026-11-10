@@ -3447,7 +3447,10 @@ mod tests {
             })
             .unwrap();
 
-        assert_eq!(printer.registered_gcode_commands(), vec!["STATUS"]);
+        assert_eq!(
+            printer.registered_gcode_commands(),
+            vec!["M110".to_owned(), "STATUS".to_owned()]
+        );
         assert_eq!(
             printer.gcode_help(),
             HashMap::from([("STATUS".to_owned(), "Report status".to_owned())])
@@ -3456,7 +3459,7 @@ mod tests {
         printer.set_ready();
         assert_eq!(
             printer.registered_gcode_commands(),
-            vec!["MOVE".to_owned(), "STATUS".to_owned()]
+            vec!["M110".to_owned(), "MOVE".to_owned(), "STATUS".to_owned()]
         );
         assert_eq!(printer.gcode_help().len(), 2);
     }
@@ -3760,7 +3763,10 @@ mod tests {
                 Ok(Vec::new())
             })
             .unwrap();
-        assert_eq!(printer.registered_gcode_commands(), vec!["M999"]);
+        assert_eq!(
+            printer.registered_gcode_commands(),
+            vec!["M110".to_owned(), "M999".to_owned()]
+        );
         assert_eq!(
             printer.gcode_help().get("M999").map(String::as_str),
             Some("Report host status")
@@ -3930,7 +3936,7 @@ mod tests {
 
         printer.install_config(ConfigDocument::parse("[printer]\n").unwrap());
         let dispatcher = printer.gcode_dispatcher();
-        assert!(dispatcher.registered_commands().is_empty());
+        assert_eq!(dispatcher.registered_commands(), vec!["M110".to_owned()]);
         assert!(!dispatcher.is_ready());
     }
 
