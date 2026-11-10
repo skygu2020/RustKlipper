@@ -1095,9 +1095,24 @@ where
                                 }
                             }
                         }
-                    } else if let Some(Ok(template)) = output_template_request {
-                        output = dispatcher.subscribe_gcode_output();
-                        output_template = Some(template);
+                    } else {
+                        if let Some(Ok(template)) = output_template_request {
+                            output = dispatcher.subscribe_gcode_output();
+                            output_template = Some(template);
+                        }
+                        // JSON-RPC notifications have no response frame. Still
+                        // activate a valid objects/subscribe notification after
+                        // validating it, so clients may replace subscriptions
+                        // without allocating a request id.
+                        if let (Some(params), Some(printer)) =
+                            (object_subscription_request, printer.as_ref())
+                        {
+                            if query_printer_status(printer, &params).is_ok() {
+                                if let Some(objects) = params.get("objects").and_then(Value::as_object) {
+                                    object_subscription = Some(objects.clone());
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1404,6 +1419,53 @@ mod async_stream_tests {
         );
         assert!(notification["params"]["status"]["toolhead"].get("homed_axes").is_none());
         assert!(notification["params"]["eventtime"].as_f64().is_some());
+
+        client.shutdown().await.unwrap();
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn objects_subscribe_notification_replaces_connection_subscription() {
+        let dispatcher = std::sync::Arc::new(KlippyApiDispatcher::new());
+        let printer = std::sync::Arc::new(crate::Printer::new());
+        printer.register_status_object("toolhead", json!({
+            "position": [0.0, 0.0, 0.0]
+        })).unwrap();
+        dispatcher.register_standard_endpoints(printer.clone(), "test").unwrap();
+
+        let (mut client, mut server) = tokio::io::duplex(4096);
+        let server_dispatcher = dispatcher.clone();
+        let server_task = tokio::spawn(async move {
+            serve_async_stream(&mut server, &server_dispatcher).await
+        });
+
+        client.write_all(&KlippyApiCodec::encode(&json!({
+            "method": "objects/subscribe",
+            "params": { "objects": { "toolhead": ["position"] } }
+        })).unwrap()).await.unwrap();
+
+        printer.update_status_object("toolhead", json!({
+            "position": [4.0, 5.0, 6.0]
+        })).unwrap();
+
+        let mut decoder = KlippyApiCodec::default();
+        let notification = loop {
+            let mut chunk = [0u8; 512];
+            let count = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                client.read(&mut chunk)
+            ).await.unwrap().unwrap();
+            assert_ne!(count, 0, "connection closed before notification subscription became active");
+            if let Some(message) = decoder.push(&chunk[..count]).unwrap().into_iter().find(|message| {
+                message["method"] == "notify_status_update"
+            }) {
+                break message;
+            }
+        };
+        assert_eq!(
+            notification["params"]["status"]["toolhead"]["position"],
+            json!([4.0, 5.0, 6.0])
+        );
 
         client.shutdown().await.unwrap();
         server_task.abort();
