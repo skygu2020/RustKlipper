@@ -796,6 +796,16 @@ impl<'a> TrackedConfigSection<'a> {
         below: Option<f64>,
     ) -> Result<f64, ConfigValueError> {
         let value = self.get_f64(option)?;
+        for bound in [min, max, above, below].into_iter().flatten() {
+            if !bound.is_finite() {
+                return Err(ConfigValueError::Invalid {
+                    section: self.section.name.clone(),
+                    option: option.to_owned(),
+                    value: bound.to_string(),
+                    expected: "finite range bound",
+                });
+            }
+        }
         if min.is_some_and(|minimum| value < minimum)
             || max.is_some_and(|maximum| value > maximum)
             || above.is_some_and(|minimum| value <= minimum)
@@ -1531,6 +1541,32 @@ mod tests {
             section.get_f64_range("max_accel", None, None, Some(5000.5), None),
             Err(ConfigValueError::Invalid { .. })
         ));
+    }
+
+    #[test]
+    fn tracked_float_range_rejects_non_finite_bounds() {
+        let config = ConfigDocument::parse("[heater]\\nmax_temp=250\\n").unwrap();
+        let tracker = ConfigUsageTracker::new();
+        let section = tracker.track_section(config.section("heater").unwrap());
+
+        for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for bounds in [
+                (Some(invalid), None, None, None),
+                (None, Some(invalid), None, None),
+                (None, None, Some(invalid), None),
+                (None, None, None, Some(invalid)),
+            ] {
+                assert!(matches!(
+                    section.get_f64_range("max_temp", bounds.0, bounds.1, bounds.2, bounds.3),
+                    Err(ConfigValueError::Invalid { expected: "finite range bound", .. })
+                ));
+            }
+        }
+
+        assert_eq!(
+            section.get_f64_range("max_temp", Some(100.0), Some(300.0), None, None).unwrap(),
+            250.0
+        );
     }
 
     #[test]
