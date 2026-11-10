@@ -326,7 +326,7 @@ impl GCodeDispatcher {
                     }
                     handler_found = true;
                 }
-                "M21" => handler_found = true,
+                "M21" | "M110" => handler_found = true,
                 _ if !self.ready => {
                     events.push(DispatchEvent::Error(self.state_message.clone()));
                 }
@@ -560,6 +560,24 @@ mod tests {
             .events
             .contains(&DispatchEvent::Error("Printer is not ready".to_owned())));
         assert!(dispatcher.process_line("M105", true).unwrap().handler_found);
+    }
+
+    #[test]
+    fn m110_is_a_silent_base_command_before_and_after_ready() {
+        let mut dispatcher = GCodeDispatcher::new();
+
+        for line in ["M110", "M110 N123"] {
+            let outcome = dispatcher.process_line(line, true).unwrap();
+            assert!(outcome.handler_found, "{line} should be recognized before ready");
+            assert_eq!(outcome.events, vec![DispatchEvent::Ack(None)]);
+        }
+
+        dispatcher.set_ready();
+        for line in ["M110", "M110 N123"] {
+            let outcome = dispatcher.process_line(line, true).unwrap();
+            assert!(outcome.handler_found, "{line} should remain recognized when ready");
+            assert_eq!(outcome.events, vec![DispatchEvent::Ack(None)]);
+        }
     }
 
     #[test]
