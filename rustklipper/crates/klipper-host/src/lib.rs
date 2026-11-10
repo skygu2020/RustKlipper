@@ -148,6 +148,7 @@ pub enum PrinterEventKind {
     Ready,
     Shutdown,
     Disconnect,
+    RestartRequested,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -158,6 +159,7 @@ pub enum PrinterEvent {
     Ready,
     Shutdown { reason: String },
     Disconnect,
+    RestartRequested { result: String },
 }
 
 impl PrinterEvent {
@@ -169,6 +171,7 @@ impl PrinterEvent {
             Self::Ready => PrinterEventKind::Ready,
             Self::Shutdown { .. } => PrinterEventKind::Shutdown,
             Self::Disconnect => PrinterEventKind::Disconnect,
+            Self::RestartRequested { .. } => PrinterEventKind::RestartRequested,
         }
     }
 }
@@ -516,6 +519,7 @@ pub struct Printer {
     lifecycle_lock: Mutex<()>,
     state: RwLock<PrinterState>,
     state_message: RwLock<String>,
+    exit_reason: Mutex<Option<String>>,
     config: RwLock<Option<Arc<ConfigDocument>>>,
     config_usage: ConfigUsageTracker,
     loaded_components: Mutex<HashSet<String>>,
@@ -555,6 +559,7 @@ impl Printer {
             lifecycle_lock: Mutex::new(()),
             state: RwLock::new(PrinterState::Startup),
             state_message: RwLock::new("Printer is not ready".to_owned()),
+            exit_reason: Mutex::new(None),
             config: RwLock::new(None),
             config_usage: ConfigUsageTracker::new(),
             loaded_components: Mutex::new(HashSet::new()),
@@ -1132,6 +1137,37 @@ impl Printer {
         if was_ready {
             self.send_event(PrinterEvent::Shutdown { reason });
         }
+    }
+
+    /// Request that the host process exit with Klipper's restart result.
+    ///
+    /// The restart-request event is emitted only when the printer is ready,
+    /// matching Klipper's request_restart() readiness guard. Motion draining
+    /// and the 500 ms toolhead dwell are coordinated by the host runtime once
+    /// a toolhead implementation is available.
+    pub fn request_exit(&self, result: impl Into<String>) {
+        let result = result.into();
+        let was_ready = {
+            let _lifecycle_guard = self.lifecycle_lock.lock()
+                .expect("printer lifecycle lock poisoned");
+            let mut exit_reason = self.exit_reason.lock()
+                .expect("printer exit reason lock poisoned");
+            if exit_reason.is_some() {
+                return;
+            }
+            *exit_reason = Some(result.clone());
+            *self.state.read().expect("printer state lock poisoned") == PrinterState::Ready
+        };
+        if was_ready {
+            self.send_event(PrinterEvent::RestartRequested { result });
+        }
+    }
+
+    /// Return the first requested host exit result, if any.
+    pub fn exit_reason(&self) -> Option<String> {
+        self.exit_reason.lock()
+            .expect("printer exit reason lock poisoned")
+            .clone()
     }
 
     /// Request shutdown from any thread; the transition runs on the reactor.
@@ -2331,8 +2367,13 @@ impl Printer {
             self.gcode_dispatcher().clone()
         };
         let outcome = dispatcher.process_line(line, need_ack)?;
-        if outcome.command == "M112" && outcome.handler_found {
-            self.invoke_shutdown("Shutdown due to M112 command");
+        if outcome.handler_found {
+            match outcome.command.as_str() {
+                "M112" => self.invoke_shutdown("Shutdown due to M112 command"),
+                "RESTART" => self.request_exit("restart"),
+                "FIRMWARE_RESTART" => self.request_exit("firmware_restart"),
+                _ => {}
+            }
         }
         Some(outcome)
     }
@@ -5251,6 +5292,49 @@ mod tests {
 
         assert_eq!(printer.send_event(PrinterEvent::Ready), 1);
         assert_eq!(called.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn restart_gcode_requests_exit_and_emits_ready_event() {
+        let printer = Printer::new();
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let event_results = observed.clone();
+        printer.register_event_handler(PrinterEventKind::RestartRequested, move |event| {
+            if let PrinterEvent::RestartRequested { result } = event {
+                event_results.lock().unwrap().push(result.clone());
+            }
+        });
+        printer.set_ready();
+
+        let outcome = printer.process_gcode_line("RESTART", true).unwrap();
+        assert!(outcome.handler_found);
+        assert_eq!(outcome.events, vec![DispatchEvent::Ack(None)]);
+        assert_eq!(printer.exit_reason().as_deref(), Some("restart"));
+        assert_eq!(*observed.lock().unwrap(), vec!["restart".to_owned()]);
+    }
+
+    #[test]
+    fn firmware_restart_gcode_preserves_distinct_exit_result() {
+        let printer = Printer::new();
+        printer.set_ready();
+
+        let outcome = printer.process_gcode_line("FIRMWARE_RESTART", true).unwrap();
+        assert!(outcome.handler_found);
+        assert_eq!(printer.exit_reason().as_deref(), Some("firmware_restart"));
+    }
+
+    #[test]
+    fn restart_before_ready_requests_exit_without_restart_event() {
+        let printer = Printer::new();
+        let events = Arc::new(AtomicUsize::new(0));
+        let observed = events.clone();
+        printer.register_event_handler(PrinterEventKind::RestartRequested, move |_| {
+            observed.fetch_add(1, Ordering::SeqCst);
+        });
+
+        printer.process_gcode_line("RESTART", true).unwrap();
+        assert_eq!(printer.exit_reason().as_deref(), Some("restart"));
+        assert_eq!(events.load(Ordering::SeqCst), 0);
     }
 
     #[test]
