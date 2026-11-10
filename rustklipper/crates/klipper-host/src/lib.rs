@@ -306,10 +306,7 @@ impl ComponentRegistry {
         printer: &Printer,
         section: &str,
     ) -> Result<Vec<String>, ComponentError> {
-        let _load_guard = printer
-            .component_load_lock
-            .lock()
-            .expect("component load lock poisoned");
+        let _load_guard = printer.lock_component_load();
         let config = printer.config().ok_or(ComponentError::ConfigNotLoaded)?;
         let mut loaded = Vec::new();
         let mut loaded_set = HashSet::new();
@@ -339,10 +336,7 @@ impl ComponentRegistry {
         printer: &Printer,
         generation: Option<u64>,
     ) -> Result<Vec<String>, ComponentError> {
-        let _load_guard = printer
-            .component_load_lock
-            .lock()
-            .expect("component load lock poisoned");
+        let _load_guard = printer.lock_component_load();
         let config = printer.config().ok_or(ComponentError::ConfigNotLoaded)?;
         let mut loaded = Vec::new();
         let mut loaded_set = HashSet::new();
@@ -437,6 +431,12 @@ impl Printer {
         }
     }
 
+    fn lock_component_load(&self) -> MutexGuard<'_, ()> {
+        self.component_load_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     pub fn state(&self) -> PrinterState {
         *self.state.read().expect("printer state lock poisoned")
     }
@@ -508,10 +508,7 @@ impl Printer {
     pub fn install_config(&self, config: ConfigDocument) {
         // Serialize configuration replacement with component factories so a
         // factory cannot register handlers or objects into a discarded config.
-        let _load_guard = self
-            .component_load_lock
-            .lock()
-            .expect("component load lock poisoned");
+        let _load_guard = self.lock_component_load();
         self.config_usage.clear();
         self.mcus.clear();
         let mut component_gcode = self
@@ -1151,10 +1148,7 @@ impl Printer {
         // Serialize unload with component factories and configuration
         // replacement so a concurrent load cannot publish a partially
         // unloaded component as successfully loaded.
-        let _load_guard = self
-            .component_load_lock
-            .lock()
-            .expect("component load lock poisoned");
+        let _load_guard = self.lock_component_load();
         let removed_commands = self.remove_component_gcode_commands(section);
         let removed_component = self
             .loaded_components
@@ -1486,6 +1480,20 @@ mod tests {
     use super::*;
     use klipper_gcode::DispatchEvent;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    #[test]
+    fn component_load_lock_recovers_after_poisoning() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+
+        let printer = Printer::new();
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = printer.component_load_lock.lock().unwrap();
+            panic!("poison component load lock");
+        }));
+
+        let _guard = printer.lock_component_load();
+        assert!(printer.config().is_none());
+    }
 
     #[test]
     fn configuring_transition_cannot_clear_shutdown() {
