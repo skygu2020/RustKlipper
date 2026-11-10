@@ -192,6 +192,9 @@ fn command_send_deadline(
 
     let wake_time = idletime
         + want_clock.saturating_sub(ack_clock) as f64 / update.queue_frequency;
+    if !wake_time.is_finite() {
+        return Err(crate::ClockSyncError::InvalidTimestamp);
+    }
     Ok(Some(wake_time))
 }
 
@@ -2162,6 +2165,20 @@ mod command_send_timing_tests {
         assert!(should_send_command(
             &mut scheduler, update(), timing, 10.006, 10.0, 0,
         ).unwrap());
+    }
+
+    #[test]
+    fn command_wakeup_rejects_overflowing_deadline() {
+        let mut scheduler = CommandScheduler::new();
+        scheduler.enqueue(1, ScheduledCommand::new(vec![0x77], 100, 100)).unwrap();
+        let mut clock = update();
+        clock.queue_frequency = 1e-300;
+        let timing = UartTiming::new(115_200).unwrap();
+
+        assert_eq!(
+            command_send_deadline(&mut scheduler, clock, timing, 1.0, 1.0, 0),
+            Err(crate::ClockSyncError::InvalidTimestamp),
+        );
     }
 
     #[test]
