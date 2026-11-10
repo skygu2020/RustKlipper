@@ -5,6 +5,7 @@
 //! scope of this crate; communication is delegated to the protocol/transport
 //! layers.
 
+pub mod klippy_api;
 pub mod mcu;
 pub use mcu::{McuPollBatch, McuPollError, McuRegistry, McuRegistryError, McuSessionEvent};
 mod reactor;
