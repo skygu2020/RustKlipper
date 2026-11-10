@@ -84,6 +84,14 @@ pub enum McuStartupStage {
     Ready,
 }
 
+fn stage_after_dictionary_install(stage: McuStartupStage) -> McuStartupStage {
+    if stage == McuStartupStage::AwaitingIdentify {
+        McuStartupStage::Identified
+    } else {
+        stage
+    }
+}
+
 /// Owns one USB serial link and its reliable MCU command scheduler.
 ///
 /// A transport or protocol error is terminal for this session. Re-open the
@@ -482,9 +490,7 @@ impl ReliableSerialSession {
     /// progressing session back to an earlier startup phase.
     pub fn set_dictionary(&mut self, dictionary: IdentifyDictionary) {
         self.dictionary = Some(dictionary);
-        if self.startup_stage == McuStartupStage::AwaitingIdentify {
-            self.startup_stage = McuStartupStage::Identified;
-        }
+        self.startup_stage = stage_after_dictionary_install(self.startup_stage);
     }
 
     pub fn has_dictionary(&self) -> bool { self.dictionary.is_some() }
@@ -1879,15 +1885,7 @@ mod receive_timestamp_tests {
 
 #[cfg(test)]
 mod dictionary_install_stage_tests {
-    use super::McuStartupStage;
-
-    fn stage_after_dictionary_install(stage: McuStartupStage) -> McuStartupStage {
-        if stage == McuStartupStage::AwaitingIdentify {
-            McuStartupStage::Identified
-        } else {
-            stage
-        }
-    }
+    use super::{stage_after_dictionary_install, McuStartupStage};
 
     #[test]
     fn first_dictionary_install_advances_identify_stage() {
