@@ -7,6 +7,12 @@ const TRANSMIT_EXTRA: f64 = 0.001;
 const OUTLIER_SIGMA: f64 = 5.0;
 const OUTLIER_FLOOR_SECONDS: f64 = 0.000500;
 
+/// Keep UART reservation deadlines finite when adding a duration near the f64 limit.
+fn saturating_host_time_add(time: f64, duration: f64) -> f64 {
+    let result = time + duration;
+    if result.is_finite() { result } else { f64::MAX }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ClockEstimate {
     pub sample_time: f64,
@@ -267,15 +273,15 @@ impl UartTiming {
     /// represented by our own frame reservations are not counted twice.
     pub fn observe_pending(&mut self, now: f64, pending_bytes: usize) {
         self.idle_until = self.idle_until.max(
-            now + self.seconds_for_bytes(pending_bytes),
+            saturating_host_time_add(now, self.seconds_for_bytes(pending_bytes)),
         );
     }
 
     /// Reserve UART time including bytes already pending in the host driver.
     pub fn reserve_transmission(&mut self, now: f64, pending_bytes: usize, frame_bytes: usize) -> f64 {
-        let pending_until = now + self.seconds_for_bytes(pending_bytes);
+        let pending_until = saturating_host_time_add(now, self.seconds_for_bytes(pending_bytes));
         let start = now.max(self.idle_until).max(pending_until);
-        self.idle_until = start + self.seconds_for_bytes(frame_bytes);
+        self.idle_until = saturating_host_time_add(start, self.seconds_for_bytes(frame_bytes));
         self.idle_until
     }
 }
@@ -283,6 +289,21 @@ impl UartTiming {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uart_reservations_saturate_at_finite_timestamp_limit() {
+        let mut uart = UartTiming::new(1).unwrap();
+        let near_limit = f64::MAX - 1.0;
+
+        uart.observe_pending(near_limit, usize::MAX);
+        assert_eq!(uart.idle_until(), f64::MAX);
+
+        uart.reset_idle(near_limit);
+        let deadline = uart.reserve_transmission(near_limit, usize::MAX, usize::MAX);
+        assert_eq!(deadline, f64::MAX);
+        assert!(uart.idle_until().is_finite());
+    }
+
     #[test]
     fn uptime_initialization_combines_high_and_low_clock_words() {
         let sync = ClockSync::from_uptime(16_000_000.0, 12.5, 3, 0x89ab_cdef).unwrap();
