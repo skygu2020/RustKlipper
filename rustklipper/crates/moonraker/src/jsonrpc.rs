@@ -144,8 +144,12 @@ impl JsonRpcRouter {
                 )).expect("RPC response serialization is infallible"),
             ),
             Value::Array(items) => {
-                let responses: Vec<_> = items.into_iter()
+                let responses: Vec<Value> = items.into_iter()
                     .filter_map(|item| self.handle_single(item))
+                    .map(|response| {
+                        serde_json::to_value(response)
+                            .expect("RPC response serialization is infallible")
+                    })
                     .collect();
                 if responses.is_empty() {
                     None
