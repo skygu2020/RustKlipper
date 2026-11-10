@@ -5415,6 +5415,41 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_restart_requests_preserve_one_result_and_emit_one_event() {
+        let printer = Arc::new(Printer::new());
+        printer.set_ready();
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let observed = events.clone();
+        printer.register_event_handler(PrinterEventKind::RestartRequested, move |event| {
+            if let PrinterEvent::RestartRequested { result } = event {
+                observed.lock().unwrap().push(result.clone());
+            }
+        });
+
+        let workers: Vec<_> = (0..16)
+            .map(|index| {
+                let printer = printer.clone();
+                std::thread::spawn(move || {
+                    let result = if index % 2 == 0 {
+                        "restart"
+                    } else {
+                        "firmware_restart"
+                    };
+                    printer.request_exit(result);
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+
+        let exit_reason = printer.exit_reason().unwrap();
+        assert!(matches!(exit_reason.as_str(), "restart" | "firmware_restart"));
+        assert_eq!(*events.lock().unwrap(), vec![exit_reason]);
+    }
+
+    #[test]
     fn host_loop_returns_when_reactor_requests_exit() {
         let printer = Arc::new(Printer::new());
         let callback_printer = printer.clone();
