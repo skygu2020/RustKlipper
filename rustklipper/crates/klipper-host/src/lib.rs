@@ -4012,6 +4012,8 @@ mod tests {
         });
         let registry = ComponentRegistry::new();
 
+        // Initialization is only valid after entering the configuring state.
+        printer.set_configuring();
         printer.initialize_components(&registry).unwrap();
         printer.set_ready();
         assert_eq!(identify_events.load(Ordering::SeqCst), 1);
