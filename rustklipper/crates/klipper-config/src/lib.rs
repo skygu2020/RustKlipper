@@ -1336,28 +1336,15 @@ fn strip_hash_comment(line: &str) -> &str {
 }
 
 fn strip_inline_comment(line: &str) -> &str {
-    let mut quote = None;
-    let mut escaped = false;
+    // Python configparser (used by Klipper) recognizes inline comment
+    // prefixes even inside quoted values; a prefix must be at line start
+    // or preceded by whitespace.
     for (index, ch) in line.char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        if ch == '\\' {
-            escaped = true;
-            continue;
-        }
-        match quote {
-            Some(delimiter) if ch == delimiter => quote = None,
-            Some(_) => {}
-            None if ch == '\'' || ch == '"' => quote = Some(ch),
-            None if (ch == ';' || ch == '#')
-                && (index == 0
-                    || line[..index].chars().next_back().is_some_and(char::is_whitespace)) =>
-            {
-                return &line[..index];
-            }
-            None => {}
+        if ch == ';'
+            && (index == 0
+                || line[..index].chars().next_back().is_some_and(char::is_whitespace))
+        {
+            return &line[..index];
         }
     }
     line
@@ -1382,6 +1369,16 @@ mod tests {
             "[printer]\nserial: /dev/serial\\#0\n",
         ).unwrap();
         assert_eq!(config.get("printer", "serial"), Some("/dev/serial\\"));
+    }
+
+    #[test]
+    fn semicolon_inline_comments_are_not_suppressed_by_quotes_or_escapes() {
+        let config = ConfigDocument::parse(
+            "[gcode_macro TEST]\nquoted: \"value; trailing text\"\nescaped: value\\ ; trailing text\nembedded: value;kept\n",
+        ).unwrap();
+        assert_eq!(config.get("gcode_macro TEST", "quoted"), Some("\"value"));
+        assert_eq!(config.get("gcode_macro TEST", "escaped"), Some("value\\"));
+        assert_eq!(config.get("gcode_macro TEST", "embedded"), Some("value;kept"));
     }
 
     #[test]
