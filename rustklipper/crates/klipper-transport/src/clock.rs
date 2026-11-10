@@ -331,10 +331,10 @@ mod tests {
 
     #[test]
     fn clock_sync_rejects_negative_monotonic_timestamps() {
-        assert_eq!(
+        assert!(matches!(
             ClockSync::new(1_000_000.0, -0.001, 0),
             Err(ClockSyncError::InvalidTimestamp),
-        );
+        ));
 
         let mut sync = ClockSync::new(1_000_000.0, 1.0, 100_000).unwrap();
         let before = sync.clone();
