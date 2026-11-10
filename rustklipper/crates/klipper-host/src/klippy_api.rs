@@ -180,6 +180,59 @@ impl KlippyApiDispatcher {
         })
     }
 
+    /// Register a conservative `objects/query` endpoint.
+    ///
+    /// The current printer registry stores arbitrary Rust values, so only
+    /// objects explicitly registered as `serde_json::Value` are queryable.
+    /// Non-JSON host objects are omitted rather than being stringified or
+    /// exposing implementation details as if they were Klipper status fields.
+    pub fn register_object_query(
+        &self,
+        printer: std::sync::Arc<crate::Printer>,
+    ) -> Result<(), KlippyApiRpcError> {
+        self.register("objects/query", move |params| {
+            let requested = params
+                .get("objects")
+                .and_then(Value::as_object)
+                .ok_or_else(|| KlippyApiRpcError::invalid_request(
+                    "objects/query requires an objects mapping"
+                ))?;
+            let mut status = serde_json::Map::new();
+            for (object_name, requested_fields) in requested {
+                let Some(object) = printer.lookup_object_optional::<Value>(object_name)
+                    .map_err(|error| KlippyApiRpcError::internal(error.to_string()))?
+                else {
+                    continue;
+                };
+                let Some(fields) = object.as_object() else {
+                    continue;
+                };
+                let selected = match requested_fields {
+                    Value::Array(names) => {
+                        let mut selected = serde_json::Map::new();
+                        for name in names {
+                            let Some(name) = name.as_str() else {
+                                return Err(KlippyApiRpcError::invalid_request(
+                                    "object field names must be strings"
+                                ));
+                            };
+                            if let Some(value) = fields.get(name) {
+                                selected.insert(name.to_owned(), value.clone());
+                            }
+                        }
+                        selected
+                    }
+                    Value::Null => fields.clone(),
+                    _ => return Err(KlippyApiRpcError::invalid_request(
+                        "each objects entry must be an array of field names or null"
+                    )),
+                };
+                status.insert(object_name.clone(), Value::Object(selected));
+            }
+            Ok(serde_json::json!({ "status": status }))
+        })
+    }
+
     /// Register Klipper's emergency-stop endpoint.
     ///
     /// The call transitions the printer into shutdown and returns an empty
@@ -523,6 +576,50 @@ mod tests {
         printer.remove_object("gcode");
         let response = dispatcher.dispatch_value(request).unwrap();
         assert_eq!(response["result"]["objects"], json!(["toolhead"]));
+    }
+
+    #[test]
+    fn object_query_returns_only_requested_fields_from_json_objects() {
+        let printer = std::sync::Arc::new(crate::Printer::new());
+        printer.register_object("toolhead", serde_json::json!({
+            "position": [1.0, 2.0, 3.0],
+            "homed_axes": "xyz",
+            "max_velocity": 300.0
+        })).unwrap();
+        // Arbitrary Rust objects are deliberately not serialized implicitly.
+        printer.register_object("opaque", 42_u8).unwrap();
+
+        let dispatcher = KlippyApiDispatcher::new();
+        dispatcher.register_object_query(printer).unwrap();
+        let response = dispatcher.dispatch_value(json!({
+            "id": 8,
+            "method": "objects/query",
+            "params": { "objects": {
+                "toolhead": ["position", "homed_axes"],
+                "opaque": ["anything"],
+                "missing": ["field"]
+            }}
+        })).unwrap();
+        assert_eq!(response["result"]["status"], json!({
+            "toolhead": {
+                "position": [1.0, 2.0, 3.0],
+                "homed_axes": "xyz"
+            }
+        }));
+    }
+
+    #[test]
+    fn object_query_rejects_malformed_field_selection() {
+        let printer = std::sync::Arc::new(crate::Printer::new());
+        printer.register_object("toolhead", serde_json::json!({"position": [0, 0, 0]})).unwrap();
+        let dispatcher = KlippyApiDispatcher::new();
+        dispatcher.register_object_query(printer).unwrap();
+        let response = dispatcher.dispatch_value(json!({
+            "id": 9,
+            "method": "objects/query",
+            "params": { "objects": { "toolhead": "position" } }
+        })).unwrap();
+        assert_eq!(response["error"]["code"], json!(-32600));
     }
 
     #[test]
