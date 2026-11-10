@@ -81,8 +81,17 @@ impl KlippyApiCodec {
                 self.buffer.drain(..=end);
                 return Err(KlippyApiCodecError::MessageTooLarge { limit: self.max_message_size });
             }
-            let parsed = serde_json::from_slice::<Value>(&self.buffer[consumed..end])
-                .map_err(|error| KlippyApiCodecError::InvalidJson(error.to_string()))?;
+            let parsed = match serde_json::from_slice::<Value>(&self.buffer[consumed..end]) {
+                Ok(parsed) => parsed,
+                Err(error) => {
+                    // Consume the malformed frame (and any earlier frames from
+                    // this push) so a caller that reports the error can recover
+                    // or close the stream without repeatedly parsing the same
+                    // invalid bytes on every subsequent read.
+                    self.buffer.drain(..=end);
+                    return Err(KlippyApiCodecError::InvalidJson(error.to_string()));
+                }
+            };
             messages.push(parsed);
             consumed = end + 1;
         }
@@ -253,6 +262,19 @@ mod tests {
         assert_eq!(codec.push(&bytes).unwrap(), vec![json!({"id":1})]);
         assert_eq!(codec.buffered_len(), 7);
         assert_eq!(codec.push(b"}\x03").unwrap(), vec![json!({"id":2})]);
+    }
+
+    #[test]
+    fn discards_malformed_frame_without_poisoning_following_messages() {
+        let mut codec = KlippyApiCodec::default();
+        assert!(matches!(
+            codec.push(b"{invalid}\x03"),
+            Err(KlippyApiCodecError::InvalidJson(_))
+        ));
+        assert!(codec.is_empty());
+
+        let valid = KlippyApiCodec::encode(&json!({"id":4,"result":"ok"})).unwrap();
+        assert_eq!(codec.push(&valid).unwrap(), vec![json!({"id":4,"result":"ok"})]);
     }
 
     #[test]
