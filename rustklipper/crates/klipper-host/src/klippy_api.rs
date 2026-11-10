@@ -232,6 +232,53 @@ fn rpc_error_response(id: Value, error: KlippyApiRpcError) -> Value {
     })
 }
 
+/// Errors returned while serving one bidirectional Klippy API byte stream.
+#[derive(Debug, Error)]
+pub enum KlippyApiStreamError {
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Codec(#[from] KlippyApiCodecError),
+    #[error("Klippy API stream ended with {buffered} unterminated message bytes")]
+    TruncatedMessage { buffered: usize },
+}
+
+/// Serve requests on any blocking read/write stream.
+///
+/// This is deliberately transport-neutral: standard Unix streams, TCP streams,
+/// Windows named-pipe handles, and test streams can all use the same handler.
+/// A stream is considered finished cleanly only when EOF occurs between frames.
+pub fn serve_stream<S>(
+    stream: &mut S,
+    dispatcher: &KlippyApiDispatcher,
+) -> Result<(), KlippyApiStreamError>
+where
+    S: std::io::Read + std::io::Write,
+{
+    let mut codec = KlippyApiCodec::default();
+    let mut chunk = [0u8; 8192];
+    loop {
+        let count = stream.read(&mut chunk)?;
+        if count == 0 {
+            return if codec.is_empty() {
+                Ok(())
+            } else {
+                Err(KlippyApiStreamError::TruncatedMessage {
+                    buffered: codec.buffered_len(),
+                })
+            };
+        }
+
+        for message in codec.push(&chunk[..count])? {
+            if let Some(response) = dispatcher.dispatch_value(message) {
+                let encoded = KlippyApiCodec::encode(&response)?;
+                stream.write_all(&encoded)?;
+                stream.flush()?;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,6 +357,58 @@ mod tests {
         assert_eq!(decoder.push(&response).unwrap(), vec![json!({"id":7,"result":{"state":"ready"}})]);
         let notification = KlippyApiCodec::encode_notification("process_gcode_response", json!({"response":"ok"})).unwrap();
         assert_eq!(decoder.push(&notification).unwrap(), vec![json!({"method":"process_gcode_response","params":{"response":"ok"}})]);
+    }
+
+    struct TestStream {
+        input: std::io::Cursor<Vec<u8>>,
+        output: Vec<u8>,
+    }
+
+    impl TestStream {
+        fn new(input: Vec<u8>) -> Self {
+            Self { input: std::io::Cursor::new(input), output: Vec::new() }
+        }
+    }
+
+    impl std::io::Read for TestStream {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            self.input.read(buffer)
+        }
+    }
+
+    impl std::io::Write for TestStream {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            self.output.extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    }
+
+    #[test]
+    fn serves_requests_and_suppresses_notification_frames() {
+        let dispatcher = KlippyApiDispatcher::new();
+        dispatcher.register("info", |_| Ok(json!({"state":"ready"}))).unwrap();
+        dispatcher.register("notify", |_| Ok(Value::Null)).unwrap();
+
+        let mut input = KlippyApiCodec::encode(&json!({"id":1,"method":"info"})).unwrap();
+        input.extend(KlippyApiCodec::encode(&json!({"method":"notify"})).unwrap());
+        let mut stream = TestStream::new(input);
+
+        serve_stream(&mut stream, &dispatcher).unwrap();
+
+        let mut decoder = KlippyApiCodec::default();
+        assert_eq!(
+            decoder.push(&stream.output).unwrap(),
+            vec![json!({"id":1,"result":{"state":"ready"}})]
+        );
+    }
+
+    #[test]
+    fn reports_eof_inside_a_message() {
+        let mut stream = TestStream::new(br#"{"id":1"#.to_vec());
+        let error = serve_stream(&mut stream, &KlippyApiDispatcher::new()).unwrap_err();
+        assert!(matches!(error, KlippyApiStreamError::TruncatedMessage { buffered: 7 }));
     }
 
     #[test]
