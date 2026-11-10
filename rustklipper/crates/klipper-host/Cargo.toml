@@ -9,6 +9,7 @@ description = "Rust implementation of the Klipper host runtime"
 [dependencies]
 klipper-config = { path = "../klipper-config" }
 klipper-gcode = { path = "../klipper-gcode" }
+klipper-protocol = { path = "../klipper-protocol" }
 klipper-transport = { path = "../klipper-transport" }
 thiserror.workspace = true
 serde_json.workspace = true
