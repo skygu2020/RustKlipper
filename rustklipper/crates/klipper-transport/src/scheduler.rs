@@ -151,7 +151,7 @@ impl CommandScheduler {
             return Err(ScheduleError::CommandTooLarge(command.bytes.len()));
         }
         if command.req_clock != BACKGROUND_PRIORITY_CLOCK
-            && command.min_clock.wrapping_add(1u64 << 31) < command.req_clock
+            && command.req_clock.saturating_sub(command.min_clock) > (1u64 << 31)
         {
             command.min_clock = command.req_clock - (1u64 << 31);
         }
@@ -800,6 +800,37 @@ mod tests {
         let retry = scheduler.build_frame().unwrap().unwrap();
         assert_eq!(retry.bytes.len(), first.bytes.len());
         assert_eq!(retry.send_sequence, first.send_sequence + 1);
+    }
+
+    #[test]
+    fn enqueue_clock_adjustment_does_not_wrap_near_u64_limit() {
+        let mut scheduler = CommandScheduler::new();
+        let min_clock = u64::MAX - 10;
+        let req_clock = u64::MAX - 5;
+        scheduler.enqueue(
+            1,
+            ScheduledCommand::new(vec![0x31], min_clock, req_clock),
+        ).unwrap();
+
+        assert_eq!(
+            scheduler.minimum_upcoming_min_clock(),
+            Some(min_clock),
+            "a short clock distance near u64::MAX must not trigger the half-range adjustment",
+        );
+
+        let mut scheduler = CommandScheduler::new();
+        let req_clock = u64::MAX - 5;
+        let min_clock = req_clock - (1u64 << 31) - 1;
+        scheduler.enqueue(
+            1,
+            ScheduledCommand::new(vec![0x32], min_clock, req_clock),
+        ).unwrap();
+
+        assert_eq!(
+            scheduler.minimum_upcoming_min_clock(),
+            Some(req_clock - (1u64 << 31)),
+            "a distance beyond the half-range must still be clamped",
+        );
     }
 
     #[test]
