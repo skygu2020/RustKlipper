@@ -165,6 +165,17 @@ pub enum PrinterEvent {
     RestartRequested { result: String },
 }
 
+/// Motion-queue operations required before a ready printer can restart.
+///
+/// Implementations are supplied by the host-side toolhead/motion subsystem.
+/// The host does not emulate motion when no implementation is registered.
+pub trait RestartMotion: Send + Sync {
+    /// Queue a dwell before waiting for outstanding motion to complete.
+    fn dwell(&self, duration: std::time::Duration);
+    /// Block until all queued moves have completed.
+    fn wait_moves(&self);
+}
+
 impl PrinterEvent {
     pub fn kind(&self) -> PrinterEventKind {
         match self {
@@ -523,6 +534,8 @@ pub struct Printer {
     state: RwLock<PrinterState>,
     state_message: RwLock<String>,
     exit_reason: Mutex<Option<String>>,
+    restart_in_progress: AtomicBool,
+    restart_motion: RwLock<Option<Arc<dyn RestartMotion>>>,
     config: RwLock<Option<Arc<ConfigDocument>>>,
     config_usage: ConfigUsageTracker,
     loaded_components: Mutex<HashSet<String>>,
@@ -563,6 +576,8 @@ impl Printer {
             state: RwLock::new(PrinterState::Startup),
             state_message: RwLock::new("Printer is not ready".to_owned()),
             exit_reason: Mutex::new(None),
+            restart_in_progress: AtomicBool::new(false),
+            restart_motion: RwLock::new(None),
             config: RwLock::new(None),
             config_usage: ConfigUsageTracker::new(),
             loaded_components: Mutex::new(HashSet::new()),
@@ -1142,27 +1157,67 @@ impl Printer {
         }
     }
 
+    /// Install the motion queue used to drain moves before a ready printer restarts.
+    ///
+    /// When no motion implementation is installed, restart retains the
+    /// immediate-exit behavior used by minimal/headless host configurations.
+    pub fn set_restart_motion(&self, motion: Arc<dyn RestartMotion>) {
+        *self.restart_motion.write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(motion);
+    }
+
+    /// Remove the motion queue used by restart requests.
+    pub fn clear_restart_motion(&self) {
+        *self.restart_motion.write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+
     /// Request that the host process exit with Klipper's restart result.
     ///
-    /// The restart-request event is emitted only when the printer is ready,
-    /// matching Klipper's request_restart() readiness guard. Motion draining
-    /// and the 500 ms toolhead dwell are coordinated by the host runtime once
-    /// a toolhead implementation is available.
+    /// For a ready printer, this emits the restart event, queues the
+    /// Klipper-compatible 500 ms dwell, waits for queued moves to complete,
+    /// and only then publishes the process-exit result. The first concurrent
+    /// request owns the complete sequence.
     pub fn request_exit(&self, result: impl Into<String>) {
         let result = result.into();
+        if self.restart_in_progress.compare_exchange(
+            false,
+            true,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ).is_err() {
+            return;
+        }
+
         let was_ready = {
             let _lifecycle_guard = self.lifecycle_lock.lock()
                 .expect("printer lifecycle lock poisoned");
-            let mut exit_reason = self.exit_reason.lock()
-                .expect("printer exit reason lock poisoned");
-            if exit_reason.is_some() {
+            if self.exit_reason.lock()
+                .expect("printer exit reason lock poisoned")
+                .is_some()
+            {
                 return;
             }
-            *exit_reason = Some(result.clone());
             *self.state.read().expect("printer state lock poisoned") == PrinterState::Ready
         };
+
         if was_ready {
-            self.send_event(PrinterEvent::RestartRequested { result });
+            self.send_event(PrinterEvent::RestartRequested { result: result.clone() });
+            let motion = self.restart_motion.read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            if let Some(motion) = motion {
+                motion.dwell(std::time::Duration::from_millis(500));
+                motion.wait_moves();
+            }
+        }
+
+        let _lifecycle_guard = self.lifecycle_lock.lock()
+            .expect("printer lifecycle lock poisoned");
+        let mut exit_reason = self.exit_reason.lock()
+            .expect("printer exit reason lock poisoned");
+        if exit_reason.is_none() {
+            *exit_reason = Some(result);
         }
     }
 
@@ -5412,6 +5467,44 @@ mod tests {
         assert_eq!(batch.mcus, McuPollBatch::default());
         assert!(batch.mcu_configured.is_empty());
         assert!(batch.mcu_startup_errors.is_empty());
+    }
+
+    #[test]
+    fn restart_drains_motion_after_event_and_before_publishing_exit() {
+        struct RecordingMotion {
+            steps: Arc<Mutex<Vec<String>>>,
+        }
+
+        impl RestartMotion for RecordingMotion {
+            fn dwell(&self, duration: std::time::Duration) {
+                self.steps.lock().unwrap().push(format!("dwell:{}", duration.as_millis()));
+            }
+
+            fn wait_moves(&self) {
+                self.steps.lock().unwrap().push("wait_moves".to_owned());
+            }
+        }
+
+        let printer = Printer::new();
+        printer.set_ready();
+        let steps = Arc::new(Mutex::new(Vec::new()));
+        let observed = steps.clone();
+        printer.register_event_handler(PrinterEventKind::RestartRequested, move |_| {
+            observed.lock().unwrap().push("restart_event".to_owned());
+        });
+        printer.set_restart_motion(Arc::new(RecordingMotion { steps: steps.clone() }));
+
+        printer.request_exit("restart");
+
+        assert_eq!(
+            *steps.lock().unwrap(),
+            vec![
+                "restart_event".to_owned(),
+                "dwell:500".to_owned(),
+                "wait_moves".to_owned(),
+            ]
+        );
+        assert_eq!(printer.exit_reason().as_deref(), Some("restart"));
     }
 
     #[test]
