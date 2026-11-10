@@ -2334,6 +2334,27 @@ impl Printer {
     /// The reactor wait is capped so MCU serial sessions are polled regularly.
     /// All resulting MCU events are delivered to registered callbacks before
     /// the batch is returned. A panicking callback is isolated from the others.
+    /// Run the cooperative Host loop until a process-exit request is observed.
+    ///
+    /// The loop continues polling reactor callbacks and MCU sessions while
+    /// active. It returns the first requested exit result so the embedding
+    /// executable can perform process-level cleanup and choose its restart mode.
+    /// This method intentionally does not terminate the OS process itself.
+    pub fn run_host_until_exit(
+        &self,
+        max_wait: std::time::Duration,
+    ) -> String {
+        loop {
+            if let Some(result) = self.exit_reason() {
+                return result;
+            }
+            let batch = self.run_host_once(max_wait);
+            if let Some(result) = batch.exit_reason {
+                return result;
+            }
+        }
+    }
+
     pub fn run_host_once(&self, max_wait: std::time::Duration) -> PrinterRunBatch {
         let reactor_wait = bounded_host_wait(max_wait);
         let reactor_callbacks = self.reactor.run_once(reactor_wait);
@@ -5363,6 +5384,30 @@ mod tests {
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0].command, "RESTART");
         assert_eq!(printer.exit_reason().as_deref(), Some("restart"));
+    }
+
+    #[test]
+    fn host_loop_returns_when_reactor_requests_exit() {
+        let printer = Arc::new(Printer::new());
+        let callback_printer = printer.clone();
+        printer.reactor().register_callback(move || {
+            callback_printer.request_exit("restart");
+        });
+
+        let result = printer.run_host_until_exit(std::time::Duration::from_millis(1));
+
+        assert_eq!(result, "restart");
+        assert_eq!(printer.exit_reason().as_deref(), Some("restart"));
+    }
+
+    #[test]
+    fn host_loop_returns_an_exit_requested_before_starting() {
+        let printer = Printer::new();
+        printer.request_exit("firmware_restart");
+
+        let result = printer.run_host_until_exit(std::time::Duration::from_millis(1));
+
+        assert_eq!(result, "firmware_restart");
     }
 
     #[test]
