@@ -590,7 +590,7 @@ mod tests {
             Some(DispatchEvent::Info(message)) if message.contains("Unknown command")
         ));
 
-        let mut not_ready = GCodeDispatcher::new();
+        let not_ready = GCodeDispatcher::new();
         let blocked = not_ready
             .process_line("UNKNOWN_COMMAND VALUE=\"unterminated", true)
             .unwrap();
