@@ -1331,7 +1331,7 @@ fn strip_hash_comment(line: &str) -> &str {
             escaped = false;
             continue;
         }
-        if ch == '\\\\' {
+        if ch == '\\' {
             escaped = true;
             continue;
         }
@@ -1354,7 +1354,7 @@ fn strip_inline_comment(line: &str) -> &str {
             escaped = false;
             continue;
         }
-        if ch == '\\\\' {
+        if ch == '\\' {
             escaped = true;
             continue;
         }
@@ -1380,7 +1380,7 @@ mod tests {
     #[test]
     fn comment_markers_inside_quoted_values_are_preserved() {
         let config = ConfigDocument::parse(
-            "[gcode_macro TEST]\\nmessage: \"value #1; still text\"\\ncommand: 'RESPOND MSG=hello #world' ; real comment\\n",
+            "[gcode_macro TEST]\nmessage: \"value #1; still text\"\ncommand: 'RESPOND MSG=hello #world' ; real comment\n",
         ).unwrap();
         assert_eq!(config.get("gcode_macro TEST", "message"), Some("\"value #1; still text\""));
         assert_eq!(config.get("gcode_macro TEST", "command"), Some("'RESPOND MSG=hello #world'"));
@@ -1389,7 +1389,7 @@ mod tests {
     #[test]
     fn escaped_comment_markers_do_not_start_comments() {
         let config = ConfigDocument::parse(
-            "[printer]\\nserial: /dev/serial\\#0\\n",
+            "[printer]\nserial: /dev/serial\\#0\n",
         ).unwrap();
         assert_eq!(config.get("printer", "serial"), Some("/dev/serial\\#0"));
     }
