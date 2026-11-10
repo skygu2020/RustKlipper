@@ -24,6 +24,7 @@ use klipper_gcode::{DispatchEvent, DispatchOutcome, GCodeCommand, GCodeDispatche
 use thiserror::Error;
 
 type EventHandler = Arc<dyn Fn(&PrinterEvent) + Send + Sync>;
+type McuEventHandler = Arc<dyn Fn(&McuSessionEvent) + Send + Sync>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrinterState {
@@ -59,6 +60,8 @@ pub struct PrinterStatus {
 pub struct PrinterRunBatch {
     pub reactor_callbacks: usize,
     pub mcus: McuPollBatch,
+    /// Number of MCU event callbacks isolated after panicking.
+    pub mcu_handler_panics: usize,
 }
 
 const MCU_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
@@ -425,6 +428,7 @@ pub struct Printer {
         HashMap<std::thread::ThreadId, Vec<Vec<(String, Arc<dyn Any + Send + Sync>)>>>,
     >,
     event_handlers: Mutex<HashMap<PrinterEventKind, Vec<EventHandler>>>,
+    mcu_event_handlers: Mutex<Vec<McuEventHandler>>,
     component_gcode: Mutex<HashMap<String, HashSet<String>>>,
     gcode: Mutex<GCodeDispatcher>,
     reactor: Reactor,
@@ -454,6 +458,7 @@ impl Printer {
             objects: RwLock::new(HashMap::new()),
             object_registration_transactions: Mutex::new(HashMap::new()),
             event_handlers: Mutex::new(HashMap::new()),
+            mcu_event_handlers: Mutex::new(Vec::new()),
             component_gcode: Mutex::new(HashMap::new()),
             gcode: Mutex::new(GCodeDispatcher::new()),
             reactor: Reactor::new(),
@@ -1603,18 +1608,47 @@ impl Printer {
         self.reactor.run_once(max_wait)
     }
 
+    /// Register a callback for every event emitted by any MCU session.
+    ///
+    /// Callbacks run after the session and registry locks have been released.
+    /// Consumers can filter by MCU name and event variant.
+    pub fn register_mcu_event_handler<F>(&self, handler: F)
+    where
+        F: Fn(&McuSessionEvent) + Send + Sync + 'static,
+    {
+        self.mcu_event_handlers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(Arc::new(handler));
+    }
+
+    fn dispatch_mcu_events(&self, events: &[McuSessionEvent]) -> usize {
+        let handlers = self.mcu_event_handlers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        events.iter().map(|event| {
+            handlers.iter().filter(|handler| {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(event)))
+                    .is_err()
+            }).count()
+        }).sum()
+    }
+
     /// Run one cooperative Host iteration.
     ///
-    /// The reactor wait is capped so MCU serial sessions are polled regularly;
-    /// the caller receives the complete MCU event/error batch for dispatch.
-    /// Repeated calls drive both reactor callbacks and MCU transport progress.
+    /// The reactor wait is capped so MCU serial sessions are polled regularly.
+    /// All resulting MCU events are delivered to registered callbacks before
+    /// the batch is returned. A panicking callback is isolated from the others.
     pub fn run_host_once(&self, max_wait: std::time::Duration) -> PrinterRunBatch {
         let reactor_wait = bounded_host_wait(max_wait);
         let reactor_callbacks = self.reactor.run_once(reactor_wait);
         let mcus = self.poll_mcus();
+        let mcu_handler_panics = self.dispatch_mcu_events(&mcus.events);
         PrinterRunBatch {
             reactor_callbacks,
             mcus,
+            mcu_handler_panics,
         }
     }
 
@@ -1791,6 +1825,76 @@ mod tests {
         assert_eq!(
             bounded_host_wait(std::time::Duration::ZERO),
             std::time::Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn mcu_events_are_dispatched_to_all_registered_handlers() {
+        let printer = Printer::new();
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let first = received.clone();
+        printer.register_mcu_event_handler(move |event| {
+            first.lock().unwrap().push(event.mcu.clone());
+        });
+        let second = received.clone();
+        printer.register_mcu_event_handler(move |event| {
+            second.lock().unwrap().push(format!("{}:second", event.mcu));
+        });
+
+        let events = vec![McuSessionEvent {
+            mcu: "mcu0".to_owned(),
+            event: klipper_transport::SessionEvent::Sent {
+                sequence: 4,
+                bytes: 12,
+            },
+        }];
+        assert_eq!(printer.dispatch_mcu_events(&events), 0);
+        assert_eq!(
+            *received.lock().unwrap(),
+            vec!["mcu0".to_owned(), "mcu0:second".to_owned()]
+        );
+    }
+
+    #[test]
+    fn panicking_mcu_event_handler_does_not_block_other_handlers() {
+        let printer = Printer::new();
+        let called = Arc::new(AtomicBool::new(false));
+        printer.register_mcu_event_handler(|_| panic!("isolated MCU callback panic"));
+        let observed = called.clone();
+        printer.register_mcu_event_handler(move |_| {
+            observed.store(true, Ordering::SeqCst);
+        });
+
+        let events = vec![McuSessionEvent {
+            mcu: "mcu0".to_owned(),
+            event: klipper_transport::SessionEvent::Sent {
+                sequence: 1,
+                bytes: 3,
+            },
+        }];
+        assert_eq!(printer.dispatch_mcu_events(&events), 1);
+        assert!(called.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn mcu_event_callback_can_register_another_callback() {
+        let printer = Arc::new(Printer::new());
+        let nested = printer.clone();
+        printer.register_mcu_event_handler(move |_| {
+            nested.register_mcu_event_handler(|_| {});
+        });
+        let events = vec![McuSessionEvent {
+            mcu: "mcu0".to_owned(),
+            event: klipper_transport::SessionEvent::Sent {
+                sequence: 1,
+                bytes: 1,
+            },
+        }];
+
+        assert_eq!(printer.dispatch_mcu_events(&events), 0);
+        assert_eq!(
+            printer.mcu_event_handlers.lock().unwrap().len(),
+            2
         );
     }
 
