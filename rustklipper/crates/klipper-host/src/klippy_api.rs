@@ -5,6 +5,7 @@
 //! reused above Unix sockets, Windows named pipes, or an in-process transport.
 
 use serde_json::{Map, Value};
+use klipper_gcode::DispatchEvent;
 use thiserror::Error;
 
 pub const MESSAGE_TERMINATOR: u8 = 0x03;
