@@ -57,6 +57,13 @@ fn poll_generation_is_current(snapshot: u64, current: u64) -> bool {
     snapshot == current
 }
 
+fn session_handle_is_current<T>(
+    current: Option<&Arc<Mutex<T>>>,
+    snapshot: Option<&Arc<Mutex<T>>>,
+) -> bool {
+    matches!((current, snapshot), (Some(current), Some(snapshot)) if Arc::ptr_eq(current, snapshot))
+}
+
 fn disconnect_session_handle(session: &Arc<Mutex<ReliableSerialSession>>) {
     match session.lock() {
         Ok(mut guard) => guard.mark_disconnected(),
@@ -177,11 +184,10 @@ impl McuRegistry {
         // lock and needs the registry lock for panic cleanup.
         let session = {
             let mut state = self.state.lock().expect("MCU registry lock poisoned");
-            let session = state.sessions.remove(name)?;
-            // Invalidate any in-flight poll snapshot that may still contain
-            // this session, even though the remaining sessions stay registered.
-            state.generation = state.generation.wrapping_add(1);
-            session
+            // Removing one MCU must not invalidate unrelated sessions or
+            // cancel serial opens reserved by other MCU names. poll_all()
+            // filters this exact handle out before publishing its batch.
+            state.sessions.remove(name)?
         };
         disconnect_session_handle(&session);
         Some(session)
@@ -241,6 +247,10 @@ impl McuRegistry {
             )
         };
         sessions.sort_by(|left, right| left.0.cmp(&right.0));
+        let snapshot_handles: HashMap<_, _> = sessions
+            .iter()
+            .map(|(name, session)| (name.clone(), session.clone()))
+            .collect();
 
         let mut batch = McuPollBatch::default();
         for (name, session) in sessions {
@@ -295,13 +305,25 @@ impl McuRegistry {
             }
         }
 
-        // A disconnect/configuration replacement may have cleared the
-        // registry after the snapshot. Do not leak events or errors collected
-        // from sessions that no longer belong to the active lifecycle.
+        // A clear/disconnect invalidates the whole printer lifecycle. A
+        // single-session removal, however, only filters that handle: events
+        // and errors from unrelated MCUs remain valid for this poll cycle.
         let state = self.state.lock().expect("MCU registry lock poisoned");
         if !poll_generation_is_current(generation, state.generation) {
             return McuPollBatch::default();
         }
+        batch.events.retain(|event| {
+            session_handle_is_current(
+                state.sessions.get(&event.mcu),
+                snapshot_handles.get(&event.mcu),
+            )
+        });
+        batch.errors.retain(|error| {
+            session_handle_is_current(
+                state.sessions.get(&error.mcu),
+                snapshot_handles.get(&error.mcu),
+            )
+        });
         batch
     }
 
@@ -351,6 +373,16 @@ mod tests {
     fn poll_batch_generation_check_rejects_a_cleared_registry() {
         assert!(poll_generation_is_current(7, 7));
         assert!(!poll_generation_is_current(7, 8));
+    }
+
+    #[test]
+    fn removing_one_session_does_not_match_a_replacement_handle() {
+        let old = Arc::new(Mutex::new(1_u8));
+        let replacement = Arc::new(Mutex::new(2_u8));
+        assert!(session_handle_is_current(Some(&old), Some(&old)));
+        assert!(!session_handle_is_current(Some(&replacement), Some(&old)));
+        assert!(!session_handle_is_current(None, Some(&old)));
+        assert!(!session_handle_is_current(Some(&old), None));
     }
 
     #[test]
