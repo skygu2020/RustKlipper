@@ -460,6 +460,15 @@ mod tests {
     }
 
     #[test]
+    fn start_identify_reports_missing_mcu_session() {
+        let registry = McuRegistry::new();
+        assert_eq!(
+            registry.start_identify(" mcu ", 0, 64),
+            Err(McuRegistryError::SessionNotFound { name: "mcu".to_owned() })
+        );
+    }
+
+    #[test]
     fn startup_stage_queries_are_empty_without_registered_sessions() {
         let registry = McuRegistry::new();
         assert_eq!(registry.startup_stage("mcu"), None);
