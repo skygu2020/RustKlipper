@@ -42,6 +42,8 @@ pub enum ScheduleError {
     Retransmit(#[from] RetransmitError),
     #[error("invalid ACK sequence {received}; highest sent sequence is {sent}")]
     InvalidAckSequence { received: u64, sent: u64 },
+    #[error("MCU send sequence space is exhausted")]
+    SequenceExhausted,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReceivedFrameResult {
@@ -199,6 +201,11 @@ impl CommandScheduler {
     }
 
     fn build_frame_inner(&mut self) -> Result<Option<ScheduledFrame>, ScheduleError> {
+        // Extended send sequences must remain strictly increasing for ACK and
+        // retransmission tracking. Never wrap back to zero and reuse old IDs.
+        if self.send_sequence == u64::MAX {
+            return Err(ScheduleError::SequenceExhausted);
+        }
         if !self.can_send_frame() {
             return Ok(None);
         }
@@ -220,7 +227,7 @@ impl CommandScheduler {
         if payload.is_empty() { return Ok(None); }
         let seq = self.send_sequence;
         let bytes = encode_frame((seq as u8) & 0x0f, &payload)?;
-        self.send_sequence = self.send_sequence.wrapping_add(1);
+        self.send_sequence = self.send_sequence.checked_add(1).expect("sequence exhaustion checked before frame construction");
         self.need_ack_bytes = self.need_ack_bytes.saturating_add(bytes.len());
         self.sent_blocks.push_back((seq, bytes.len()));
         Ok(Some(ScheduledFrame { send_sequence: seq, bytes, notify_ids }))
@@ -366,6 +373,19 @@ mod tests {
         assert_eq!(scheduler.queued_counts(), (1, 0));
         assert_eq!(scheduler.promote_ready(min_clock + 1), None);
         assert_eq!(scheduler.queued_counts(), (0, 1));
+    }
+
+    #[test]
+    fn send_sequence_exhaustion_rejects_frame_without_consuming_queued_commands() {
+        let mut scheduler = CommandScheduler::new();
+        scheduler.send_sequence = u64::MAX;
+        scheduler.enqueue(1, ScheduledCommand::new(vec![0x5a], 0, 1)).unwrap();
+        scheduler.promote_ready(0);
+
+        assert_eq!(scheduler.build_frame(), Err(ScheduleError::SequenceExhausted.into()));
+        assert_eq!(scheduler.send_sequence(), u64::MAX);
+        assert_eq!(scheduler.queued_counts(), (0, 1));
+        assert_eq!(scheduler.ready_bytes(), 1);
     }
 
     #[test]
