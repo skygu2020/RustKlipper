@@ -1503,6 +1503,27 @@ mod tests {
     }
 
     #[test]
+    fn gcode_handler_can_transition_printer_lifecycle() {
+        let printer = Arc::new(Printer::new());
+        let handler_printer = printer.clone();
+        printer
+            .register_gcode_command("TRIGGER_SHUTDOWN", false, None, move |_| {
+                handler_printer.invoke_shutdown("command requested shutdown");
+                Ok(Vec::new())
+            })
+            .unwrap();
+        printer.set_ready();
+
+        let outcome = printer
+            .process_gcode_line("TRIGGER_SHUTDOWN", true)
+            .expect("command should be parsed");
+
+        assert!(outcome.handler_found);
+        assert_eq!(printer.state(), PrinterState::Shutdown);
+        assert_eq!(printer.state_message(), "command requested shutdown");
+    }
+
+    #[test]
     fn object_registry_is_typed_and_rejects_duplicates() {
         let printer = Printer::new();
         printer.register_object("counter", 42usize).unwrap();
