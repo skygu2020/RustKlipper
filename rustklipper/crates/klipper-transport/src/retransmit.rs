@@ -431,9 +431,9 @@ mod tests {
         let before = state.clone();
 
         assert!(state.retransmit_all(f64::NAN).is_empty());
-        assert_eq!(state, before);
+        assert_eq!(format!("{state:?}"), format!("{before:?}"));
         assert!(state.retransmit_all(1.0).is_empty());
-        assert_eq!(state, before);
+        assert_eq!(format!("{state:?}"), format!("{before:?}"));
 
         assert_eq!(state.retransmit_all(2.0).len(), 1);
         assert_eq!(state.outstanding_len(), 1);
