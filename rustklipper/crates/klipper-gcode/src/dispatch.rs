@@ -338,24 +338,28 @@ fn dispatch_mux(
     }
 
     let value_text = value.as_deref().unwrap_or("");
-    let mut hint = String::new();
-    let suggestion = mux
+    // HashMap iteration order is randomized; sort values so error messages
+    // remain stable across runs and match reproducible host-side diagnostics.
+    let mut registered_values: Vec<_> = mux
         .values
         .keys()
         .filter_map(|value| value.as_deref())
+        .collect();
+    registered_values.sort_unstable();
+
+    let mut hint = String::new();
+    let suggestion = registered_values
+        .iter()
+        .copied()
         .find(|candidate| !value_text.is_empty() && candidate.contains(value_text));
     if let Some(suggestion) = suggestion {
         hint = format!(". Did you mean '{suggestion}'?");
-    } else {
-        let options: Vec<_> = mux
-            .values
-            .keys()
-            .filter_map(|value| value.as_deref())
+    } else if !registered_values.is_empty() {
+        let options: Vec<_> = registered_values
+            .iter()
             .map(|option| format!("'{option}'"))
             .collect();
-        if !options.is_empty() {
-            hint = format!(". Options: {}", options.join(", "));
-        }
+        hint = format!(". Options: {}", options.join(", "));
     }
     Err(GCodeError::InvalidMuxValue {
         key: mux.key.clone(),
@@ -703,6 +707,37 @@ mod tests {
         assert!(matches!(invalid.events.first(), Some(DispatchEvent::Error(message)) if message.contains("Did you mean 'quiet'?")));
     }
 
+
+    #[test]
+    fn mux_invalid_value_diagnostics_are_sorted_deterministically() {
+        let mut dispatcher = GCodeDispatcher::new();
+        dispatcher.set_ready();
+        for value in ["zeta", "fast", "faster", "alpha"] {
+            dispatcher
+                .register_mux_command("SET_MODE", "MODE", Some(value), None, |_| {
+                    Ok(Vec::new())
+                })
+                .unwrap();
+        }
+
+        let suggestion = dispatcher
+            .process_line("SET_MODE MODE=fas", true)
+            .unwrap();
+        assert!(matches!(
+            suggestion.events.first(),
+            Some(DispatchEvent::Error(message))
+                if message.contains("Did you mean 'fast'?")
+        ));
+
+        let options = dispatcher
+            .process_line("SET_MODE MODE=unknown", true)
+            .unwrap();
+        assert!(matches!(
+            options.events.first(),
+            Some(DispatchEvent::Error(message))
+                if message.contains("Options: 'alpha', 'fast', 'faster', 'zeta'")
+        ));
+    }
 
     #[test]
     fn mux_without_default_requires_its_key_parameter() {
