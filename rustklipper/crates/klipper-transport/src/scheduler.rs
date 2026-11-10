@@ -59,10 +59,10 @@ pub struct ReceivedFrameResult {
     pub retransmissions: Vec<Retransmission>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct QueueState { order: u64, upcoming: VecDeque<ScheduledCommand>, ready: VecDeque<ScheduledCommand> }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CommandScheduler {
     queues: BTreeMap<u64, QueueState>,
     next_queue_order: u64,
