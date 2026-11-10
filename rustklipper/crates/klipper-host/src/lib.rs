@@ -8,6 +8,7 @@
 pub mod klippy_api;
 pub mod mcu;
 pub use mcu::{McuPollBatch, McuPollError, McuRegistry, McuRegistryError, McuSessionEvent};
+pub use klipper_transport::McuStartupStage;
 mod reactor;
 pub use reactor::{Completion, CompletionCancelled, Reactor, ReactorError, TaskId};
 
@@ -63,6 +64,8 @@ pub struct PrinterStatus {
     pub state: PrinterState,
     pub category: PrinterStateCategory,
     pub message: String,
+    /// Startup phase snapshot for each currently registered MCU, sorted by name.
+    pub mcu_startup_stages: Vec<(String, McuStartupStage)>,
 }
 
 /**
@@ -549,6 +552,9 @@ impl Printer {
 
     /// Read state, UI category, and message under one consistent lock snapshot.
     pub fn status(&self) -> PrinterStatus {
+        // Read MCU phases independently before taking printer-state locks; the
+        // registry/session lock hierarchy must not be nested with lifecycle locks.
+        let mcu_startup_stages = self.mcus.startup_stages();
         let state = self.state.read().expect("printer state lock poisoned");
         let message = self
             .state_message
@@ -566,6 +572,7 @@ impl Printer {
             state: *state,
             category,
             message: message.clone(),
+            mcu_startup_stages,
         }
     }
 
@@ -1935,6 +1942,7 @@ mod tests {
                 state: PrinterState::Configuring,
                 category: PrinterStateCategory::Startup,
                 message: "Printer is configuring".to_owned(),
+                mcu_startup_stages: Vec::new(),
             }
         );
         printer.set_ready();
@@ -1944,6 +1952,7 @@ mod tests {
                 state: PrinterState::Ready,
                 category: PrinterStateCategory::Ready,
                 message: "Printer is ready".to_owned(),
+                mcu_startup_stages: Vec::new(),
             }
         );
     }
