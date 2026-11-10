@@ -170,6 +170,31 @@ mod tests {
     }
 
     #[test]
+    fn reserved_notification_is_not_acknowledged_until_its_frame_is_sent() {
+        let mut tracker = AckTracker::new();
+        let receiver = tracker.register_notify(73).unwrap();
+
+        // A reserved ID has no frame sequence yet and must not be completed
+        // by an ACK that predates its actual UART write.
+        assert!(tracker.acknowledge_events(100, false, 1.0, 1.1).is_empty());
+        assert!(tracker.contains_notify(73));
+        assert!(receiver.try_recv().is_err());
+
+        assert!(tracker.mark_sent(73, 100, 1.2));
+        // ACK sequence 100 acknowledges frames strictly before 100.
+        assert!(tracker.acknowledge_events(100, false, 1.3, 1.4).is_empty());
+        assert!(tracker.contains_notify(73));
+
+        let completed = tracker.acknowledge_events(101, false, 1.5, 1.6);
+        assert_eq!(completed.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![73]);
+        assert_eq!(receiver.recv().unwrap(), AckEvent {
+            sent_time: 1.5,
+            receive_time: 1.6,
+        });
+        assert_eq!(tracker.pending_count(), 0);
+    }
+
+    #[test]
     fn duplicate_notify_id_is_rejected() {
         let mut tracker = AckTracker::new();
         let _rx = tracker.register_notify(7).unwrap();
