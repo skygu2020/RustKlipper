@@ -328,6 +328,27 @@ impl KlippyApiDispatcher {
         })
     }
 
+    /// Register Klipper's host restart endpoints.
+    ///
+    /// These mirror the G-code restart commands but expose the standard
+    /// Klippy API method names used by remote clients. The Printer owns
+    /// restart sequencing, including the motion-queue drain.
+    pub fn register_restart_endpoints(
+        &self,
+        printer: std::sync::Arc<crate::Printer>,
+    ) -> Result<(), KlippyApiRpcError> {
+        let restart_printer = printer.clone();
+        self.register("gcode/restart", move |_params| {
+            restart_printer.request_exit("restart");
+            Ok(serde_json::json!({}))
+        })?;
+
+        self.register("gcode/firmware_restart", move |_params| {
+            printer.request_exit("firmware_restart");
+            Ok(serde_json::json!({}))
+        })
+    }
+
     /// Register Klipper's emergency-stop endpoint.
     ///
     /// The call transitions the printer into shutdown and returns an empty
@@ -392,6 +413,7 @@ impl KlippyApiDispatcher {
         self.register_object_subscription(printer.clone())?;
         self.register_gcode_help(printer.clone())?;
         self.register_gcode_script(printer.clone())?;
+        self.register_restart_endpoints(printer.clone())?;
         self.register_emergency_stop(printer)?;
         self.register_endpoint_listing()?;
         Ok(())
@@ -983,7 +1005,9 @@ mod tests {
         })).unwrap();
         assert_eq!(endpoints["result"]["endpoints"], json!([
             "emergency_stop",
+            "gcode/firmware_restart",
             "gcode/help",
+            "gcode/restart",
             "gcode/script",
             "gcode/subscribe_output",
             "info",
@@ -1069,6 +1093,26 @@ mod tests {
                 "params": params
             })).unwrap();
             assert_eq!(response["error"]["code"], json!(-32600));
+        }
+    }
+
+    #[test]
+    fn restart_api_endpoints_request_distinct_host_exit_results() {
+        for (method, expected) in [
+            ("gcode/restart", "restart"),
+            ("gcode/firmware_restart", "firmware_restart"),
+        ] {
+            let printer = std::sync::Arc::new(crate::Printer::new());
+            printer.set_ready();
+            let dispatcher = KlippyApiDispatcher::new();
+            dispatcher.register_restart_endpoints(printer.clone()).unwrap();
+
+            let response = dispatcher
+                .dispatch_value(json!({"id": 31, "method": method, "params": {}}))
+                .unwrap();
+
+            assert_eq!(response, json!({"id": 31, "result": {}}));
+            assert_eq!(printer.exit_reason().as_deref(), Some(expected));
         }
     }
 
