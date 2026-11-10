@@ -254,7 +254,10 @@ impl KlippyApiDispatcher {
                 };
                 status.insert(object_name.clone(), Value::Object(selected));
             }
-            Ok(serde_json::json!({ "status": status }))
+            Ok(serde_json::json!({
+                "eventtime": printer.eventtime(),
+                "status": status
+            }))
         })
     }
 
@@ -679,6 +682,7 @@ mod tests {
             "params": { "objects": { "toolhead": ["position"] } }
         })).unwrap();
         assert_eq!(status["result"]["status"]["toolhead"]["position"], json!([1.0, 2.0, 3.0]));
+        assert!(status["result"]["eventtime"].as_f64().is_some());
 
         let endpoints = dispatcher.dispatch_value(json!({
             "id": 4, "method": "list_endpoints", "params": {}
