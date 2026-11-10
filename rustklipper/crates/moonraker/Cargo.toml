@@ -8,7 +8,6 @@ description = "Rust implementation of the Moonraker API server"
 
 [dependencies]
 serde.workspace = true
-klipper-host = { path = "../klipper-host" }
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { version = "1", features = ["net", "rt", "macros", "time", "sync", "io-util"] }
