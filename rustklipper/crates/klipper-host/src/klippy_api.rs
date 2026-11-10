@@ -166,6 +166,33 @@ pub struct KlippyApiDispatcher {
 impl KlippyApiDispatcher {
     pub fn new() -> Self { Self::default() }
 
+    /// Register the Klippy `info` endpoint from the live printer lifecycle.
+    ///
+    /// `software_version` identifies this Rust host implementation; it is not
+    /// presented as an upstream Klipper firmware version.
+    pub fn register_printer_info(
+        &self,
+        printer: std::sync::Arc<crate::Printer>,
+        software_version: impl Into<String>,
+    ) -> Result<(), KlippyApiRpcError> {
+        let software_version = software_version.into();
+        self.register("info", move |_params| {
+            let status = printer.status();
+            let state = match status.state {
+                crate::PrinterState::Startup | crate::PrinterState::Configuring => "startup",
+                crate::PrinterState::Ready => "ready",
+                crate::PrinterState::Shutdown => "shutdown",
+                crate::PrinterState::Disconnected => "error",
+            };
+            Ok(serde_json::json!({
+                "state": state,
+                "state_message": status.message,
+                "software_version": software_version,
+                "process_id": std::process::id(),
+            }))
+        })
+    }
+
     /// Register Klippy's endpoint-discovery method used by Moonraker clients.
     ///
     /// The response shape matches Klippy's `list_endpoints` contract:
@@ -436,6 +463,42 @@ mod tests {
         let response = dispatcher.dispatch_value(json!({"id":9,"method":"info","params":{}})).unwrap();
         assert_eq!(response, json!({"id":9,"result":{"state":"ready"}}));
         assert_eq!(dispatcher.method_names(), vec!["info"]);
+    }
+
+    #[test]
+    fn printer_info_endpoint_tracks_lifecycle_state() {
+        let printer = std::sync::Arc::new(crate::Printer::new());
+        let dispatcher = KlippyApiDispatcher::new();
+        dispatcher
+            .register_printer_info(printer.clone(), "RustKlipper 0.1.0")
+            .unwrap();
+
+        let request = json!({"id":1,"method":"info"});
+        let startup = dispatcher.dispatch_value(request.clone()).unwrap();
+        assert_eq!(startup["result"]["state"], "startup");
+        assert_eq!(startup["result"]["state_message"], "Printer is not ready");
+        assert_eq!(startup["result"]["software_version"], "RustKlipper 0.1.0");
+        assert!(startup["result"]["process_id"].as_u64().is_some());
+
+        printer.set_configuring();
+        let configuring = dispatcher.dispatch_value(request.clone()).unwrap();
+        assert_eq!(configuring["result"]["state"], "startup");
+        assert_eq!(configuring["result"]["state_message"], "Printer is configuring");
+
+        printer.set_ready();
+        let ready = dispatcher.dispatch_value(request.clone()).unwrap();
+        assert_eq!(ready["result"]["state"], "ready");
+        assert_eq!(ready["result"]["state_message"], "Printer is ready");
+
+        printer.invoke_shutdown("test shutdown");
+        let shutdown = dispatcher.dispatch_value(request.clone()).unwrap();
+        assert_eq!(shutdown["result"]["state"], "shutdown");
+        assert_eq!(shutdown["result"]["state_message"], "test shutdown");
+
+        printer.disconnect();
+        let disconnected = dispatcher.dispatch_value(request).unwrap();
+        assert_eq!(disconnected["result"]["state"], "error");
+        assert_eq!(disconnected["result"]["state_message"], "Printer is disconnected");
     }
 
     #[test]
