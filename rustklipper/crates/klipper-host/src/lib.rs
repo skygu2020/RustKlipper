@@ -2509,6 +2509,50 @@ mod tests {
     }
 
     #[test]
+    fn panicking_component_rolls_back_only_its_mcu_config_contributions() {
+        let printer = Printer::new();
+        printer.install_config(
+            ConfigDocument::parse(
+                "[heater_component]\n\n[fan_component]\n",
+            )
+            .unwrap(),
+        );
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register("heater_component", |printer, _| {
+                printer.with_mcu_config_builder("mcu", |builder| {
+                    assert_eq!(builder.allocate_oid("heater").unwrap(), 0);
+                    builder.add_config_command("config_heater oid=0");
+                });
+                Ok(())
+            })
+            .unwrap();
+        registry
+            .register("fan_component", |printer, _| {
+                printer.with_mcu_config_builder("mcu", |builder| {
+                    assert_eq!(builder.allocate_oid("fan").unwrap(), 1);
+                    builder.add_config_command("config_fan oid=1");
+                });
+                panic!("fan initialization panicked");
+            })
+            .unwrap();
+
+        assert!(matches!(
+            printer.load_components(&registry),
+            Err(ComponentError::LoadFailed { .. })
+        ));
+
+        let builder = printer.mcu_config_builder_snapshot("mcu").unwrap();
+        assert_eq!(builder.oid_count(), 1);
+        assert_eq!(builder.oid("heater"), Some(0));
+        assert_eq!(builder.oid("fan"), None);
+        assert_eq!(
+            builder.config_commands(),
+            &["config_heater oid=0".to_owned()]
+        );
+    }
+
+    #[test]
     fn installing_new_config_clears_component_mcu_config_contributions() {
         let printer = Printer::new();
         printer.with_mcu_config_builder("mcu", |builder| {
