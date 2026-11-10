@@ -135,7 +135,7 @@ impl GCodeDispatcher {
                 line: format!("invalid command registration name '{name}'"),
             });
         }
-        if matches!(name, "M110" | "M112" | "M115") || self.ready_handlers.contains_key(name) {
+        if matches!(name, "M110" | "M112" | "M115" | "RESTART" | "FIRMWARE_RESTART") || self.ready_handlers.contains_key(name) {
             return Err(GCodeError::MalformedCommand {
                 line: format!("gcode command {name} already registered"),
             });
@@ -225,7 +225,7 @@ impl GCodeDispatcher {
     pub fn registered_commands(&self) -> Vec<String> {
         let mut commands: Vec<_> = self.active_handlers().keys().cloned().collect();
         // These built-in commands remain visible regardless of printer readiness.
-        commands.extend(["M110".to_owned(), "M112".to_owned(), "M115".to_owned()]);
+        commands.extend(["M110".to_owned(), "M112".to_owned(), "M115".to_owned(), "RESTART".to_owned(), "FIRMWARE_RESTART".to_owned()]);
         commands.sort();
         commands
     }
@@ -334,7 +334,7 @@ impl GCodeDispatcher {
                     }
                     handler_found = true;
                 }
-                "M21" | "M110" | "M112" => handler_found = true,
+                "M21" | "M110" | "M112" | "RESTART" | "FIRMWARE_RESTART" => handler_found = true,
                 "M115" => {
                     let version = self.software_version.as_deref().unwrap_or("None");
                     let message = format!("FIRMWARE_NAME:Klipper FIRMWARE_VERSION:{version}");
@@ -641,6 +641,28 @@ mod tests {
         assert_eq!(acknowledged.events, vec![DispatchEvent::Ack(Some("FIRMWARE_NAME:Klipper FIRMWARE_VERSION:v0.12.0-123-gabcdef".to_owned()))]);
         let informational = dispatcher.process_line("M115", false).unwrap();
         assert_eq!(informational.events, vec![DispatchEvent::Info("FIRMWARE_NAME:Klipper FIRMWARE_VERSION:v0.12.0-123-gabcdef".to_owned())]);
+    }
+
+    #[test]
+    fn restart_commands_are_builtin_and_available_before_ready() {
+        let dispatcher = GCodeDispatcher::new();
+        for line in ["RESTART", "FIRMWARE_RESTART"] {
+            let outcome = dispatcher.process_line(line, true).unwrap();
+            assert!(outcome.handler_found, "{line}");
+            assert_eq!(outcome.events, vec![DispatchEvent::Ack(None)]);
+        }
+
+        let commands = dispatcher.registered_commands();
+        assert!(commands.contains(&"RESTART".to_owned()));
+        assert!(commands.contains(&"FIRMWARE_RESTART".to_owned()));
+    }
+
+    #[test]
+    fn restart_commands_cannot_be_registered_by_components() {
+        let mut dispatcher = GCodeDispatcher::new();
+        for name in ["RESTART", "FIRMWARE_RESTART"] {
+            assert!(dispatcher.register_command(name, true, None, |_| Ok(Vec::new())).is_err());
+        }
     }
 
     #[test]
