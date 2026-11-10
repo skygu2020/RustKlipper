@@ -1650,7 +1650,7 @@ mod tests {
 
         let tracker = ConfigUsageTracker::new();
         let config = ConfigDocument::parse(
-            "[printer]\\nkinematics=cartesian\\n[heater]\\nmax_temp=250\\n",
+            "[printer]\nkinematics=cartesian\n[heater]\nmax_temp=250\n",
         ).unwrap();
 
         let _ = catch_unwind(AssertUnwindSafe(|| {
