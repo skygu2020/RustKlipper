@@ -408,6 +408,7 @@ pub struct Printer {
     component_gcode: Mutex<HashMap<String, HashSet<String>>>,
     gcode: Mutex<GCodeDispatcher>,
     reactor: Reactor,
+    status_updates: tokio::sync::broadcast::Sender<String>,
 }
 
 impl Default for Printer {
@@ -435,6 +436,7 @@ impl Printer {
             component_gcode: Mutex::new(HashMap::new()),
             gcode: Mutex::new(GCodeDispatcher::new()),
             reactor: Reactor::new(),
+            status_updates: tokio::sync::broadcast::channel(128).0,
         }
     }
 
@@ -1056,6 +1058,14 @@ impl Printer {
         Ok(())
     }
 
+    /// Subscribe to names of status objects whose published fields change.
+    ///
+    /// Receivers are independent; a slow receiver may lag and should refresh
+    /// its snapshot through `objects/query` after a lag notification.
+    pub fn subscribe_status_updates(&self) -> tokio::sync::broadcast::Receiver<String> {
+        self.status_updates.subscribe()
+    }
+
     /// Register a JSON-backed status object for Klippy API queries.
     ///
     /// Components should expose externally visible fields through this API
@@ -1069,7 +1079,9 @@ impl Printer {
         if !fields.is_object() {
             return Err(PrinterError::ObjectTypeMismatch { name });
         }
-        self.register_object(name, fields)
+        self.register_object(name.clone(), fields)?;
+        let _ = self.status_updates.send(name);
+        Ok(())
     }
 
     /// Atomically replace the fields exposed by a registered status object.
@@ -1089,6 +1101,7 @@ impl Printer {
             return Err(PrinterError::ObjectTypeMismatch { name: name.to_owned() });
         }
         objects.insert(name.to_owned(), Arc::new(fields));
+        let _ = self.status_updates.send(name.to_owned());
         Ok(())
     }
 
@@ -4201,5 +4214,19 @@ mod tests {
             Err(PrinterError::ObjectTypeMismatch { .. })
         ));
     }
+
+    #[tokio::test]
+    async fn status_object_updates_are_broadcast_to_subscribers() {
+        let printer = Printer::new();
+        printer.register_status_object("toolhead", serde_json::json!({
+            "position": [0.0, 0.0, 0.0]
+        })).unwrap();
+        let mut updates = printer.subscribe_status_updates();
+        printer.update_status_object("toolhead", serde_json::json!({
+            "position": [1.0, 2.0, 3.0]
+        })).unwrap();
+        assert_eq!(updates.recv().await.unwrap(), "toolhead");
+    }
+
 
 }
