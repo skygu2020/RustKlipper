@@ -381,7 +381,7 @@ impl Reactor {
     /// waiting; registering or updating a task from another thread wakes this
     /// method so the new deadline can be observed.
     pub fn run_once(&self, max_wait: Duration) -> usize {
-        let timeout_deadline = Instant::now() + max_wait;
+        let started = Instant::now();
         loop {
             let mut state = self.state.lock().expect("reactor lock poisoned");
             let next_deadline = loop {
@@ -399,17 +399,18 @@ impl Reactor {
             };
 
             let now = Instant::now();
+            let elapsed = now.saturating_duration_since(started);
+            let remaining = max_wait.saturating_sub(elapsed);
             if next_deadline.is_some_and(|deadline| deadline <= now)
-                || now >= timeout_deadline
+                || remaining.is_zero()
             {
                 drop(state);
                 return self.run_due(Instant::now());
             }
 
-            let wake_deadline = next_deadline
-                .map(|deadline| deadline.min(timeout_deadline))
-                .unwrap_or(timeout_deadline);
-            let wait = wake_deadline.saturating_duration_since(now);
+            let wait = next_deadline
+                .map(|deadline| deadline.saturating_duration_since(now).min(remaining))
+                .unwrap_or(remaining);
             let (guard, _) = self
                 .wake
                 .wait_timeout(state, wait)
@@ -754,6 +755,19 @@ mod tests {
     }
 
 
+
+    #[test]
+    fn run_once_accepts_maximum_wait_without_instant_overflow() {
+        let reactor = Reactor::new();
+        let count = Arc::new(AtomicUsize::new(0));
+        let observed = count.clone();
+        reactor.register_callback(move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+        });
+
+        assert_eq!(reactor.run_once(Duration::MAX), 1);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn run_once_returns_after_idle_timeout() {
