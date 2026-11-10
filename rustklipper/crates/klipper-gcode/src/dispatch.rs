@@ -258,7 +258,16 @@ impl GCodeDispatcher {
                 }
             }
         }
-        let command = match GCodeCommand::new_for_dispatch(dispatch_parsed) {
+        // Klipper parses shell-style KEY=value arguments only inside the
+        // wrapper for a registered extended command. Unknown commands go
+        // directly to cmd_default with the legacy parameter map untouched.
+        let registered = self.active_handlers().contains_key(&dispatch_parsed.command);
+        let command_result = if registered && !is_traditional_command(&dispatch_parsed.command) {
+            GCodeCommand::new_for_dispatch(dispatch_parsed)
+        } else {
+            Ok(GCodeCommand::new(dispatch_parsed))
+        };
+        let command = match command_result {
             Ok(command) => command,
             Err(error) => {
                 let mut events = vec![DispatchEvent::Error(error.to_string())];
@@ -565,6 +574,48 @@ mod tests {
             .unwrap();
         assert!(result.handler_found);
         assert_eq!(result.events.last(), Some(&DispatchEvent::Ack(None)));
+    }
+
+    #[test]
+    fn unknown_extended_commands_do_not_parse_shell_parameters() {
+        let mut dispatcher = GCodeDispatcher::new();
+        dispatcher.set_ready();
+
+        let malformed = dispatcher
+            .process_line("UNKNOWN_COMMAND VALUE=\"unterminated", true)
+            .unwrap();
+        assert!(!malformed.handler_found);
+        assert!(matches!(
+            malformed.events.first(),
+            Some(DispatchEvent::Info(message)) if message.contains("Unknown command")
+        ));
+
+        let mut not_ready = GCodeDispatcher::new();
+        let blocked = not_ready
+            .process_line("UNKNOWN_COMMAND VALUE=\"unterminated", true)
+            .unwrap();
+        assert!(!blocked.handler_found);
+        assert_eq!(
+            blocked.events.first(),
+            Some(&DispatchEvent::Error("Printer is not ready".to_owned()))
+        );
+    }
+
+    #[test]
+    fn registered_extended_commands_still_reject_malformed_shell_parameters() {
+        let mut dispatcher = GCodeDispatcher::new();
+        dispatcher.set_ready();
+        dispatcher
+            .register_command("RESPOND", false, None, |_| Ok(Vec::new()))
+            .unwrap();
+
+        let malformed = dispatcher
+            .process_line("RESPOND MSG=\"unterminated", true)
+            .unwrap();
+        assert!(matches!(
+            malformed.events.first(),
+            Some(DispatchEvent::Error(message)) if message.contains("Malformed command")
+        ));
     }
 
     #[test]
