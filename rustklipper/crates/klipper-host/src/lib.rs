@@ -5433,7 +5433,7 @@ mod tests {
         );
         assert_eq!(restarts.load(Ordering::SeqCst), 0);
 
-        let blocked = printer.process_gcode_line("M115", true).unwrap();
+        let blocked = printer.process_gcode_line("UNKNOWN_AFTER_SHUTDOWN", true).unwrap();
         assert!(matches!(
             blocked.events.first(),
             Some(DispatchEvent::Error(message)) if message == "Shutdown due to M112 command"
