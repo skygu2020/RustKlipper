@@ -351,6 +351,10 @@ impl CommandScheduler {
     pub fn handle_received_frame(
         &mut self, frame: &Frame, now: f64,
     ) -> Result<ReceivedFrameResult, ScheduleError> {
+        // Validate the event timestamp before initial-sequence synchronization
+        // or any ACK/flow-control mutation. A malformed timestamp must not
+        // partially advance the scheduler's receive/send sequence state.
+        self.retransmit.check_time(now)?;
         let receive_sequence = crate::ack::AckTracker::extend_wire_sequence(
             self.receive_sequence, frame.sequence
         );
@@ -790,6 +794,27 @@ mod tests {
         let ack = scheduler.acknowledge_at(2, 0, 1.5).unwrap();
         assert_eq!(ack.acknowledged.len(), 1);
         assert_eq!(scheduler.retransmit_state().outstanding_len(), 0);
+    }
+
+    #[test]
+    fn invalid_receive_timestamp_does_not_mutate_initial_sequence_sync() {
+        let mut scheduler = CommandScheduler::new();
+        let first = Frame { sequence: 4, payload: vec![0x55] };
+
+        assert_eq!(
+            scheduler.handle_received_frame(&first, f64::NAN),
+            Err(ScheduleError::Retransmit(RetransmitError::InvalidTime)),
+        );
+        assert_eq!(scheduler.receive_sequence(), 1);
+        assert_eq!(scheduler.send_sequence(), 1);
+        assert_eq!(scheduler.retransmit_state().outstanding_len(), 0);
+
+        // The same frame remains eligible to establish the initial sequence
+        // once a valid monotonic timestamp is supplied.
+        let received = scheduler.handle_received_frame(&first, 0.01).unwrap();
+        assert_eq!(received.receive_sequence, 4);
+        assert_eq!(scheduler.receive_sequence(), 4);
+        assert_eq!(scheduler.send_sequence(), 4);
     }
 
     #[test]
