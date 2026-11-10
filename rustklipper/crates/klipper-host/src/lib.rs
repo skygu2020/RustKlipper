@@ -824,6 +824,7 @@ impl Printer {
             .lock()
             .expect("gcode dispatcher lock poisoned")
             .set_ready();
+        drop(_lifecycle_guard);
         self.send_event(PrinterEvent::Ready);
     }
 
@@ -850,6 +851,7 @@ impl Printer {
             .lock()
             .expect("gcode dispatcher lock poisoned")
             .set_shutdown(reason.clone());
+        drop(_lifecycle_guard);
         if was_ready {
             self.send_event(PrinterEvent::Shutdown { reason });
         }
@@ -886,6 +888,7 @@ impl Printer {
             .lock()
             .expect("gcode dispatcher lock poisoned")
             .set_disconnected();
+        drop(_lifecycle_guard);
         self.mcus.clear();
         self.send_event(PrinterEvent::Disconnect);
     }
