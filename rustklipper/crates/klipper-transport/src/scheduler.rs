@@ -441,7 +441,8 @@ mod tests {
         scheduler.enqueue(7, ScheduledCommand::new(vec![0xA1], 0, 10)).unwrap();
         scheduler.promote_ready(0);
         let frame = scheduler.build_frame().unwrap().unwrap();
-        assert_eq!(frame.bytes.len(), 4);
+        let mut decoder = FrameDecoder::new();
+        assert_eq!(decoder.push(&frame.bytes)[0].payload, vec![0xA1]);
 
         assert_eq!(scheduler.remove_queue(7), Ok(true));
         assert_eq!(scheduler.remove_queue(7), Ok(false));
