@@ -350,6 +350,9 @@ impl Reactor {
                 state.cancel_hooks.remove(&id)
             } else if state.running.contains(&id) {
                 state.cancelled.insert(id);
+                // A running callback cannot be stopped, but its cancellation
+                // hook must still run so completion waiters are notified and
+                // any late callback result is rejected.
                 state.cancel_hooks.remove(&id)
             } else {
                 return false;
@@ -818,6 +821,37 @@ mod tests {
         assert!(completion.is_complete());
         assert!(completion.is_cancelled());
         assert_eq!(completion.wait(), Err(CompletionCancelled));
+        assert_eq!(completion.result(), None);
+        assert!(!reactor.unregister(id));
+    }
+
+    #[test]
+    fn cancelling_running_callback_cancels_completion_before_it_returns() {
+        use std::sync::mpsc;
+        use std::sync::Arc;
+
+        let reactor = Arc::new(Reactor::new());
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (id, completion) = reactor.register_callback_with_completion(move |_| {
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            123usize
+        });
+
+        let dispatch_reactor = reactor.clone();
+        let dispatch = std::thread::spawn(move || {
+            dispatch_reactor.run_due(Instant::now() + Duration::from_secs(1))
+        });
+        started_rx.recv().unwrap();
+
+        assert!(reactor.unregister(id));
+        assert!(completion.is_complete());
+        assert!(completion.is_cancelled());
+        assert_eq!(completion.wait(), Err(CompletionCancelled));
+
+        release_tx.send(()).unwrap();
+        assert_eq!(dispatch.join().unwrap(), 1);
         assert_eq!(completion.result(), None);
         assert!(!reactor.unregister(id));
     }
