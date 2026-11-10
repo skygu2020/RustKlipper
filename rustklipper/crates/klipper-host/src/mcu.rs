@@ -175,11 +175,14 @@ impl McuRegistry {
         // Detach under the registry lock, then invalidate outside it. This
         // lock order avoids deadlocking against a poll that owns a session
         // lock and needs the registry lock for panic cleanup.
-        let session = self.state
-            .lock()
-            .expect("MCU registry lock poisoned")
-            .sessions
-            .remove(name)?;
+        let session = {
+            let mut state = self.state.lock().expect("MCU registry lock poisoned");
+            let session = state.sessions.remove(name)?;
+            // Invalidate any in-flight poll snapshot that may still contain
+            // this session, even though the remaining sessions stay registered.
+            state.generation = state.generation.wrapping_add(1);
+            session
+        };
         disconnect_session_handle(&session);
         Some(session)
     }
