@@ -7,6 +7,8 @@
 
 pub mod klippy_api;
 pub mod mcu;
+pub mod mcu_config;
+pub use mcu_config::HostMcuConfigBuilder;
 pub use mcu::{McuPollBatch, McuPollError, McuRegistry, McuRegistryError, McuSessionEvent};
 pub use klipper_transport::McuStartupStage;
 mod reactor;
