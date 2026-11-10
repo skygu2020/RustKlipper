@@ -564,6 +564,26 @@ mod tests {
     }
 
     #[test]
+    fn clock_calibration_progression_reports_missing_mcu_session() {
+        let registry = McuRegistry::new();
+        assert!(matches!(
+            registry.set_periodic_clock_queue_id(" mcu ", 9),
+            Err(McuRegistryError::SessionNotFound { name }) if name == "mcu"
+        ));
+        let response = klipper_transport::Response {
+            name: "clock".to_owned(),
+            oid: None,
+            params: Default::default(),
+            sent_time: 1.0,
+            receive_time: 2.0,
+        };
+        assert!(matches!(
+            registry.handle_clock_calibration_response("mcu", 9, response),
+            Err(McuRegistryError::SessionNotFound { name }) if name == "mcu"
+        ));
+    }
+
+    #[test]
     fn startup_stage_queries_are_empty_without_registered_sessions() {
         let registry = McuRegistry::new();
         assert_eq!(registry.startup_stage("mcu"), None);
