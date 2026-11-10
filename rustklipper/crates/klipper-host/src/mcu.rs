@@ -107,8 +107,7 @@ impl McuRegistry {
         name: impl Into<String>,
         settings: &SerialSettings,
     ) -> Result<(), McuRegistryError> {
-        let name = name.into();
-        self.validate_name(&name)?;
+        let name = normalize_mcu_name(name.into())?;
         let generation = {
             let mut state = self.lock_state();
             if state.sessions.contains_key(&name) || !state.opening.insert(name.clone()) {
@@ -142,8 +141,7 @@ impl McuRegistry {
         name: impl Into<String>,
         session: ReliableSerialSession,
     ) -> Result<(), McuRegistryError> {
-        let name = name.into();
-        self.validate_name(&name)?;
+        let name = normalize_mcu_name(name.into())?;
         if session.is_disconnected() {
             return Err(McuRegistryError::DisconnectedSession { name });
         }
@@ -371,12 +369,14 @@ impl McuRegistry {
         batch
     }
 
-    fn validate_name(&self, name: &str) -> Result<(), McuRegistryError> {
-        if name.trim().is_empty() {
-            Err(McuRegistryError::EmptyName)
-        } else {
-            Ok(())
-        }
+}
+
+fn normalize_mcu_name(name: String) -> Result<String, McuRegistryError> {
+    let name = name.trim();
+    if name.is_empty() {
+        Err(McuRegistryError::EmptyName)
+    } else {
+        Ok(name.to_owned())
     }
 }
 
@@ -466,6 +466,24 @@ mod tests {
         let state = registry.state.lock().unwrap();
         assert!(!state.opening.contains("mcu"));
         assert_ne!(state.generation, generation);
+    }
+
+    #[test]
+    fn mcu_names_are_trimmed_before_registry_lookup_and_storage() {
+        assert_eq!(normalize_mcu_name("  mcu  ".to_owned()).unwrap(), "mcu");
+        assert_eq!(normalize_mcu_name(" \t ".to_owned()), Err(McuRegistryError::EmptyName));
+    }
+
+    #[test]
+    fn serial_open_uses_normalized_name_in_errors_and_reservations() {
+        let registry = McuRegistry::new();
+        let settings = SerialSettings::new("", 0);
+        assert!(matches!(
+            registry.open_serial("  mcu  ", &settings),
+            Err(McuRegistryError::OpenFailed { name, .. }) if name == "mcu"
+        ));
+        assert!(registry.session_names().is_empty());
+        assert!(registry.lock_state().opening.is_empty());
     }
 
     #[test]
