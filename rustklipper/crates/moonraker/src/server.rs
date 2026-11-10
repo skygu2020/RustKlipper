@@ -17,8 +17,7 @@ use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_tungstenite::{tungstenite::Message, HyperWebsocket};
 use hyper_util::rt::TokioIo;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 
 use crate::{JsonRpcRouter, WebSocketManager};
 
@@ -30,7 +29,6 @@ pub struct MoonrakerHttpServer {
     listener: TcpListener,
     router: Arc<JsonRpcRouter>,
     websocket_manager: Arc<WebSocketManager>,
-    klippy_endpoint: Option<SocketAddr>,
 }
 
 impl MoonrakerHttpServer {
@@ -45,30 +43,8 @@ impl MoonrakerHttpServer {
         router: Arc<JsonRpcRouter>,
         websocket_manager: Arc<WebSocketManager>,
     ) -> io::Result<Self> {
-        Self::bind_with_klippy_endpoint_and_manager(address, router, websocket_manager, None).await
-    }
-
-    /// Bind with a separately running Klipper Host process exposing its TCP API.
-    /// Each /klippysocket client gets its own IPC connection; no Rust objects are shared.
-    pub async fn bind_with_klippy_endpoint(
-        address: SocketAddr,
-        router: Arc<JsonRpcRouter>,
-        klippy_endpoint: SocketAddr,
-    ) -> io::Result<Self> {
-        Self::bind_with_klippy_endpoint_and_manager(
-            address, router, WebSocketManager::new(), Some(klippy_endpoint),
-        ).await
-    }
-
-    /// Bind with caller-owned WebSocket state and an optional remote Klippy endpoint.
-    pub async fn bind_with_klippy_endpoint_and_manager(
-        address: SocketAddr,
-        router: Arc<JsonRpcRouter>,
-        websocket_manager: Arc<WebSocketManager>,
-        klippy_endpoint: Option<SocketAddr>,
-    ) -> io::Result<Self> {
         let listener = TcpListener::bind(address).await?;
-        Ok(Self { listener, router, websocket_manager, klippy_endpoint })
+        Ok(Self { listener, router, websocket_manager })
     }
 
     /// Clone the shared manager before moving the server into its run loop.
@@ -87,13 +63,12 @@ impl MoonrakerHttpServer {
             let (stream, _) = self.listener.accept().await?;
             let router = Arc::clone(&self.router);
             let websocket_manager = Arc::clone(&self.websocket_manager);
-            let klippy_endpoint = self.klippy_endpoint;
             tokio::spawn(async move {
                 let service = service_fn(move |request| {
                     let router = Arc::clone(&router);
                     let websocket_manager = Arc::clone(&websocket_manager);
                     async move {
-                        Ok::<_, Infallible>(handle_request(request, router, websocket_manager, klippy_endpoint).await)
+                        Ok::<_, Infallible>(handle_request(request, router, websocket_manager).await)
                     }
                 });
                 let connection = http1::Builder::new()
@@ -109,37 +84,7 @@ async fn handle_request(
     mut request: Request<Incoming>,
     router: Arc<JsonRpcRouter>,
     websocket_manager: Arc<WebSocketManager>,
-    klippy_endpoint: Option<SocketAddr>,
 ) -> Response<Full<Bytes>> {
-    if request.uri().path() == "/klippysocket" {
-        let Some(endpoint) = klippy_endpoint else {
-            return response(StatusCode::SERVICE_UNAVAILABLE, "application/json", Bytes::from_static(br#"{"error":"Klippy API endpoint is not configured"}"#));
-        };
-        if !hyper_tungstenite::is_upgrade_request(&request) {
-            return response(StatusCode::BAD_REQUEST, "application/json", Bytes::from_static(br#"{"error":"WebSocket upgrade required"}"#));
-        }
-        let host = match tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            TcpStream::connect(endpoint),
-        ).await {
-            Ok(Ok(host)) => host,
-            Ok(Err(_)) | Err(_) => {
-                return response(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "application/json",
-                    Bytes::from_static(br#"{"error":"Klipper Host IPC endpoint unavailable"}"#),
-                );
-            }
-        };
-        return match hyper_tungstenite::upgrade(&mut request, None) {
-            Ok((response, websocket)) => {
-                tokio::spawn(async move { let _ = serve_klippy_websocket(websocket, host).await; });
-                response
-            }
-            Err(_) => response(StatusCode::BAD_REQUEST, "application/json", Bytes::from_static(br#"{"error":"Invalid WebSocket upgrade"}"#)),
-        };
-    }
-
     if request.uri().path() == "/websocket" {
         if !hyper_tungstenite::is_upgrade_request(&request) {
             return response(
@@ -258,74 +203,6 @@ async fn serve_websocket(
 
     Ok(())
 }
-
-/// Bridge a Moonraker Klippy WebSocket to a separately running Host TCP endpoint.
-///
-/// Each WebSocket gets its own TCP connection. The only shared contract is the
-/// JSON + ETX byte protocol, so either process can restart independently.
-async fn serve_klippy_websocket(
-    websocket: HyperWebsocket,
-    host: TcpStream,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let websocket = websocket.await?;
-    let (mut websocket_sink, mut websocket_stream) = websocket.split();
-    let (mut host_reader, mut host_writer) = tokio::io::split(host);
-    let mut pending = Vec::<u8>::new();
-    let mut chunk = [0u8; 8192];
-
-    loop {
-        tokio::select! {
-            incoming = websocket_stream.next() => {
-                let Some(message) = incoming else { break; };
-                match message? {
-                    Message::Text(text) => {
-                        if text.len() > MAX_WEBSOCKET_MESSAGE_BYTES {
-                            websocket_sink.send(Message::Close(Some(
-                                hyper_tungstenite::tungstenite::protocol::CloseFrame {
-                                    code: hyper_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Size,
-                                    reason: "Message too large".into(),
-                                },
-                            ))).await?;
-                            break;
-                        }
-                        serde_json::from_str::<serde_json::Value>(&text)?;
-                        host_writer.write_all(text.as_bytes()).await?;
-                        host_writer.write_all(&[0x03]).await?;
-                    }
-                    Message::Binary(_) => {}
-                    Message::Ping(payload) => websocket_sink.send(Message::Pong(payload)).await?,
-                    Message::Pong(_) => {}
-                    Message::Close(_) => break,
-                    Message::Frame(_) => unreachable!("tungstenite handles raw frames internally"),
-                }
-            }
-            read = host_reader.read(&mut chunk) => {
-                let count = read?;
-                if count == 0 {
-                    break;
-                }
-                pending.extend_from_slice(&chunk[..count]);
-                while let Some(end) = pending.iter().position(|byte| *byte == 0x03) {
-                    if end > MAX_WEBSOCKET_MESSAGE_BYTES {
-                        return Err(io::Error::new(io::ErrorKind::InvalidData, "Klippy API frame exceeds size limit").into());
-                    }
-                    let frame: Vec<u8> = pending.drain(..=end).collect();
-                    let payload = &frame[..frame.len() - 1];
-                    let value: serde_json::Value = serde_json::from_slice(payload)?;
-                    websocket_sink.send(Message::Text(serde_json::to_string(&value)?.into())).await?;
-                }
-                if pending.len() > MAX_WEBSOCKET_MESSAGE_BYTES {
-                    return Err(io::Error::new(io::ErrorKind::InvalidData, "Klippy API frame exceeds size limit").into());
-                }
-            }
-        }
-    }
-
-    let _ = host_writer.shutdown().await;
-    Ok(())
-}
-
-
 fn response(
     status: StatusCode,
     content_type: &'static str,
@@ -441,66 +318,6 @@ mod tests {
 
         websocket.close(None).await.unwrap();
         task.abort();
-    }
-
-    #[tokio::test]
-    async fn klippysocket_bridges_to_a_separate_host_tcp_process() {
-        let host_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let host_address = host_listener.local_addr().unwrap();
-        let host_task = tokio::spawn(async move {
-            let (mut stream, _) = host_listener.accept().await.unwrap();
-            let mut request = Vec::new();
-            let mut byte = [0u8; 1];
-            loop {
-                if stream.read_exact(&mut byte).await.is_err() { return; }
-                if byte[0] == 0x03 { break; }
-                request.push(byte[0]);
-            }
-            let value: Value = serde_json::from_slice(&request).unwrap();
-            assert_eq!(value["method"], "info");
-            let first = br#"{"id":41,"result":{"state":"ready"}}"#;
-            let second = br#"{"method":"notify_status_update","params":{"state":"ready"}}"#;
-            // Deliberately fragment the first frame and coalesce the second.
-            stream.write_all(&first[..12]).await.unwrap();
-            tokio::task::yield_now().await;
-            stream.write_all(&first[12..]).await.unwrap();
-            stream.write_all(&[0x03]).await.unwrap();
-            stream.write_all(second).await.unwrap();
-            stream.write_all(&[0x03]).await.unwrap();
-        });
-
-        let mut router = JsonRpcRouter::new();
-        router.register("printer.test_echo", |params| Ok(params)).unwrap();
-        let server = MoonrakerHttpServer::bind_with_klippy_endpoint(
-            "127.0.0.1:0".parse().unwrap(),
-            Arc::new(router),
-            host_address,
-        ).await.unwrap();
-        let address = server.local_addr().unwrap();
-        let task = tokio::spawn(server.run());
-
-        let (mut websocket, response) = connect_async(format!("ws://{address}/klippysocket"))
-            .await.unwrap();
-        assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
-        websocket.send(ClientMessage::Text(
-            r#"{"id":41,"method":"info","params":{}}"#.into(),
-        )).await.unwrap();
-
-        let message = tokio::time::timeout(std::time::Duration::from_secs(1), websocket.next())
-            .await.unwrap().unwrap().unwrap();
-        let ClientMessage::Text(text) = message else { panic!("expected Klippy JSON response"); };
-        let value: Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(value, json!({"id": 41, "result": {"state": "ready"}}));
-
-        let notification = tokio::time::timeout(std::time::Duration::from_secs(1), websocket.next())
-            .await.unwrap().unwrap().unwrap();
-        let ClientMessage::Text(text) = notification else { panic!("expected host notification"); };
-        let value: Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(value["method"], "notify_status_update");
-
-        websocket.close(None).await.unwrap();
-        task.abort();
-        host_task.await.unwrap();
     }
 
     #[tokio::test]
