@@ -590,7 +590,7 @@ mod tests {
         printer.register_object("opaque", 42_u8).unwrap();
 
         let dispatcher = KlippyApiDispatcher::new();
-        dispatcher.register_object_query(printer).unwrap();
+        dispatcher.register_object_query(printer.clone()).unwrap();
         let response = dispatcher.dispatch_value(json!({
             "id": 8,
             "method": "objects/query",
