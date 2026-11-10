@@ -118,6 +118,30 @@ impl CommandScheduler {
 
     pub fn receive_sequence(&self) -> u64 { self.receive_sequence }
 
+    /// Allocate a stable insertion-order key for a newly active command queue.
+    /// Compact active queues before the counter would wrap so older queues
+    /// continue to win ties against queues registered later.
+    fn allocate_queue_order(&mut self) -> u64 {
+        if self.next_queue_order == u64::MAX {
+            let mut ordered: Vec<(u64, u64)> = self.queues.iter()
+                .filter(|(_, queue)| {
+                    !queue.upcoming.is_empty() || !queue.ready.is_empty()
+                })
+                .map(|(id, queue)| (queue.order, *id))
+                .collect();
+            ordered.sort_unstable();
+            for (order, (_, id)) in ordered.iter().enumerate() {
+                if let Some(queue) = self.queues.get_mut(id) {
+                    queue.order = order as u64;
+                }
+            }
+            self.next_queue_order = ordered.len() as u64;
+        }
+        let order = self.next_queue_order;
+        self.next_queue_order += 1;
+        order
+    }
+
     /// Commands within one command queue retain FIFO order.
     pub fn enqueue(&mut self, queue_id: u64, mut command: ScheduledCommand)
         -> Result<(), ScheduleError>
@@ -134,8 +158,7 @@ impl CommandScheduler {
         let queue_is_empty = self.queues.get(&queue_id)
             .map_or(true, |queue| queue.upcoming.is_empty() && queue.ready.is_empty());
         if queue_is_empty {
-            let order = self.next_queue_order;
-            self.next_queue_order = self.next_queue_order.wrapping_add(1);
+            let order = self.allocate_queue_order();
             self.queues.entry(queue_id).or_default().order = order;
         }
         self.queues.entry(queue_id).or_default().upcoming.push_back(command);
@@ -362,6 +385,29 @@ impl CommandScheduler {
 mod tests {
     use super::*;
     use klipper_protocol::FrameDecoder;
+
+    #[test]
+    fn queue_order_counter_wrap_compacts_active_queues_without_reordering() {
+        let mut scheduler = CommandScheduler::new();
+        scheduler.enqueue(1, ScheduledCommand::new(vec![0xA1], 0, 500)).unwrap();
+        scheduler.enqueue(2, ScheduledCommand::new(vec![0xB2], 0, 500)).unwrap();
+
+        scheduler.queues.get_mut(&1).unwrap().order = u64::MAX - 1;
+        scheduler.queues.get_mut(&2).unwrap().order = u64::MAX;
+        scheduler.next_queue_order = u64::MAX;
+
+        scheduler.enqueue(3, ScheduledCommand::new(vec![0xC3], 0, 500)).unwrap();
+        assert_eq!(scheduler.queues[&1].order, 0);
+        assert_eq!(scheduler.queues[&2].order, 1);
+        assert_eq!(scheduler.queues[&3].order, 2);
+        assert_eq!(scheduler.next_queue_order, 3);
+
+        scheduler.promote_ready(0);
+        let frame = scheduler.build_frame().unwrap().unwrap();
+        let mut decoder = klipper_protocol::FrameDecoder::new();
+        let parsed = decoder.push(&frame.bytes);
+        assert_eq!(parsed[0].payload, vec![0xA1, 0xB2, 0xC3]);
+    }
 
     #[test]
     fn request_clock_normalization_uses_klippers_half_range() {
