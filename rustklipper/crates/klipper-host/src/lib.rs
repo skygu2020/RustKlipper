@@ -854,6 +854,13 @@ impl Printer {
             if matches!(*state, PrinterState::Shutdown | PrinterState::Disconnected) {
                 return;
             }
+            if *state != PrinterState::Configuring {
+                // A new configuring phase is a new connection attempt. Invalidate
+                // callbacks from the previous phase and allow initialization to run
+                // again (for example after a Ready -> Configuring reconnect).
+                self.connection_generation.fetch_add(1, Ordering::SeqCst);
+                self.connection_initialized.store(false, Ordering::SeqCst);
+            }
             *state = PrinterState::Configuring;
             *self
                 .state_message
@@ -3993,6 +4000,31 @@ mod tests {
         printer.invoke_shutdown("late shutdown");
         assert_eq!(printer.state(), PrinterState::Disconnected);
         assert!(!printer.is_shutdown());
+    }
+
+    #[test]
+    fn returning_to_configuring_starts_a_new_connection_initialization() {
+        let printer = Printer::new();
+        printer.install_config(ConfigDocument::parse("[test]\nvalue=1\n").unwrap());
+        let identify_events = Arc::new(AtomicUsize::new(0));
+        let observed = identify_events.clone();
+        printer.register_event_handler(PrinterEventKind::McuIdentify, move |_| {
+            observed.fetch_add(1, Ordering::SeqCst);
+        });
+        let registry = ComponentRegistry::new();
+
+        printer.initialize_components(&registry).unwrap();
+        printer.set_ready();
+        assert_eq!(identify_events.load(Ordering::SeqCst), 1);
+
+        let previous_generation = printer.connection_generation.load(Ordering::SeqCst);
+        printer.set_configuring();
+        assert_eq!(
+            printer.connection_generation.load(Ordering::SeqCst),
+            previous_generation.wrapping_add(1)
+        );
+        printer.initialize_components(&registry).unwrap();
+        assert_eq!(identify_events.load(Ordering::SeqCst), 2);
     }
 
     #[test]
