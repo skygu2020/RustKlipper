@@ -398,7 +398,13 @@ impl ConfigFileLoader {
         let Some(marker_index) = data.find(AUTOSAVE_HEADER) else {
             return Ok(None);
         };
-        let marker_line = data[..marker_index].lines().count() + 1;
+        let regular_data = &data[..marker_index];
+        // Klipper rejects the autosave block if an autosave-prefixed line
+        // already appears before the marker; this indicates a damaged block.
+        if regular_data.contains("\\n#*# ") {
+            return Ok(None);
+        }
+        let marker_line = regular_data.lines().count() + 1;
         let autosave = &data[marker_index + AUTOSAVE_HEADER.len()..];
         if autosave.contains(AUTOSAVE_HEADER) {
             return Ok(None);
@@ -2004,6 +2010,25 @@ mod tests {
         );
         assert!(tracker.unused_options(&config).is_empty());
         assert!(tracker.validate(&config, &["printer".to_owned()]).is_ok());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn ignores_autosave_when_prefixed_lines_precede_header() {
+        use std::fs;
+        let path = std::env::temp_dir().join(format!(
+            "rustklipper-config-autosave-prefix-corrupt-{}.cfg",
+            std::process::id()
+        ));
+        fs::write(
+            &path,
+            "[printer]\\nkinematics=cartesian\\n#*# stale generated line\\n#*# <---------------------- SAVE_CONFIG ---------------------->\\n#*# [printer]\\n#*# max_velocity=250\\n",
+        )
+        .unwrap();
+
+        let config = ConfigFileLoader::load(&path).unwrap();
+        assert_eq!(config.get("printer", "kinematics"), Some("cartesian"));
+        assert!(!config.section("printer").unwrap().has_option("max_velocity"));
         fs::remove_file(path).unwrap();
     }
 
