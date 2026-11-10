@@ -104,23 +104,25 @@ impl PinResolver {
                 let name = &command[name_start..end];
                 let pin_id = self.aliases.get(name).cloned().unwrap_or_else(|| name.to_owned());
 
-                if self.validate_aliases {
-                    let active = self.active_pins.entry(pin_id.clone())
-                        .or_insert_with(|| name.to_owned());
-                    if name != active {
-                        return Err(PinResolverError::AliasUsedAlongsideTarget {
-                            pin: name.to_owned(), active: active.clone(),
-                        });
-                    }
-                } else {
-                    self.active_pins.entry(pin_id.clone()).or_insert_with(|| name.to_owned());
-                }
-
+                // Validate reservations before recording this pin as active.
+                // A rejected command must not poison subsequent attempts with
+                // an alias-vs-physical-pin conflict.
                 if let Some(owner) = self.reserved.get(&pin_id) {
                     return Err(PinResolverError::ReservedPin {
                         pin: name.to_owned(), owner: owner.clone(),
                     });
                 }
+
+                if self.validate_aliases {
+                    if let Some(active) = self.active_pins.get(&pin_id) {
+                        if name != active {
+                            return Err(PinResolverError::AliasUsedAlongsideTarget {
+                                pin: name.to_owned(), active: active.clone(),
+                            });
+                        }
+                    }
+                }
+                self.active_pins.entry(pin_id.clone()).or_insert_with(|| name.to_owned());
 
                 output.push_str(&command[cursor..name_start]);
                 output.push_str(&pin_id);
@@ -202,6 +204,26 @@ mod tests {
             resolver.alias_pin("BAD", "!PA1"),
             Err(PinResolverError::InvalidAliasTarget(_))
         ));
+    }
+
+    #[test]
+    fn rejected_reserved_pin_does_not_activate_alias_state() {
+        let mut resolver = PinResolver::new(true);
+        resolver.alias_pin("LED", "PA1").unwrap();
+        resolver.reserve_pin("PA1", "serial").unwrap();
+
+        assert!(matches!(
+            resolver.update_command("config_a pin=LED"),
+            Err(PinResolverError::ReservedPin { .. })
+        ));
+
+        // The rejected alias use must not make the physical pin appear to
+        // have been activated by a prior successful command.
+        resolver.reserved.clear();
+        assert_eq!(
+            resolver.update_command("config_b pin=PA1").unwrap(),
+            "config_b pin=PA1",
+        );
     }
 
     #[test]
