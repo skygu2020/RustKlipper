@@ -4010,11 +4010,19 @@ mod tests {
         printer.register_event_handler(PrinterEventKind::McuIdentify, move |_| {
             observed.fetch_add(1, Ordering::SeqCst);
         });
-        let registry = ComponentRegistry::new();
+        printer.install_config(ConfigDocument::parse("[fan]\\npin=PA0\\n").unwrap());
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register("fan", |printer, section| {
+                printer
+                    .register_object("fan", section.get("pin").unwrap().to_owned())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
 
         // Initialization is only valid after entering the configuring state.
         printer.set_configuring();
-        printer.initialize_components(&registry).unwrap();
+        assert_eq!(printer.initialize_components(&registry).unwrap(), vec!["fan"]);
         printer.set_ready();
         assert_eq!(identify_events.load(Ordering::SeqCst), 1);
 
