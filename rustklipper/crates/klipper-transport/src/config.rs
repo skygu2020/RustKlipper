@@ -526,6 +526,36 @@ mod tests {
     }
 
     #[test]
+    fn failed_handshake_responses_leave_each_stage_retryable() {
+        let plan = McuConfigPlan::new(
+            &dictionary(), 0, &[], vec![], vec![], vec![],
+        ).unwrap();
+        let mut handshake = McuConfigHandshake::new(plan.clone(), 8);
+
+        assert!(matches!(
+            handshake.handle_initial_response(response(1, 0, 0, 64), false),
+            Err(ConfigError::CrcMismatch { .. })
+        ));
+        assert_eq!(handshake.stage(), ConfigHandshakeStage::AwaitingInitialResponse);
+
+        let action = handshake.handle_initial_response(response(0, 0, 0, 64), false).unwrap();
+        assert!(matches!(action, ConfigAction::SendFullConfig { .. }));
+        assert_eq!(handshake.stage(), ConfigHandshakeStage::AwaitingFinalResponse);
+
+        assert!(matches!(
+            handshake.handle_final_response(response(1, 0, 0, 4)),
+            Err(ConfigError::TooFewMoves { reported: 4, reserved: 8 })
+        ));
+        assert_eq!(handshake.stage(), ConfigHandshakeStage::AwaitingFinalResponse);
+
+        assert_eq!(handshake.handle_final_response(response(1, 0, 0, 64)).unwrap(), 56);
+        assert_eq!(
+            handshake.stage(),
+            ConfigHandshakeStage::Complete { usable_move_count: 56 },
+        );
+    }
+
+    #[test]
     fn oid_allocator_assigns_stable_named_ids_and_enforces_limit() {
         let mut ids = OidAllocator::new();
         assert_eq!(ids.allocate_named("stepper_x").unwrap(), 0);
