@@ -98,6 +98,12 @@ enum McuClockWaitKind {
     Clock,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct McuStartupQueueConfig {
+    uptime_queue_id: u64,
+    periodic_clock_queue_id: u64,
+}
+
 struct PendingMcuClockStartup {
     queue_id: u64,
     kind: McuClockWaitKind,
@@ -468,6 +474,7 @@ pub struct Printer {
     connection_generation: AtomicU64,
     mcus: McuRegistry,
     mcu_clock_startups: Mutex<HashMap<String, PendingMcuClockStartup>>,
+    mcu_identify_startups: Mutex<HashMap<String, McuStartupQueueConfig>>,
     objects: RwLock<HashMap<String, Arc<dyn Any + Send + Sync>>>,
     object_registration_transactions: Mutex<
         HashMap<std::thread::ThreadId, Vec<Vec<(String, Arc<dyn Any + Send + Sync>)>>>,
@@ -504,6 +511,7 @@ impl Printer {
             connection_generation: AtomicU64::new(0),
             mcus: McuRegistry::new(),
             mcu_clock_startups: Mutex::new(HashMap::new()),
+            mcu_identify_startups: Mutex::new(HashMap::new()),
             objects: RwLock::new(HashMap::new()),
             object_registration_transactions: Mutex::new(HashMap::new()),
             event_handlers: Mutex::new(HashMap::new()),
@@ -1066,6 +1074,12 @@ impl Printer {
             .set_disconnected();
         drop(_lifecycle_guard);
         self.mcus.clear();
+        self.mcu_identify_startups.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+        self.mcu_clock_startups.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
         self.send_event(PrinterEvent::Disconnect);
     }
 
@@ -1654,6 +1668,46 @@ impl Printer {
         self.mcus.start_identify(name, queue_id, chunk_size)
     }
 
+    /// Start an automatically coordinated Identify -> uptime -> clock startup.
+    ///
+    /// The Host remembers the caller-selected queues and chunk size. Once the
+    /// transport reports IdentifyProgress::Complete, run_host_once() starts
+    /// uptime sampling and then advances the eight initial clock samples.
+    pub fn start_managed_mcu_identify(
+        &self,
+        name: &str,
+        identify_queue_id: u64,
+        identify_chunk_size: u8,
+        uptime_queue_id: u64,
+        periodic_clock_queue_id: u64,
+    ) -> Result<(), McuRegistryError> {
+        let normalized = name.trim();
+        if normalized.is_empty() {
+            return Err(McuRegistryError::EmptyName);
+        }
+        {
+            let mut pending = self.mcu_identify_startups.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if pending.contains_key(normalized) {
+                return Err(McuRegistryError::SessionOperation {
+                    name: normalized.to_owned(),
+                    message: "identify startup is already being coordinated".to_owned(),
+                });
+            }
+            pending.insert(normalized.to_owned(), McuStartupQueueConfig {
+                uptime_queue_id,
+                periodic_clock_queue_id,
+            });
+        }
+        if let Err(error) = self.mcus.start_identify(normalized, identify_queue_id, identify_chunk_size) {
+            self.mcu_identify_startups.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(normalized);
+            return Err(error);
+        }
+        Ok(())
+    }
+
     /// Start MCU uptime sampling after Identify has completed.
     pub fn start_mcu_clock_calibration(
         &self,
@@ -1725,6 +1779,38 @@ impl Printer {
             waiter,
         });
         Ok(())
+    }
+
+    fn start_clock_calibration_for_identified_mcus(
+        &self,
+        events: &[McuSessionEvent],
+    ) -> Vec<McuStartupError> {
+        let mut errors = Vec::new();
+        for event in events {
+            if !matches!(
+                event.event,
+                klipper_transport::SessionEvent::IdentifyProgress {
+                    progress: klipper_transport::IdentifyProgress::Complete { .. }
+                }
+            ) {
+                continue;
+            }
+            let config = self.mcu_identify_startups.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&event.mcu);
+            let Some(config) = config else { continue; };
+            if let Err(error) = self.start_managed_mcu_clock_calibration(
+                &event.mcu,
+                config.uptime_queue_id,
+                config.periodic_clock_queue_id,
+            ) {
+                errors.push(McuStartupError {
+                    mcu: event.mcu.clone(),
+                    message: error.to_string(),
+                });
+            }
+        }
+        errors
     }
 
     fn advance_mcu_clock_startups(&self) -> Vec<McuStartupError> {
@@ -1972,7 +2058,8 @@ impl Printer {
         let reactor_wait = bounded_host_wait(max_wait);
         let reactor_callbacks = self.reactor.run_once(reactor_wait);
         let mcus = self.poll_mcus();
-        let mcu_startup_errors = self.advance_mcu_clock_startups();
+        let mut mcu_startup_errors = self.start_clock_calibration_for_identified_mcus(&mcus.events);
+        mcu_startup_errors.extend(self.advance_mcu_clock_startups());
         let mcu_handler_panics = self.dispatch_mcu_events(&mcus.events);
         let mcu_message_handler_panics = self.dispatch_mcu_messages(&mcus.events);
         PrinterRunBatch {
@@ -2020,6 +2107,31 @@ mod tests {
             printer.start_managed_mcu_clock_calibration(" mcu ", 4, 5),
             Err(McuRegistryError::SessionNotFound { name }) if name == "mcu"
         ));
+        assert!(printer.mcu_clock_startups.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn managed_identify_startup_rolls_back_configuration_without_session() {
+        let printer = Printer::new();
+        assert!(matches!(
+            printer.start_managed_mcu_identify(" mcu ", 1, 64, 2, 3),
+            Err(McuRegistryError::SessionNotFound { name }) if name == "mcu"
+        ));
+        assert!(printer.mcu_identify_startups.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn identify_completion_without_managed_configuration_is_ignored() {
+        let printer = Printer::new();
+        let events = [McuSessionEvent {
+            mcu: "mcu".to_owned(),
+            event: klipper_transport::SessionEvent::IdentifyProgress {
+                progress: klipper_transport::IdentifyProgress::Complete {
+                    version: "test".to_owned(),
+                },
+            },
+        }];
+        assert!(printer.start_clock_calibration_for_identified_mcus(&events).is_empty());
         assert!(printer.mcu_clock_startups.lock().unwrap().is_empty());
     }
 
