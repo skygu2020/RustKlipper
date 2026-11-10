@@ -2014,7 +2014,7 @@ mod tests {
     #[test]
     fn failed_component_factory_rolls_back_mcu_message_handlers() {
         let printer = Printer::new();
-        printer.install_config(ConfigDocument::parse("[sensor_component]\\n").unwrap());
+        printer.install_config(ConfigDocument::parse("[sensor_component]\n").unwrap());
         let called = Arc::new(AtomicBool::new(false));
         let observed = called.clone();
         let mut registry = ComponentRegistry::new();
@@ -2055,7 +2055,7 @@ mod tests {
             global_observed.store(true, Ordering::SeqCst);
         });
 
-        printer.install_config(ConfigDocument::parse("[sensor]\\n").unwrap());
+        printer.install_config(ConfigDocument::parse("[sensor]\n").unwrap());
         let events = vec![McuSessionEvent {
             mcu: "mcu".into(),
             event: klipper_transport::SessionEvent::DecodedMessage {
