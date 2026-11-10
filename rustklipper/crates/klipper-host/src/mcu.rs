@@ -228,18 +228,35 @@ impl McuRegistry {
                     continue;
                 }
             };
-            match session.poll() {
-                Ok(events) => batch.events.extend(events.into_iter().map(|event| {
+            let poll_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                session.poll()
+            }));
+            match poll_result {
+                Ok(Ok(events)) => batch.events.extend(events.into_iter().map(|event| {
                     McuSessionEvent {
                         mcu: name.clone(),
                         event,
                     }
                 })),
-                Err(error) => batch.errors.push(McuPollError {
+                Ok(Err(error)) => batch.errors.push(McuPollError {
                     mcu: name,
                     message: error.to_string(),
                     disconnected: session.is_disconnected(),
                 }),
+                Err(_) => {
+                    // A panic during protocol processing may leave scheduler
+                    // and response-router state inconsistent. Isolate it to
+                    // this MCU and require a fresh serial session.
+                    session.mark_disconnected();
+                    drop(session);
+                    let mut state = self.state.lock().expect("MCU registry lock poisoned");
+                    remove_session_if_same(&mut state.sessions, &name, &session);
+                    batch.errors.push(McuPollError {
+                        mcu: name,
+                        message: "MCU session poll panicked".to_owned(),
+                        disconnected: true,
+                    });
+                }
             }
         }
         batch
