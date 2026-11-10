@@ -340,9 +340,10 @@ impl GCodeDispatcher {
                     Err(error) => events.push(DispatchEvent::Error(error.to_string())),
                 },
                 "M107" => {}
-                "M106" if self.file_input => {}
                 "M106" => match parse_float_parameter(&command, "S", 1.0) {
-                    Ok(value) if value == 0.0 => {}
+                    // Klipper evaluates get_float() before checking file-input
+                    // mode, so malformed S values remain errors in that mode.
+                    Ok(value) if value == 0.0 || self.file_input => {}
                     Ok(_) => events.push(DispatchEvent::Info(format!(
                         "Unknown command:\"{}\"", command.command()
                     ))),
@@ -763,6 +764,12 @@ mod tests {
                 "{line} should be silently accepted in file-input mode"
             );
         }
+
+        let malformed = dispatcher.process_line("M106 S=bad", true).unwrap();
+        assert!(
+            matches!(malformed.events.first(), Some(DispatchEvent::Error(_))),
+            "file-input mode must still parse and reject an invalid fan speed"
+        );
 
         dispatcher.set_file_input(false);
         let outcome = dispatcher.process_line("M106 S1", true).unwrap();
