@@ -406,7 +406,12 @@ impl ConfigFileLoader {
 
         let mut lines = Vec::new();
         for line in autosave.lines() {
-            if line.trim().is_empty() || line == "#*#" {
+            if line.trim().is_empty()
+                || line == "#*#"
+                || line == "#*# DO NOT EDIT THIS BLOCK OR BELOW. The contents are auto-generated."
+            {
+                // The standard Klipper SAVE_CONFIG header contains this
+                // explanatory line before the generated section data.
                 lines.push(String::new());
             } else if let Some(content) = line.strip_prefix("#*# ") {
                 lines.push(content.to_owned());
@@ -1883,7 +1888,7 @@ mod tests {
         ));
         fs::write(
             &path,
-            "[printer]\nkinematics=cartesian\n#*# <---------------------- SAVE_CONFIG ---------------------->\n#*# [printer]\n#*# kinematics = delta\n#*# max_velocity = 250\n#*#\n#*# [stepper_x]\n#*# position_endstop = 0\n",
+            "[printer]\nkinematics=cartesian\n#*# <---------------------- SAVE_CONFIG ---------------------->\n#*# DO NOT EDIT THIS BLOCK OR BELOW. The contents are auto-generated.\n#*#\n#*# [printer]\n#*# kinematics = delta\n#*# max_velocity = 250\n#*#\n#*# [stepper_x]\n#*# position_endstop = 0\n",
         )
         .unwrap();
         let config = ConfigFileLoader::load(&path).unwrap();
