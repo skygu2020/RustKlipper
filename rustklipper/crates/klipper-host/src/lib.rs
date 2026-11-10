@@ -5403,6 +5403,44 @@ mod tests {
     }
 
     #[test]
+    fn m112_enters_shutdown_without_requesting_process_restart() {
+        let printer = Printer::new();
+        let shutdowns = Arc::new(Mutex::new(Vec::new()));
+        let restarts = Arc::new(AtomicUsize::new(0));
+
+        let observed_shutdowns = shutdowns.clone();
+        printer.register_event_handler(PrinterEventKind::Shutdown, move |event| {
+            if let PrinterEvent::Shutdown { reason } = event {
+                observed_shutdowns.lock().unwrap().push(reason.clone());
+            }
+        });
+        let observed_restarts = restarts.clone();
+        printer.register_event_handler(PrinterEventKind::RestartRequested, move |_| {
+            observed_restarts.fetch_add(1, Ordering::SeqCst);
+        });
+
+        printer.set_ready();
+        let outcome = printer.process_gcode_line("M112", true).unwrap();
+
+        assert!(outcome.handler_found);
+        assert!(outcome.acknowledged);
+        assert_eq!(printer.state(), PrinterState::Shutdown);
+        assert_eq!(printer.state_message(), "Shutdown due to M112 command");
+        assert_eq!(printer.exit_reason(), None);
+        assert_eq!(
+            *shutdowns.lock().unwrap(),
+            vec!["Shutdown due to M112 command".to_owned()]
+        );
+        assert_eq!(restarts.load(Ordering::SeqCst), 0);
+
+        let blocked = printer.process_gcode_line("M115", true).unwrap();
+        assert!(matches!(
+            blocked.events.first(),
+            Some(DispatchEvent::Error(message)) if message == "Shutdown due to M112 command"
+        ));
+    }
+
+    #[test]
     fn restart_gcode_requests_exit_and_emits_ready_event() {
         let printer = Printer::new();
         let observed = Arc::new(Mutex::new(Vec::new()));
