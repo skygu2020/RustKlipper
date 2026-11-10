@@ -233,6 +233,18 @@ impl KlippyApiDispatcher {
         })
     }
 
+    /// Register Klipper's `gcode/help` endpoint from the active printer dispatcher.
+    ///
+    /// Only commands available in the current printer state are included.
+    pub fn register_gcode_help(
+        &self,
+        printer: std::sync::Arc<crate::Printer>,
+    ) -> Result<(), KlippyApiRpcError> {
+        self.register("gcode/help", move |_params| {
+            Ok(serde_json::json!(printer.gcode_help()))
+        })
+    }
+
     /// Register Klipper's emergency-stop endpoint.
     ///
     /// The call transitions the printer into shutdown and returns an empty
@@ -631,6 +643,33 @@ mod tests {
             "params": { "objects": { "toolhead": "position" } }
         })).unwrap();
         assert_eq!(response["error"]["code"], json!(-32600));
+    }
+
+    #[test]
+    fn gcode_help_endpoint_tracks_commands_available_in_printer_state() {
+        let printer = std::sync::Arc::new(crate::Printer::new());
+        printer.register_gcode_command("M115", true, Some("Firmware version"), |_| {
+            Ok(Vec::new())
+        }).unwrap();
+        printer.register_gcode_command("G1", false, Some("Move"), |_| {
+            Ok(Vec::new())
+        }).unwrap();
+
+        let dispatcher = KlippyApiDispatcher::new();
+        dispatcher.register_gcode_help(printer.clone()).unwrap();
+        let request = json!({"id": 11, "method": "gcode/help"});
+
+        let before_ready = dispatcher.dispatch_value(request.clone()).unwrap();
+        assert_eq!(before_ready["result"], json!({
+            "M115": "Firmware version"
+        }));
+
+        printer.set_ready();
+        let ready = dispatcher.dispatch_value(request).unwrap();
+        assert_eq!(ready["result"], json!({
+            "G1": "Move",
+            "M115": "Firmware version"
+        }));
     }
 
     #[test]
