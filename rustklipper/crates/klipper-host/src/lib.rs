@@ -1222,6 +1222,34 @@ impl Printer {
             .is_some()
     }
 
+    /// Remove a JSON-backed status object and notify active Klippy subscribers.
+    ///
+    /// Internal Rust component objects are deliberately left to
+    /// `remove_object`; this method only removes objects exposed by the
+    /// status-object API. Subscribers querying explicit fields will observe
+    /// those fields as null on their next update.
+    pub fn remove_status_object(&self, name: &str) -> bool {
+        let removed = {
+            let mut objects = self.objects.write().expect("printer object lock poisoned");
+            let Some(current) = objects.get(name).cloned() else {
+                return false;
+            };
+            if Arc::downcast::<serde_json::Value>(current)
+                .map(|value| value.is_object())
+                .unwrap_or(false)
+            {
+                objects.remove(name).is_some()
+            } else {
+                false
+            }
+        };
+
+        if removed {
+            let _ = self.status_updates.send(name.to_owned());
+        }
+        removed
+    }
+
     /// Unload a component's owned G-code commands and invalidate its load cache.
     /// Callers remain responsible for removing objects and dependent components.
     pub fn unload_component(&self, section: &str) -> bool {
@@ -4233,6 +4261,35 @@ mod tests {
         let status = printer.lookup_object::<serde_json::Value>("toolhead").unwrap();
         assert_eq!(status["position"], serde_json::json!([10.0, 20.0, 30.0]));
         assert_eq!(status["homed_axes"], "xyz");
+    }
+
+    #[test]
+    fn removing_status_objects_only_removes_published_json_objects() {
+        let printer = Printer::new();
+        printer.register_status_object("toolhead", serde_json::json!({
+            "position": [0.0, 0.0, 0.0]
+        })).unwrap();
+        printer.register_object("internal_component", "private").unwrap();
+
+        assert!(!printer.remove_status_object("missing"));
+        assert!(!printer.remove_status_object("internal_component"));
+        assert!(printer.has_object("internal_component"));
+        assert!(printer.remove_status_object("toolhead"));
+        assert!(!printer.has_object("toolhead"));
+        assert!(printer.status_object_names().is_empty());
+        assert!(!printer.remove_status_object("toolhead"));
+    }
+
+    #[tokio::test]
+    async fn removing_status_objects_broadcasts_the_removed_name() {
+        let printer = Printer::new();
+        printer.register_status_object("toolhead", serde_json::json!({
+            "position": [0.0, 0.0, 0.0]
+        })).unwrap();
+        let mut updates = printer.subscribe_status_updates();
+
+        assert!(printer.remove_status_object("toolhead"));
+        assert_eq!(updates.recv().await.unwrap(), "toolhead");
     }
 
     #[test]
