@@ -1,9 +1,8 @@
-//! Standalone, cross-platform Rust implementation of the Moonraker API server.
+//! Rust Moonraker API server implementation.
 //!
-//! This crate deliberately does not depend on the Klipper Host crate. Runtime
-//! communication with the host happens over the stable JSON + ETX TCP protocol
-//! at the configured Klippy API endpoint. Moonraker can therefore run, restart,
-//! and upgrade as an independent process without sharing host memory or types.
+//! This crate is the Rust-side API service that will bridge remote clients to
+//! the Rust Klipper host. The implementation is developed incrementally against
+//! the upstream Moonraker HTTP, WebSocket, and JSON-RPC behavior.
 
 pub mod jsonrpc;
 pub mod server;
