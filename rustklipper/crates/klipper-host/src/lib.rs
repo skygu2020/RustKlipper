@@ -128,6 +128,8 @@ pub enum PrinterError {
     ObjectNotFound { name: String },
     #[error("printer object '{name}' has a different concrete type")]
     ObjectTypeMismatch { name: String },
+    #[error("component name cannot be empty")]
+    EmptyComponentName,
 }
 
 type ComponentFactory = Arc<
@@ -1691,9 +1693,7 @@ impl Printer {
     {
         let component = component.trim();
         if component.is_empty() {
-            return Err(PrinterError::ObjectTypeMismatch {
-                name: "component name cannot be empty".to_owned(),
-            });
+            return Err(PrinterError::EmptyComponentName);
         }
         let id = self.register_mcu_message_handler(mcu, message, handler);
         self.component_mcu_message_handlers
@@ -1988,6 +1988,86 @@ mod tests {
         );
     }
 
+
+    #[test]
+    fn unloading_component_removes_its_mcu_message_handlers() {
+        let printer = Printer::new();
+        let called = Arc::new(AtomicBool::new(false));
+        let observed = called.clone();
+        printer.register_component_mcu_message_handler("heater", None, "sensor_update", move |_| {
+            observed.store(true, Ordering::SeqCst);
+        }).unwrap();
+
+        assert!(printer.unload_component("heater"));
+        let events = vec![McuSessionEvent {
+            mcu: "mcu".into(),
+            event: klipper_transport::SessionEvent::DecodedMessage {
+                name: "sensor_update".into(),
+                params: std::collections::BTreeMap::new(),
+                receive_time: 1.0,
+            },
+        }];
+        assert_eq!(printer.dispatch_mcu_messages(&events), 0);
+        assert!(!called.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn failed_component_factory_rolls_back_mcu_message_handlers() {
+        let printer = Printer::new();
+        printer.install_config(ConfigDocument::parse("[sensor_component]\\n").unwrap());
+        let called = Arc::new(AtomicBool::new(false));
+        let observed = called.clone();
+        let mut registry = ComponentRegistry::new();
+        registry.register("sensor_component", move |printer, _| {
+            printer.register_component_mcu_message_handler(
+                "sensor_component", None, "sensor_update", {
+                    let observed = observed.clone();
+                    move |_| observed.store(true, Ordering::SeqCst)
+                },
+            ).map_err(|error| error.to_string())?;
+            Err("component initialization failed".to_owned())
+        }).unwrap();
+
+        assert!(matches!(printer.load_components(&registry), Err(ComponentError::LoadFailed { .. })));
+        let events = vec![McuSessionEvent {
+            mcu: "mcu".into(),
+            event: klipper_transport::SessionEvent::DecodedMessage {
+                name: "sensor_update".into(),
+                params: std::collections::BTreeMap::new(),
+                receive_time: 1.0,
+            },
+        }];
+        assert_eq!(printer.dispatch_mcu_messages(&events), 0);
+        assert!(!called.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn config_reinstall_clears_component_handlers_but_keeps_global_handlers() {
+        let printer = Printer::new();
+        let component_called = Arc::new(AtomicBool::new(false));
+        let component_observed = component_called.clone();
+        printer.register_component_mcu_message_handler("sensor", None, "sensor_update", move |_| {
+            component_observed.store(true, Ordering::SeqCst);
+        }).unwrap();
+        let global_called = Arc::new(AtomicBool::new(false));
+        let global_observed = global_called.clone();
+        printer.register_mcu_message_handler(None, "sensor_update", move |_| {
+            global_observed.store(true, Ordering::SeqCst);
+        });
+
+        printer.install_config(ConfigDocument::parse("[sensor]\\n").unwrap());
+        let events = vec![McuSessionEvent {
+            mcu: "mcu".into(),
+            event: klipper_transport::SessionEvent::DecodedMessage {
+                name: "sensor_update".into(),
+                params: std::collections::BTreeMap::new(),
+                receive_time: 1.0,
+            },
+        }];
+        assert_eq!(printer.dispatch_mcu_messages(&events), 0);
+        assert!(!component_called.load(Ordering::SeqCst));
+        assert!(global_called.load(Ordering::SeqCst));
+    }
 
     #[test]
     fn decoded_messages_route_by_mcu_and_protocol_name() {
