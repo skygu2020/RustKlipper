@@ -1372,11 +1372,18 @@ mod tests {
     }
 
     #[test]
-    fn semicolon_inline_comments_are_not_suppressed_by_quotes_or_escapes() {
+    fn semicolon_inline_comments_follow_configparser_whitespace_rules() {
         let config = ConfigDocument::parse(
-            "[gcode_macro TEST]\nquoted: \"value; trailing text\"\nescaped: value\\ ; trailing text\nembedded: value;kept\n",
+            "[gcode_macro TEST]\nquoted_without_space: \"value; trailing text\"\nquoted_with_space: \"value ; trailing text\"\nescaped: value\\ ; trailing text\nembedded: value;kept\n",
         ).unwrap();
-        assert_eq!(config.get("gcode_macro TEST", "quoted"), Some("\"value"));
+        assert_eq!(
+            config.get("gcode_macro TEST", "quoted_without_space"),
+            Some("\"value; trailing text\"")
+        );
+        assert_eq!(
+            config.get("gcode_macro TEST", "quoted_with_space"),
+            Some("\"value")
+        );
         assert_eq!(config.get("gcode_macro TEST", "escaped"), Some("value\\"));
         assert_eq!(config.get("gcode_macro TEST", "embedded"), Some("value;kept"));
     }
