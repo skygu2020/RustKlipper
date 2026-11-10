@@ -295,7 +295,7 @@ async fn serve_klippy_websocket(
         }
     }
     let _ = bridge_writer.shutdown().await;
-    host_task.abort();
+    let _ = host_task.await;
     Ok(())
 }
 
