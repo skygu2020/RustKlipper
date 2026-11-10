@@ -252,7 +252,8 @@ async fn serve_klippy_websocket(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let websocket = websocket.await?;
     let (mut websocket_sink, mut websocket_stream) = websocket.split();
-    let (mut bridge, mut host_stream) = tokio::io::duplex(64 * 1024);
+    let (bridge, mut host_stream) = tokio::io::duplex(64 * 1024);
+    let (mut bridge_reader, mut bridge_writer) = tokio::io::split(bridge);
     let host_task = tokio::spawn(async move {
         let _ = serve_async_stream(&mut host_stream, &dispatcher).await;
     });
@@ -274,8 +275,8 @@ async fn serve_klippy_websocket(
                             ))).await?;
                             break;
                         }
-                        bridge.write_all(text.as_bytes()).await?;
-                        bridge.write_all(&[MESSAGE_TERMINATOR]).await?;
+                        bridge_writer.write_all(text.as_bytes()).await?;
+                        bridge_writer.write_all(&[MESSAGE_TERMINATOR]).await?;
                     }
                     Message::Binary(_) => {}
                     Message::Ping(payload) => websocket_sink.send(Message::Pong(payload)).await?,
@@ -284,7 +285,7 @@ async fn serve_klippy_websocket(
                     Message::Frame(_) => unreachable!("tungstenite handles raw frames internally"),
                 }
             }
-            read = bridge.read(&mut chunk) => {
+            read = bridge_reader.read(&mut chunk) => {
                 let count = read?;
                 if count == 0 { break; }
                 for message in codec.push(&chunk[..count])? {
@@ -293,7 +294,7 @@ async fn serve_klippy_websocket(
             }
         }
     }
-    let _ = bridge.shutdown().await;
+    let _ = bridge_writer.shutdown().await;
     host_task.abort();
     Ok(())
 }
