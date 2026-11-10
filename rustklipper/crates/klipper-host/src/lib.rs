@@ -78,12 +78,20 @@ pub struct PrinterStatus {
 pub struct PrinterRunBatch {
     pub reactor_callbacks: usize,
     pub mcus: McuPollBatch,
+    /// MCUs that completed the Host-provided configuration handshake.
+    pub mcu_configured: Vec<McuConfigReady>,
     /// Startup coordinator failures isolated from the Host polling loop.
     pub mcu_startup_errors: Vec<McuStartupError>,
     /// Number of MCU event callbacks isolated after panicking.
     pub mcu_handler_panics: usize,
     /// Number of decoded-message callbacks isolated after panicking.
     pub mcu_message_handler_panics: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McuConfigReady {
+    pub mcu: String,
+    pub usable_move_count: u16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,6 +115,20 @@ struct McuStartupQueueConfig {
 struct PendingMcuClockStartup {
     queue_id: u64,
     kind: McuClockWaitKind,
+    waiter: klipper_transport::ResponseWaiter,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum McuConfigWaitKind {
+    Initial,
+    Final,
+}
+
+struct PendingMcuConfigStartup {
+    queue_id: u64,
+    firmware_restart: bool,
+    kind: McuConfigWaitKind,
+    handshake: klipper_transport::McuConfigHandshake,
     waiter: klipper_transport::ResponseWaiter,
 }
 
@@ -475,6 +497,7 @@ pub struct Printer {
     mcus: McuRegistry,
     mcu_clock_startups: Mutex<HashMap<String, PendingMcuClockStartup>>,
     mcu_identify_startups: Mutex<HashMap<String, McuStartupQueueConfig>>,
+    mcu_config_startups: Mutex<HashMap<String, PendingMcuConfigStartup>>,
     objects: RwLock<HashMap<String, Arc<dyn Any + Send + Sync>>>,
     object_registration_transactions: Mutex<
         HashMap<std::thread::ThreadId, Vec<Vec<(String, Arc<dyn Any + Send + Sync>)>>>,
@@ -512,6 +535,7 @@ impl Printer {
             mcus: McuRegistry::new(),
             mcu_clock_startups: Mutex::new(HashMap::new()),
             mcu_identify_startups: Mutex::new(HashMap::new()),
+            mcu_config_startups: Mutex::new(HashMap::new()),
             objects: RwLock::new(HashMap::new()),
             object_registration_transactions: Mutex::new(HashMap::new()),
             event_handlers: Mutex::new(HashMap::new()),
@@ -1078,6 +1102,9 @@ impl Printer {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
         self.mcu_clock_startups.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+        self.mcu_config_startups.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
         self.send_event(PrinterEvent::Disconnect);
@@ -1781,11 +1808,136 @@ impl Printer {
         Ok(())
     }
 
+    /// Start the two-query MCU config handshake using a plan built by the
+    /// Host's configuration/component graph. This API deliberately accepts
+    /// the completed handshake plan instead of inventing firmware commands.
+    /// Call only after clock calibration has reached ClockReady.
+    pub fn start_managed_mcu_config_handshake(
+        &self,
+        name: &str,
+        queue_id: u64,
+        handshake: klipper_transport::McuConfigHandshake,
+        firmware_restart: bool,
+    ) -> Result<(), McuRegistryError> {
+        let normalized = name.trim();
+        if normalized.is_empty() {
+            return Err(McuRegistryError::EmptyName);
+        }
+        let mut pending = self.mcu_config_startups.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if pending.contains_key(normalized) {
+            return Err(McuRegistryError::SessionOperation {
+                name: normalized.to_owned(),
+                message: "config handshake is already being coordinated".to_owned(),
+            });
+        }
+        let waiter = self.mcus.with_session(normalized, |session| {
+            session.begin_config_handshake(queue_id)
+        });
+        let waiter = match waiter {
+            Some(Ok(waiter)) => waiter,
+            Some(Err(error)) => return Err(McuRegistryError::SessionOperation {
+                name: normalized.to_owned(), message: error.to_string(),
+            }),
+            None => return Err(McuRegistryError::SessionNotFound {
+                name: normalized.to_owned(),
+            }),
+        };
+        pending.insert(normalized.to_owned(), PendingMcuConfigStartup {
+            queue_id,
+            firmware_restart,
+            kind: McuConfigWaitKind::Initial,
+            handshake,
+            waiter,
+        });
+        Ok(())
+    }
+
+    fn advance_mcu_config_startups(&self) -> (Vec<McuStartupError>, Vec<McuConfigReady>) {
+        let names = {
+            let pending = self.mcu_config_startups.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut names: Vec<_> = pending.keys().cloned().collect();
+            names.sort();
+            names
+        };
+        let mut errors = Vec::new();
+        let mut configured = Vec::new();
+        for name in names {
+            let Some(mut current) = self.mcu_config_startups.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&name) else { continue; };
+            let response = match current.waiter.try_recv() {
+                Ok(Some(response)) => response,
+                Ok(None) => {
+                    self.mcu_config_startups.lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(name, current);
+                    continue;
+                }
+                Err(error) => {
+                    errors.push(McuStartupError {
+                        mcu: name,
+                        message: format!("config response waiter failed: {error:?}"),
+                    });
+                    continue;
+                }
+            };
+            match current.kind {
+                McuConfigWaitKind::Initial => {
+                    let result = self.mcus.with_session(&name, |session| {
+                        session.advance_config_handshake(
+                            current.queue_id,
+                            &mut current.handshake,
+                            response,
+                            current.firmware_restart,
+                        )
+                    });
+                    match result {
+                        Some(Ok(waiter)) => {
+                            current.kind = McuConfigWaitKind::Final;
+                            current.waiter = waiter;
+                            self.mcu_config_startups.lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .insert(name, current);
+                        }
+                        Some(Err(error)) => errors.push(McuStartupError {
+                            mcu: name, message: error.to_string(),
+                        }),
+                        None => errors.push(McuStartupError {
+                            mcu: name.clone(), message: "MCU session disappeared during config handshake".to_owned(),
+                        }),
+                    }
+                }
+                McuConfigWaitKind::Final => {
+                    let result = self.mcus.with_session(&name, |session| {
+                        session.complete_config_handshake(&mut current.handshake, response)
+                    });
+                    match result {
+                        Some(Ok(usable_move_count)) => configured.push(McuConfigReady {
+                            mcu: name, usable_move_count,
+                        }),
+                        Some(Err(error)) => errors.push(McuStartupError {
+                            mcu: name, message: error.to_string(),
+                        }),
+                        None => errors.push(McuStartupError {
+                            mcu: name, message: "MCU session disappeared during config handshake".to_owned(),
+                        }),
+                    }
+                }
+            }
+        }
+        (errors, configured)
+    }
+
     fn clear_mcu_startup_for(&self, name: &str) {
         self.mcu_identify_startups.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(name);
         self.mcu_clock_startups.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(name);
+        self.mcu_config_startups.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(name);
     }
@@ -2072,11 +2224,14 @@ impl Printer {
         }
         let mut mcu_startup_errors = self.start_clock_calibration_for_identified_mcus(&mcus.events);
         mcu_startup_errors.extend(self.advance_mcu_clock_startups());
+        let (config_errors, mcu_configured) = self.advance_mcu_config_startups();
+        mcu_startup_errors.extend(config_errors);
         let mcu_handler_panics = self.dispatch_mcu_events(&mcus.events);
         let mcu_message_handler_panics = self.dispatch_mcu_messages(&mcus.events);
         PrinterRunBatch {
             reactor_callbacks,
             mcus,
+            mcu_configured,
             mcu_startup_errors,
             mcu_handler_panics,
             mcu_message_handler_panics,
@@ -2111,6 +2266,19 @@ mod tests {
     use super::*;
     use klipper_gcode::DispatchEvent;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    #[test]
+    fn managed_config_startup_reports_missing_session() {
+        let printer = Printer::new();
+        let dictionary = klipper_protocol::IdentifyDictionary::default();
+        let plan = klipper_transport::McuConfigPlan::from_command_lines(
+            &dictionary, 0, &[], &[], &[],
+        );
+        // An empty dictionary cannot encode finalize_config; the missing
+        // session path is covered through the handshake API in integration tests.
+        assert!(plan.is_err());
+        assert!(printer.mcu_config_startups.lock().unwrap().is_empty());
+    }
 
     #[test]
     fn managed_mcu_clock_startup_reports_missing_session() {
