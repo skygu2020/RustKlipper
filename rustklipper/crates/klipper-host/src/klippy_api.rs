@@ -178,10 +178,12 @@ impl KlippyApiDispatcher {
             gcode_output,
         };
         // Output subscription is connection-local in the async transport.
-        // The method itself is a no-op; the stream adapter enables delivery
-        // only for the connection that requested it.
-        dispatcher.register("gcode/subscribe_output", |_| Ok(serde_json::json!({})))
-            .expect("built-in endpoint name is unique");
+        // Validate the optional response template here; the stream adapter
+        // retains it for this connection and applies it to future messages.
+        dispatcher.register("gcode/subscribe_output", |params| {
+            gcode_output_response_template(&params)?;
+            Ok(serde_json::json!({}))
+        }).expect("built-in endpoint name is unique");
         dispatcher
     }
 
@@ -419,6 +421,18 @@ impl KlippyApiDispatcher {
             Ok(result) => serde_json::json!({"id": id, "result": result}),
             Err(error) => rpc_error_response(id, error),
         })
+    }
+}
+
+fn gcode_output_response_template(
+    params: &Value,
+) -> Result<serde_json::Map<String, Value>, KlippyApiRpcError> {
+    match params.get("response_template") {
+        None => Ok(serde_json::Map::new()),
+        Some(Value::Object(template)) => Ok(template.clone()),
+        Some(_) => Err(KlippyApiRpcError::invalid_request(
+            "gcode/subscribe_output response_template must be an object"
+        )),
     }
 }
 
@@ -878,7 +892,7 @@ where
     let mut codec = KlippyApiCodec::default();
     let mut chunk = [0u8; 8192];
     let mut output = dispatcher.subscribe_gcode_output();
-    let mut subscribed = false;
+    let mut output_template: Option<serde_json::Map<String, Value>> = None;
 
     loop {
         tokio::select! {
@@ -895,29 +909,49 @@ where
                 }
 
                 for message in codec.push(&chunk[..count])? {
-                    if message.get("method").and_then(Value::as_str)
+                    let subscription_template = if message.get("method").and_then(Value::as_str)
                         == Some("gcode/subscribe_output")
                     {
-                        // Start at the subscription point so output emitted
-                        // before this request is never replayed to the client.
-                        output = dispatcher.subscribe_gcode_output();
-                        subscribed = true;
-                    }
-                    if let Some(response) = dispatcher.dispatch_value(message) {
+                        let params = message.get("params").cloned().unwrap_or_else(|| {
+                            Value::Object(serde_json::Map::new())
+                        });
+                        Some(gcode_output_response_template(&params))
+                    } else {
+                        None
+                    };
+
+                    let response = dispatcher.dispatch_value(message);
+                    if let Some(response) = response {
+                        let accepted = !response.get("error").is_some();
                         let encoded = KlippyApiCodec::encode(&response)?;
                         writer.write_all(&encoded).await?;
                         writer.flush().await?;
+
+                        if accepted {
+                            if let Some(Ok(template)) = subscription_template {
+                                // Subscribe at the request boundary so output
+                                // emitted before this request is not replayed.
+                                output = dispatcher.subscribe_gcode_output();
+                                output_template = Some(template);
+                            }
+                        }
+                    } else if let Some(Ok(template)) = subscription_template {
+                        // Notifications still execute the endpoint handler.
+                        output = dispatcher.subscribe_gcode_output();
+                        output_template = Some(template);
                     }
                 }
             }
-            event = output.recv(), if subscribed => {
+            event = output.recv(), if output_template.is_some() => {
                 match event {
                     Ok(response) => {
-                        let notification = serde_json::json!({
-                            "method": "process_gcode_response",
-                            "params": { "response": response },
-                        });
-                        let encoded = KlippyApiCodec::encode(&notification)?;
+                        let mut notification = output_template.clone()
+                            .expect("output template is present while subscribed");
+                        notification.insert(
+                            "params".to_owned(),
+                            serde_json::json!({ "response": response }),
+                        );
+                        let encoded = KlippyApiCodec::encode(&Value::Object(notification))?;
                         writer.write_all(&encoded).await?;
                         writer.flush().await?;
                     }
@@ -926,7 +960,7 @@ where
                         // connection alive and deliver subsequent output.
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                        subscribed = false;
+                        output_template = None;
                     }
                 }
             }
@@ -991,7 +1025,9 @@ mod async_stream_tests {
         let subscribe = KlippyApiCodec::encode(&json!({
             "id": 1,
             "method": "gcode/subscribe_output",
-            "params": {}
+            "params": {
+                "response_template": { "method": "process_gcode_response", "source": "terminal" }
+            }
         })).unwrap();
         client.write_all(&subscribe).await.unwrap();
 
@@ -1020,9 +1056,92 @@ mod async_stream_tests {
 
         assert!(messages.contains(&json!({
             "method": "process_gcode_response",
+            "source": "terminal",
             "params": { "response": "// temperature is 205" }
         })));
         assert!(messages.contains(&json!({"id":2,"result":{}})));
+
+        client.shutdown().await.unwrap();
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn subscribed_output_uses_empty_default_response_template() {
+        let dispatcher = std::sync::Arc::new(KlippyApiDispatcher::new());
+        let printer = std::sync::Arc::new(crate::Printer::new());
+        printer.set_ready();
+        printer.register_gcode_command("REPORT", false, None, |_| {
+            Ok(vec![DispatchEvent::Raw("raw output".to_owned())])
+        }).unwrap();
+        dispatcher.register_gcode_script(printer).unwrap();
+
+        let (mut client, mut server) = tokio::io::duplex(4096);
+        let server_dispatcher = dispatcher.clone();
+        let server_task = tokio::spawn(async move {
+            serve_async_stream(&mut server, &server_dispatcher).await
+        });
+
+        let subscribe = KlippyApiCodec::encode(&json!({
+            "id": 1,
+            "method": "gcode/subscribe_output"
+        })).unwrap();
+        client.write_all(&subscribe).await.unwrap();
+
+        let mut decoder = KlippyApiCodec::default();
+        let mut received = Vec::<Value>::new();
+        while !received.iter().any(|message| message["id"] == 1) {
+            let mut chunk = [0u8; 256];
+            let count = client.read(&mut chunk).await.unwrap();
+            assert_ne!(count, 0);
+            received.extend(decoder.push(&chunk[..count]).unwrap());
+        }
+
+        let script = KlippyApiCodec::encode(&json!({
+            "id": 2,
+            "method": "gcode/script",
+            "params": { "script": "REPORT" }
+        })).unwrap();
+        client.write_all(&script).await.unwrap();
+
+        while !received.iter().any(|message| {
+            message["params"]["response"] == "raw output"
+        }) || !received.iter().any(|message| message["id"] == 2) {
+            let mut chunk = [0u8; 256];
+            let count = client.read(&mut chunk).await.unwrap();
+            assert_ne!(count, 0);
+            received.extend(decoder.push(&chunk[..count]).unwrap());
+        }
+
+        assert!(received.contains(&json!({
+            "params": { "response": "raw output" }
+        })));
+
+        client.shutdown().await.unwrap();
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn rejects_non_object_output_response_template() {
+        let dispatcher = std::sync::Arc::new(KlippyApiDispatcher::new());
+        let (mut client, mut server) = tokio::io::duplex(1024);
+        let server_dispatcher = dispatcher.clone();
+        let server_task = tokio::spawn(async move {
+            serve_async_stream(&mut server, &server_dispatcher).await
+        });
+
+        let request = KlippyApiCodec::encode(&json!({
+            "id": 7,
+            "method": "gcode/subscribe_output",
+            "params": { "response_template": "invalid" }
+        })).unwrap();
+        client.write_all(&request).await.unwrap();
+
+        let mut bytes = [0u8; 256];
+        let count = client.read(&mut bytes).await.unwrap();
+        let mut decoder = KlippyApiCodec::default();
+        let messages = decoder.push(&bytes[..count]).unwrap();
+        assert_eq!(messages[0]["id"], json!(7));
+        assert_eq!(messages[0]["error"]["code"], json!(-32600));
 
         client.shutdown().await.unwrap();
         server_task.abort();
