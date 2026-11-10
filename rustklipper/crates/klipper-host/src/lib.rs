@@ -312,6 +312,7 @@ impl ComponentRegistry {
             drop(usage_transaction);
             drop(object_transaction);
             printer.remove_component_gcode_commands(name);
+            printer.remove_component_mcu_message_handlers(name);
             loading.remove(name);
             return Err(ComponentError::InitializationCancelled);
         }
@@ -324,6 +325,7 @@ impl ComponentRegistry {
             drop(usage_transaction);
             drop(object_transaction);
             printer.remove_component_gcode_commands(name);
+            printer.remove_component_mcu_message_handlers(name);
             return Err(ComponentError::LoadFailed {
                 section: section.name.clone(),
                 message,
@@ -448,6 +450,7 @@ pub struct Printer {
     mcu_event_handlers: Mutex<Vec<McuEventHandler>>,
     next_mcu_message_handler_id: AtomicU64,
     mcu_message_handlers: Mutex<HashMap<u64, McuMessageHandlerEntry>>,
+    component_mcu_message_handlers: Mutex<HashMap<String, HashSet<u64>>>,
     component_gcode: Mutex<HashMap<String, HashSet<String>>>,
     gcode: Mutex<GCodeDispatcher>,
     reactor: Reactor,
@@ -480,6 +483,7 @@ impl Printer {
             mcu_event_handlers: Mutex::new(Vec::new()),
             next_mcu_message_handler_id: AtomicU64::new(1),
             mcu_message_handlers: Mutex::new(HashMap::new()),
+            component_mcu_message_handlers: Mutex::new(HashMap::new()),
             component_gcode: Mutex::new(HashMap::new()),
             gcode: Mutex::new(GCodeDispatcher::new()),
             reactor: Reactor::new(),
@@ -588,6 +592,7 @@ impl Printer {
         self.connection_generation.fetch_add(1, Ordering::SeqCst);
         self.connection_initialized.store(false, Ordering::SeqCst);
         self.config_usage.clear();
+        self.clear_component_mcu_message_handlers();
         let mut component_gcode = self
             .component_gcode
             .lock()
@@ -1303,12 +1308,13 @@ impl Printer {
         let section = section.trim();
         let _load_guard = self.lock_component_load();
         let removed_commands = self.remove_component_gcode_commands(section);
+        let removed_mcu_handlers = self.remove_component_mcu_message_handlers(section);
         let removed_component = self
             .loaded_components
             .lock()
             .expect("loaded component lock poisoned")
             .remove(section);
-        removed_commands || removed_component
+        removed_commands || removed_mcu_handlers || removed_component
     }
 
     fn remove_component_gcode_commands(&self, component: &str) -> bool {
@@ -1667,6 +1673,70 @@ impl Printer {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(id, entry);
         id
+    }
+
+    /// Register a decoded MCU message handler owned by a component.
+    ///
+    /// The handler is removed automatically if component initialization fails,
+    /// when the component is unloaded, or when a new config is installed.
+    pub fn register_component_mcu_message_handler<F>(
+        &self,
+        component: &str,
+        mcu: Option<&str>,
+        message: impl Into<String>,
+        handler: F,
+    ) -> Result<u64, PrinterError>
+    where
+        F: Fn(&McuDecodedMessage) + Send + Sync + 'static,
+    {
+        let component = component.trim();
+        if component.is_empty() {
+            return Err(PrinterError::ObjectTypeMismatch {
+                name: "component name cannot be empty".to_owned(),
+            });
+        }
+        let id = self.register_mcu_message_handler(mcu, message, handler);
+        self.component_mcu_message_handlers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(component.to_owned())
+            .or_default()
+            .insert(id);
+        Ok(id)
+    }
+
+    fn remove_component_mcu_message_handlers(&self, component: &str) -> bool {
+        let ids = self.component_mcu_message_handlers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(component);
+        let Some(ids) = ids else {
+            return false;
+        };
+        let mut handlers = self.mcu_message_handlers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for id in &ids {
+            handlers.remove(id);
+        }
+        !ids.is_empty()
+    }
+
+    fn clear_component_mcu_message_handlers(&self) {
+        let owned = std::mem::take(
+            &mut *self.component_mcu_message_handlers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        );
+        if owned.is_empty() {
+            return;
+        }
+        let mut handlers = self.mcu_message_handlers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for id in owned.values().flatten() {
+            handlers.remove(id);
+        }
     }
 
     /// Remove a previously registered decoded-message handler.
