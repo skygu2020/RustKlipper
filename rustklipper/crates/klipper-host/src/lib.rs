@@ -2268,19 +2268,6 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     #[test]
-    fn managed_config_startup_reports_missing_session() {
-        let printer = Printer::new();
-        let dictionary = klipper_protocol::IdentifyDictionary::default();
-        let plan = klipper_transport::McuConfigPlan::from_command_lines(
-            &dictionary, 0, &[], &[], &[],
-        );
-        // An empty dictionary cannot encode finalize_config; the missing
-        // session path is covered through the handshake API in integration tests.
-        assert!(plan.is_err());
-        assert!(printer.mcu_config_startups.lock().unwrap().is_empty());
-    }
-
-    #[test]
     fn managed_mcu_clock_startup_reports_missing_session() {
         let printer = Printer::new();
         assert!(matches!(
@@ -2341,6 +2328,7 @@ mod tests {
         let printer = Printer::new();
         let batch = printer.run_host_once(std::time::Duration::ZERO);
         assert!(batch.mcu_startup_errors.is_empty());
+        assert!(batch.mcu_configured.is_empty());
     }
 
     #[test]
