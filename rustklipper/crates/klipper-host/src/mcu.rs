@@ -210,6 +210,7 @@ impl McuRegistry {
 
         let mut batch = McuPollBatch::default();
         for (name, session) in sessions {
+            let session_handle = session.clone();
             let mut session = match session.lock() {
                 Ok(guard) => guard,
                 Err(poisoned) => {
@@ -250,7 +251,7 @@ impl McuRegistry {
                     session.mark_disconnected();
                     drop(session);
                     let mut state = self.state.lock().expect("MCU registry lock poisoned");
-                    remove_session_if_same(&mut state.sessions, &name, &session);
+                    remove_session_if_same(&mut state.sessions, &name, &session_handle);
                     batch.errors.push(McuPollError {
                         mcu: name,
                         message: "MCU session poll panicked".to_owned(),
