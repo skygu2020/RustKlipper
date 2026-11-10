@@ -6,6 +6,7 @@ members = [
     "crates/klipper-config",
     "crates/klipper-gcode",
     "crates/klipper-host",
+    "crates/moonraker",
 ]
 
 [workspace.package]
@@ -17,3 +18,5 @@ authors = ["RustKlipper contributors"]
 [workspace.dependencies]
 thiserror = "2"
 tracing = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
