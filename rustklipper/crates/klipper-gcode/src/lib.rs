@@ -133,22 +133,23 @@ impl GCodeCommand {
     }
 
     pub fn get_f64(&self, name: &str, default: Option<f64>) -> Result<f64, GCodeError> {
-        let Some(value) = self.get(name) else {
-            return default.ok_or_else(|| GCodeError::MissingParameter {
+        let parsed = if let Some(value) = self.get(name) {
+            value.parse::<f64>().map_err(|_| GCodeError::InvalidParameter {
                 line: self.commandline().to_owned(),
                 parameter: name.to_owned(),
-            });
+                value: value.to_owned(),
+            })?
+        } else {
+            default.ok_or_else(|| GCodeError::MissingParameter {
+                line: self.commandline().to_owned(),
+                parameter: name.to_owned(),
+            })?
         };
-        let parsed: f64 = value.parse().map_err(|_| GCodeError::InvalidParameter {
-            line: self.commandline().to_owned(),
-            parameter: name.to_owned(),
-            value: value.to_owned(),
-        })?;
         if !parsed.is_finite() {
             return Err(GCodeError::InvalidParameter {
                 line: self.commandline().to_owned(),
                 parameter: name.to_owned(),
-                value: value.to_owned(),
+                value: parsed.to_string(),
             });
         }
         Ok(parsed)
@@ -386,6 +387,18 @@ mod tests {
             parsed.extended_parameters(),
             Err(GCodeError::MalformedCommand { .. })
         ));
+    }
+
+    #[test]
+    fn get_f64_rejects_non_finite_defaults() {
+        let command = GCodeCommand::new(parse_line("SET_VALUE").unwrap());
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(matches!(
+                command.get_f64("VALUE", Some(value)),
+                Err(GCodeError::InvalidParameter { parameter, .. }) if parameter == "VALUE"
+            ));
+        }
+        assert_eq!(command.get_f64("VALUE", Some(2.5)).unwrap(), 2.5);
     }
 
     #[test]
