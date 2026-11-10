@@ -156,13 +156,9 @@ impl GCodeCommand {
                 parameter: name.to_owned(),
             })?
         };
-        if !parsed.is_finite() {
-            return Err(GCodeError::InvalidParameter {
-                line: self.commandline().to_owned(),
-                parameter: name.to_owned(),
-                value: parsed.to_string(),
-            });
-        }
+        // Klipper delegates to Python float(), which accepts NaN and
+        // infinities. Range checks, rather than parsing, determine whether
+        // those values are acceptable for a particular command.
         Ok(parsed)
     }
 
@@ -175,22 +171,6 @@ impl GCodeCommand {
         above: Option<f64>,
         below: Option<f64>,
     ) -> Result<(), GCodeError> {
-        if !value.is_finite() {
-            return Err(GCodeError::InvalidParameter {
-                line: self.commandline().to_owned(),
-                parameter: name.to_owned(),
-                value: value.to_string(),
-            });
-        }
-        for bound in [min, max, above, below].into_iter().flatten() {
-            if !bound.is_finite() {
-                return Err(GCodeError::InvalidParameter {
-                    line: self.commandline().to_owned(),
-                    parameter: name.to_owned(),
-                    value: bound.to_string(),
-                });
-            }
-        }
         let constraint = if let Some(min) = min.filter(|bound| value < *bound) {
             Some(format!("at least {min}"))
         } else if let Some(max) = max.filter(|bound| value > *bound) {
@@ -451,43 +431,53 @@ mod tests {
     }
 
     #[test]
-    fn get_f64_rejects_non_finite_defaults() {
-        let command = GCodeCommand::new(parse_line("SET_VALUE").unwrap());
-        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            assert!(matches!(
-                command.get_f64("VALUE", Some(value)),
-                Err(GCodeError::InvalidParameter { parameter, .. }) if parameter == "VALUE"
-            ));
-        }
-        assert_eq!(command.get_f64("VALUE", Some(2.5)).unwrap(), 2.5);
+    fn get_f64_matches_python_float_non_finite_parsing() {
+        let nan_command = GCodeCommand::new(parse_line("SET_VALUE VALUE=nan").unwrap());
+        assert!(nan_command.get_f64("VALUE", None).unwrap().is_nan());
+
+        let positive_infinity =
+            GCodeCommand::new(parse_line("SET_VALUE VALUE=inf").unwrap());
+        assert_eq!(
+            positive_infinity.get_f64("VALUE", None).unwrap(),
+            f64::INFINITY
+        );
+
+        let negative_infinity =
+            GCodeCommand::new(parse_line("SET_VALUE VALUE=-inf").unwrap());
+        assert_eq!(
+            negative_infinity.get_f64("VALUE", None).unwrap(),
+            f64::NEG_INFINITY
+        );
+
+        let default = GCodeCommand::new(parse_line("SET_VALUE").unwrap());
+        assert!(default.get_f64("VALUE", Some(f64::NAN)).unwrap().is_nan());
+        assert_eq!(default.get_f64("VALUE", Some(2.5)).unwrap(), 2.5);
     }
 
     #[test]
-    fn check_range_rejects_non_finite_values() {
+    fn check_range_uses_python_float_comparison_semantics() {
         let command = GCodeCommand::new(parse_line("SET_VALUE VALUE=1").unwrap());
-        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            assert!(matches!(
-                command.check_range("VALUE", value, Some(0.0), Some(10.0), None, None),
-                Err(GCodeError::InvalidParameter { parameter, .. }) if parameter == "VALUE"
-            ));
-        }
-        assert!(command.check_range("VALUE", 5.0, Some(0.0), Some(10.0), None, None).is_ok());
-    }
 
-    #[test]
-    fn check_range_rejects_non_finite_bounds() {
-        let command = GCodeCommand::new(parse_line("SET_VALUE VALUE=5").unwrap());
-        for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            assert!(matches!(
-                command.check_range("VALUE", 5.0, Some(invalid), None, None, None),
-                Err(GCodeError::InvalidParameter { parameter, .. }) if parameter == "VALUE"
-            ));
-            assert!(matches!(
-                command.check_range("VALUE", 5.0, None, None, Some(invalid), None),
-                Err(GCodeError::InvalidParameter { parameter, .. }) if parameter == "VALUE"
-            ));
-        }
-        assert!(command.check_range("VALUE", 5.0, Some(0.0), Some(10.0), None, None).is_ok());
+        // Python comparisons with NaN are false, so NaN passes these
+        // ordinary min/max checks just as it does in Klipper.
+        assert!(command
+            .check_range("VALUE", f64::NAN, Some(0.0), Some(10.0), None, None)
+            .is_ok());
+        assert!(command
+            .check_range("VALUE", 5.0, Some(f64::NAN), None, None, None)
+            .is_ok());
+
+        assert!(matches!(
+            command.check_range("VALUE", f64::INFINITY, Some(0.0), Some(10.0), None, None),
+            Err(GCodeError::OutOfRange { .. })
+        ));
+        assert!(matches!(
+            command.check_range("VALUE", f64::NEG_INFINITY, Some(0.0), Some(10.0), None, None),
+            Err(GCodeError::OutOfRange { .. })
+        ));
+        assert!(command
+            .check_range("VALUE", 5.0, Some(0.0), Some(10.0), None, None)
+            .is_ok());
     }
 
     #[test]
